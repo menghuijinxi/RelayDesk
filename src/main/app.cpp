@@ -25,8 +25,9 @@ constexpr Color kAmber{0.890f, 0.560f, 0.000f, 1.0f};
 constexpr Color kAmberSoft{1.000f, 0.970f, 0.900f, 1.0f};
 constexpr Color kGreen{0.250f, 0.660f, 0.160f, 1.0f};
 constexpr Color kOffline{0.630f, 0.650f, 0.670f, 1.0f};
+constexpr Color kAvatarGreen{0.080f, 0.600f, 0.440f, 1.0f};
 constexpr float kContentTop = 0.0f;
-constexpr float kChatHeaderHeight = 76.0f;
+constexpr float kChatHeaderHeight = 118.0f;
 constexpr float kChatTimelineContentHeight = 650.0f;
 constexpr float kComposerHeight = 68.0f;
 
@@ -49,7 +50,6 @@ struct AppLayout {
     float width;
     float height;
     float contentHeight;
-    float navWidth;
     float peerX;
     float peerWidth;
     float chatX;
@@ -66,17 +66,16 @@ AppLayout makeLayout(const eui::Screen& screen)
     layout.width = std::max(screen.width, 640.0f);
     layout.height = std::max(screen.height, 520.0f);
     layout.contentHeight = std::max(1.0f, layout.height - kContentTop);
-    layout.navWidth = layout.width < 1180.0f ? 104.0f : 126.0f;
-    layout.showPeers = layout.width >= 760.0f;
+    layout.showPeers = layout.width >= 720.0f;
     layout.showDetails = layout.width >= 980.0f;
-    layout.peerX = layout.navWidth + 1.0f;
+    layout.peerX = 0.0f;
     layout.peerWidth = layout.showPeers
-        ? std::clamp(layout.width * 0.22f, 240.0f, 320.0f)
+        ? std::clamp(layout.width * 0.28f, 310.0f, 420.0f)
         : 0.0f;
     layout.detailWidth = layout.showDetails
         ? std::clamp(layout.width * 0.24f, 270.0f, 360.0f)
         : 0.0f;
-    layout.chatX = layout.navWidth + layout.peerWidth + 1.0f;
+    layout.chatX = layout.peerWidth + 1.0f;
     layout.detailX = layout.width - layout.detailWidth;
     layout.chatWidth = layout.detailX - layout.chatX;
 
@@ -90,7 +89,7 @@ AppLayout makeLayout(const eui::Screen& screen)
     if (layout.showPeers && layout.chatWidth < 360.0f) {
         layout.showPeers = false;
         layout.peerWidth = 0.0f;
-        layout.chatX = layout.navWidth + 1.0f;
+        layout.chatX = 0.0f;
         layout.chatWidth = layout.detailX - layout.chatX;
     }
 
@@ -207,24 +206,18 @@ components::ScrollStyle scrollStyle()
     return style;
 }
 
-void navItem(eui::Ui& ui,
-             const std::string& id,
-             float navWidth,
-             float y,
-             unsigned int codepoint,
-             const char* label,
-             bool selected)
+void drawLocalUserHeader(eui::Ui& ui, float x, float y, float width)
 {
-    if (selected) {
-        rect(ui, id + ".accent", 0.0f, y - 13.0f, 3.0f, 50.0f, kTeal, 0.0f);
-    }
-
-    const float iconX = navWidth < 110.0f ? 18.0f : 20.0f;
-    const float labelX = navWidth < 110.0f ? 54.0f : 62.0f;
-    const float labelWidth = std::max(0.0f, navWidth - labelX - 10.0f);
-    icon(ui, id + ".icon", iconX, y - 4.0f, 30.0f, codepoint, selected ? kTeal : kText);
-    text(ui, id + ".label", labelX, y - 2.0f, labelWidth, 24.0f, label, 15.0f,
-         selected ? kTeal : kText);
+    rect(ui, "local.avatar.bg", x + 22.0f, y + 16.0f, 44.0f, 44.0f, kAvatarGreen,
+         22.0f);
+    text(ui, "local.avatar.text", x + 22.0f, y + 24.0f, 44.0f, 26.0f, "林", 20.0f,
+         {1.0f, 1.0f, 1.0f, 1.0f}, eui::HorizontalAlign::Center);
+    text(ui, "local.name", x + 78.0f, y + 15.0f, width - 132.0f, 26.0f, "林一凡",
+         17.0f);
+    text(ui, "local.address", x + 78.0f, y + 41.0f, width - 132.0f, 22.0f,
+         "本机 · 192.168.1.8", 13.0f, kMutedText);
+    icon(ui, "local.settings", x + width - 50.0f, y + 21.0f, 32.0f, 0xF013, kText);
+    rect(ui, "local.bottom.line", x, y + 76.0f, width, 1.0f, kBorder);
 }
 
 void peerRow(eui::Ui& ui,
@@ -296,27 +289,19 @@ void transferCard(eui::Ui& ui,
          transfer.detail, 12.0f, kMutedText);
 }
 
-void drawNavigation(eui::Ui& ui, float navWidth, float height)
-{
-    rect(ui, "nav.bg", 0.0f, kContentTop, navWidth, height, kPanelBackground);
-    rect(ui, "nav.line", navWidth, kContentTop, 1.0f, height, kBorder);
-    navItem(ui, "nav.chat", navWidth, kContentTop + 73.0f, 0xF075, "聊天", true);
-    navItem(ui, "nav.history", navWidth, kContentTop + 153.0f, 0xF017, "历史", false);
-    navItem(ui, "nav.transfers", navWidth, kContentTop + 233.0f, 0xF362, "传输", false);
-    navItem(ui, "nav.settings", navWidth, kContentTop + 313.0f, 0xF013, "设置", false);
-}
-
 void drawPeerList(eui::Ui& ui, float x, float width, float height)
 {
     rect(ui, "peers.bg", x, kContentTop, width, height, kPanelBackground);
     rect(ui, "peers.line", x + width, kContentTop, 1.0f, height, kBorder);
-    rect(ui, "peers.search.bg", x + 18.0f, kContentTop + 23.0f, width - 36.0f, 42.0f,
-         {1.0f, 1.0f, 1.0f, 1.0f}, 7.0f, kBorder);
-    icon(ui, "peers.search.icon", x + 30.0f, kContentTop + 29.0f, 30.0f, 0xF002, kText);
-    text(ui, "peers.search.placeholder", x + 72.0f, kContentTop + 32.0f,
-         width - 110.0f, 24.0f,
+    drawLocalUserHeader(ui, x, kContentTop, width);
+    rect(ui, "peers.search.bg", x + 20.0f, kContentTop + 96.0f, width - 40.0f,
+         42.0f, {1.0f, 1.0f, 1.0f, 1.0f}, 7.0f, kBorder);
+    icon(ui, "peers.search.icon", x + 32.0f, kContentTop + 102.0f, 30.0f, 0xF002,
+         kText);
+    text(ui, "peers.search.placeholder", x + 74.0f, kContentTop + 105.0f,
+         width - 112.0f, 24.0f,
          "搜索设备", 14.0f, kSubtleText);
-    text(ui, "peers.online.title", x + 42.0f, kContentTop + 92.0f, 120.0f, 24.0f,
+    text(ui, "peers.online.title", x + 42.0f, kContentTop + 166.0f, 120.0f, 24.0f,
          "在线 (5)", 15.0f);
 
     const std::array peers{
@@ -331,7 +316,7 @@ void drawPeerList(eui::Ui& ui, float x, float width, float height)
     };
 
     const float rowGap = height < 740.0f ? 59.0f : 72.0f;
-    const float onlineStart = kContentTop + 135.0f;
+    const float onlineStart = kContentTop + 210.0f;
     const float offlineTitleY = onlineStart + rowGap * 5.0f + 15.0f;
     text(ui, "peers.offline.title", x + 42.0f, offlineTitleY, 120.0f, 24.0f,
          "离线 (3)", 15.0f);
@@ -348,6 +333,7 @@ void drawChatHeader(eui::Ui& ui, float x, float width)
 {
     rect(ui, "chat.header.bg", x, kContentTop, width, kChatHeaderHeight - 1.0f,
          kPanelBackground);
+    rect(ui, "chat.header.peer.line", x, kContentTop + 75.0f, width, 1.0f, kBorder);
     rect(ui, "chat.header.line", x, kContentTop + kChatHeaderHeight - 1.0f, width, 1.0f,
          kBorder);
     icon(ui, "chat.header.computer", x + 22.0f, kContentTop + 23.0f, 42.0f, 0xF108,
@@ -364,6 +350,14 @@ void drawChatHeader(eui::Ui& ui, float x, float width)
          0xF002, kText);
     icon(ui, "chat.header.more", x + width - 44.0f, kContentTop + 25.0f, 34.0f,
          0xF142, kText);
+    rect(ui, "chat.tabs.chat.bg", x + 22.0f, kContentTop + 85.0f, 62.0f, 24.0f,
+         kTealSoft, 6.0f, {0.640f, 0.880f, 0.870f, 1.0f});
+    text(ui, "chat.tabs.chat.text", x + 22.0f, kContentTop + 87.0f, 62.0f, 20.0f,
+         "聊天", 13.0f, kTeal, eui::HorizontalAlign::Center);
+    text(ui, "chat.tabs.history", x + 98.0f, kContentTop + 87.0f, 62.0f, 20.0f,
+         "历史", 13.0f, kMutedText, eui::HorizontalAlign::Center);
+    text(ui, "chat.tabs.transfers", x + 174.0f, kContentTop + 87.0f, 62.0f, 20.0f,
+         "传输", 13.0f, kMutedText, eui::HorizontalAlign::Center);
 }
 
 void drawChatTimelineContent(eui::Ui& ui, float width)
@@ -596,7 +590,6 @@ void drawRelayDesk(eui::Ui& ui, const eui::Screen& screen)
     const float timelineHeight = std::max(1.0f, composerY - timelineY - 12.0f);
 
     rect(ui, "app.bg", 0.0f, 0.0f, layout.width, layout.height, kWindowBackground);
-    drawNavigation(ui, layout.navWidth, layout.contentHeight);
 
     if (layout.showPeers) {
         drawPeerList(ui, layout.peerX, layout.peerWidth, layout.contentHeight);
