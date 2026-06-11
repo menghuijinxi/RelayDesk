@@ -1,0 +1,617 @@
+#include "eui_neo.h"
+
+#include "platform/computer_name.h"
+#include "storage/app_paths.h"
+
+#include <algorithm>
+#include <array>
+#include <exception>
+#include <string>
+#include <vector>
+
+namespace {
+
+using eui::Color;
+
+constexpr Color kWindowBackground{0.972f, 0.976f, 0.980f, 1.0f};
+constexpr Color kPanelBackground{0.996f, 0.997f, 0.998f, 1.0f};
+constexpr Color kBorder{0.830f, 0.850f, 0.870f, 1.0f};
+constexpr Color kText{0.080f, 0.095f, 0.115f, 1.0f};
+constexpr Color kMutedText{0.360f, 0.390f, 0.430f, 1.0f};
+constexpr Color kSubtleText{0.560f, 0.590f, 0.620f, 1.0f};
+constexpr Color kTeal{0.000f, 0.590f, 0.590f, 1.0f};
+constexpr Color kTealSoft{0.860f, 0.965f, 0.960f, 1.0f};
+constexpr Color kAmber{0.890f, 0.560f, 0.000f, 1.0f};
+constexpr Color kAmberSoft{1.000f, 0.970f, 0.900f, 1.0f};
+constexpr Color kGreen{0.250f, 0.660f, 0.160f, 1.0f};
+constexpr Color kOffline{0.630f, 0.650f, 0.670f, 1.0f};
+constexpr float kChromeHeight = 52.0f;
+constexpr float kContentTop = 53.0f;
+constexpr float kChatHeaderHeight = 76.0f;
+constexpr float kComposerHeight = 68.0f;
+
+struct PeerPreview {
+    const char* name;
+    const char* address;
+    bool online;
+    bool selected;
+};
+
+struct TransferPreview {
+    const char* fileName;
+    const char* direction;
+    const char* detail;
+    float progress;
+    Color accent;
+};
+
+struct AppLayout {
+    float width;
+    float height;
+    float contentHeight;
+    float navWidth;
+    float peerX;
+    float peerWidth;
+    float chatX;
+    float chatWidth;
+    float detailX;
+    float detailWidth;
+    bool showPeers;
+    bool showDetails;
+};
+
+AppLayout makeLayout(const eui::Screen& screen)
+{
+    AppLayout layout{};
+    layout.width = std::max(screen.width, 640.0f);
+    layout.height = std::max(screen.height, 520.0f);
+    layout.contentHeight = std::max(1.0f, layout.height - kContentTop);
+    layout.navWidth = layout.width < 1180.0f ? 104.0f : 126.0f;
+    layout.showPeers = layout.width >= 760.0f;
+    layout.showDetails = layout.width >= 980.0f;
+    layout.peerX = layout.navWidth + 1.0f;
+    layout.peerWidth = layout.showPeers
+        ? std::clamp(layout.width * 0.22f, 240.0f, 320.0f)
+        : 0.0f;
+    layout.detailWidth = layout.showDetails
+        ? std::clamp(layout.width * 0.24f, 270.0f, 360.0f)
+        : 0.0f;
+    layout.chatX = layout.navWidth + layout.peerWidth + 1.0f;
+    layout.detailX = layout.width - layout.detailWidth;
+    layout.chatWidth = layout.detailX - layout.chatX;
+
+    if (layout.showDetails && layout.chatWidth < 400.0f) {
+        layout.showDetails = false;
+        layout.detailWidth = 0.0f;
+        layout.detailX = layout.width;
+        layout.chatWidth = layout.detailX - layout.chatX;
+    }
+
+    if (layout.showPeers && layout.chatWidth < 360.0f) {
+        layout.showPeers = false;
+        layout.peerWidth = 0.0f;
+        layout.chatX = layout.navWidth + 1.0f;
+        layout.chatWidth = layout.detailX - layout.chatX;
+    }
+
+    return layout;
+}
+
+void ensureAppStorage()
+{
+    static bool initialized = false;
+    if (initialized) {
+        return;
+    }
+
+    try {
+        const auto paths = relaydesk::storage::createAppPaths();
+        relaydesk::storage::ensureAppDirectories(paths);
+    } catch (const std::exception&) {
+        // UI 仍可启动，后续存储层接入日志后再把启动失败原因展示给用户。
+    }
+    initialized = true;
+}
+
+void rect(eui::Ui& ui,
+          const std::string& id,
+          float x,
+          float y,
+          float width,
+          float height,
+          Color color,
+          float radius = 0.0f,
+          Color border = {0.0f, 0.0f, 0.0f, 0.0f})
+{
+    auto builder = ui.rect(id)
+        .position(x, y)
+        .size(width, height)
+        .color(color)
+        .radius(radius);
+
+    if (border.a > 0.0f) {
+        builder.border(1.0f, border);
+    }
+
+    builder.build();
+}
+
+void text(eui::Ui& ui,
+          const std::string& id,
+          float x,
+          float y,
+          float width,
+          float height,
+          const std::string& value,
+          float fontSize,
+          Color color = kText,
+          eui::HorizontalAlign align = eui::HorizontalAlign::Left)
+{
+    ui.text(id)
+        .position(x, y)
+        .size(width, height)
+        .text(value)
+        .fontSize(fontSize)
+        .lineHeight(height)
+        .color(color)
+        .horizontalAlign(align)
+        .verticalAlign(eui::VerticalAlign::Center)
+        .build();
+}
+
+void icon(eui::Ui& ui,
+          const std::string& id,
+          float x,
+          float y,
+          float size,
+          unsigned int codepoint,
+          Color color = kText)
+{
+    ui.text(id)
+        .position(x, y)
+        .size(size, size)
+        .icon(codepoint)
+        .fontSize(size * 0.62f)
+        .lineHeight(size)
+        .color(color)
+        .horizontalAlign(eui::HorizontalAlign::Center)
+        .verticalAlign(eui::VerticalAlign::Center)
+        .build();
+}
+
+void statusDot(eui::Ui& ui,
+               const std::string& id,
+               float x,
+               float y,
+               Color color,
+               float size = 9.0f)
+{
+    rect(ui, id, x, y, size, size, color, size * 0.5f);
+}
+
+components::ProgressStyle progressStyle(Color track, Color fill)
+{
+    components::ProgressStyle style;
+    style.track = track;
+    style.fill = fill;
+    return style;
+}
+
+void navItem(eui::Ui& ui,
+             const std::string& id,
+             float navWidth,
+             float y,
+             unsigned int codepoint,
+             const char* label,
+             bool selected)
+{
+    if (selected) {
+        rect(ui, id + ".accent", 0.0f, y - 13.0f, 3.0f, 50.0f, kTeal, 0.0f);
+    }
+
+    const float iconX = navWidth < 110.0f ? 18.0f : 20.0f;
+    const float labelX = navWidth < 110.0f ? 54.0f : 62.0f;
+    const float labelWidth = std::max(0.0f, navWidth - labelX - 10.0f);
+    icon(ui, id + ".icon", iconX, y - 4.0f, 30.0f, codepoint, selected ? kTeal : kText);
+    text(ui, id + ".label", labelX, y - 2.0f, labelWidth, 24.0f, label, 15.0f,
+         selected ? kTeal : kText);
+}
+
+void peerRow(eui::Ui& ui,
+             const PeerPreview& peer,
+             int index,
+             float x,
+             float width,
+             float y)
+{
+    const std::string id = "peer." + std::to_string(index);
+    if (peer.selected) {
+        rect(ui, id + ".selected", x + 6.0f, y - 8.0f, width - 12.0f, 64.0f,
+             kTealSoft, 6.0f, {0.640f, 0.880f, 0.870f, 1.0f});
+    }
+
+    statusDot(ui, id + ".state", x + 20.0f, y + 18.0f, peer.online ? kGreen : kOffline);
+    icon(ui, id + ".computer", x + 42.0f, y + 3.0f, 35.0f, 0xF108, kText);
+    text(ui, id + ".name", x + 88.0f, y - 2.0f, width - 110.0f, 24.0f, peer.name,
+         15.0f);
+    text(ui, id + ".ip", x + 88.0f, y + 23.0f, width - 110.0f, 22.0f, peer.address,
+         13.0f, kMutedText);
+}
+
+void messageBubble(eui::Ui& ui,
+                   const std::string& id,
+                   float x,
+                   float y,
+                   float width,
+                   const char* value,
+                   bool outgoing)
+{
+    const Color fill = outgoing ? kTealSoft : Color{0.990f, 0.990f, 0.992f, 1.0f};
+    rect(ui, id + ".bg", x, y, width, 42.0f, fill, 7.0f, kBorder);
+    text(ui, id + ".text", x + 12.0f, y + 9.0f, width - 24.0f, 22.0f, value, 14.0f);
+}
+
+void transferCard(eui::Ui& ui,
+                  const std::string& id,
+                  float x,
+                  float y,
+                  float width,
+                  const TransferPreview& transfer)
+{
+    const Color fill = transfer.accent.r > 0.5f ? kAmberSoft : kTealSoft;
+    const Color border = transfer.accent.r > 0.5f
+        ? Color{0.950f, 0.760f, 0.420f, 1.0f}
+        : Color{0.640f, 0.880f, 0.870f, 1.0f};
+    rect(ui, id + ".bg", x, y, width, 112.0f, fill, 8.0f, border);
+    icon(ui, id + ".file", x + 18.0f, y + 22.0f, 42.0f, 0xF15B, transfer.accent);
+    text(ui, id + ".name", x + 72.0f, y + 20.0f, width - 160.0f, 24.0f,
+         transfer.fileName, 15.0f);
+    text(ui, id + ".size", x + 72.0f, y + 46.0f, 170.0f, 20.0f, transfer.direction,
+         13.0f, kMutedText);
+    text(ui, id + ".percent", x + width - 80.0f, y + 46.0f, 46.0f, 20.0f,
+         std::to_string(static_cast<int>(transfer.progress * 100.0f)) + "%", 13.0f,
+         kText, eui::HorizontalAlign::Right);
+    ui.stack(id + ".progress.pos")
+        .position(x + 72.0f, y + 72.0f)
+        .size(width - 118.0f, 7.0f)
+        .content([&] {
+            components::progress(ui, id + ".progress")
+                .size(width - 118.0f, 7.0f)
+                .value(transfer.progress)
+                .style(progressStyle({0.840f, 0.850f, 0.850f, 1.0f}, transfer.accent))
+                .build();
+        })
+        .build();
+    text(ui, id + ".detail", x + 72.0f, y + 84.0f, width - 118.0f, 20.0f,
+         transfer.detail, 12.0f, kMutedText);
+}
+
+void drawChrome(eui::Ui& ui, float width)
+{
+    rect(ui, "chrome.bg", 0.0f, 0.0f, width, kChromeHeight, kPanelBackground, 0.0f);
+    rect(ui, "chrome.line", 0.0f, kChromeHeight, width, 1.0f, kBorder);
+    rect(ui, "chrome.logo", 22.0f, 18.0f, 20.0f, 20.0f, kTeal, 4.0f);
+    icon(ui, "chrome.logo.icon", 18.0f, 14.0f, 28.0f, 0xF075,
+         {1.0f, 1.0f, 1.0f, 1.0f});
+    text(ui, "chrome.title", 55.0f, 14.0f, 180.0f, 28.0f, "RelayDesk", 17.0f);
+    const float statusX = std::max(360.0f, width * 0.44f);
+    statusDot(ui, "chrome.connected.dot", statusX, 22.0f, kGreen, 11.0f);
+    text(ui, "chrome.connected.text", statusX + 24.0f, 14.0f, 260.0f, 28.0f,
+         "已连接到办公局域网", 15.0f, kText);
+}
+
+void drawNavigation(eui::Ui& ui, float navWidth, float height)
+{
+    rect(ui, "nav.bg", 0.0f, kContentTop, navWidth, height, kPanelBackground);
+    rect(ui, "nav.line", navWidth, kContentTop, 1.0f, height, kBorder);
+    navItem(ui, "nav.chat", navWidth, kContentTop + 73.0f, 0xF075, "聊天", true);
+    navItem(ui, "nav.history", navWidth, kContentTop + 153.0f, 0xF017, "历史", false);
+    navItem(ui, "nav.transfers", navWidth, kContentTop + 233.0f, 0xF362, "传输", false);
+    navItem(ui, "nav.settings", navWidth, kContentTop + 313.0f, 0xF013, "设置", false);
+}
+
+void drawPeerList(eui::Ui& ui, float x, float width, float height)
+{
+    rect(ui, "peers.bg", x, kContentTop, width, height, kPanelBackground);
+    rect(ui, "peers.line", x + width, kContentTop, 1.0f, height, kBorder);
+    rect(ui, "peers.search.bg", x + 18.0f, kContentTop + 23.0f, width - 36.0f, 42.0f,
+         {1.0f, 1.0f, 1.0f, 1.0f}, 7.0f, kBorder);
+    icon(ui, "peers.search.icon", x + 30.0f, kContentTop + 29.0f, 30.0f, 0xF002, kText);
+    text(ui, "peers.search.placeholder", x + 72.0f, kContentTop + 32.0f,
+         width - 110.0f, 24.0f,
+         "搜索设备", 14.0f, kSubtleText);
+    text(ui, "peers.online.title", x + 42.0f, kContentTop + 92.0f, 120.0f, 24.0f,
+         "在线 (5)", 15.0f);
+
+    const std::array peers{
+        PeerPreview{"Alex-PC", "192.168.1.24", true, true},
+        PeerPreview{"DESKTOP-J8K2TQ", "192.168.1.31", true, false},
+        PeerPreview{"LAPTOP-9F3V2M", "192.168.1.42", true, false},
+        PeerPreview{"DEV-SERVER", "192.168.1.10", true, false},
+        PeerPreview{"MARK-PC", "192.168.1.77", true, false},
+        PeerPreview{"FINANCE-PC", "192.168.1.15", false, false},
+        PeerPreview{"HR-LAPTOP", "192.168.1.28", false, false},
+        PeerPreview{"OLD-PC", "192.168.1.55", false, false},
+    };
+
+    const float rowGap = height < 740.0f ? 59.0f : 72.0f;
+    const float onlineStart = kContentTop + 135.0f;
+    const float offlineTitleY = onlineStart + rowGap * 5.0f + 15.0f;
+    text(ui, "peers.offline.title", x + 42.0f, offlineTitleY, 120.0f, 24.0f,
+         "离线 (3)", 15.0f);
+
+    for (int index = 0; index < static_cast<int>(peers.size()); ++index) {
+        const float y = index < 5
+            ? onlineStart + static_cast<float>(index) * rowGap
+            : offlineTitleY + 40.0f + static_cast<float>(index - 5) * rowGap;
+        peerRow(ui, peers[static_cast<std::size_t>(index)], index, x, width, y);
+    }
+}
+
+void drawChatHeader(eui::Ui& ui, float x, float width)
+{
+    rect(ui, "chat.header.bg", x, kContentTop, width, kChatHeaderHeight - 1.0f,
+         kPanelBackground);
+    rect(ui, "chat.header.line", x, kContentTop + kChatHeaderHeight - 1.0f, width, 1.0f,
+         kBorder);
+    icon(ui, "chat.header.computer", x + 22.0f, kContentTop + 23.0f, 42.0f, 0xF108,
+         kText);
+    statusDot(ui, "chat.header.dot", x + 62.0f, kContentTop + 46.0f, kGreen, 12.0f);
+    text(ui, "chat.header.name", x + 78.0f, kContentTop + 17.0f, 180.0f, 26.0f,
+         "Alex-PC", 18.0f);
+    text(ui, "chat.header.ip", x + 78.0f, kContentTop + 43.0f, 160.0f, 22.0f,
+         "192.168.1.24",
+         13.0f, kMutedText);
+    icon(ui, "chat.header.call", x + width - 160.0f, kContentTop + 25.0f, 34.0f,
+         0xF095, kText);
+    icon(ui, "chat.header.search", x + width - 100.0f, kContentTop + 25.0f, 34.0f,
+         0xF002, kText);
+    icon(ui, "chat.header.more", x + width - 44.0f, kContentTop + 25.0f, 34.0f,
+         0xF142, kText);
+}
+
+void drawChatTimeline(eui::Ui& ui, float x, float y, float width, float height)
+{
+    rect(ui, "chat.bg", x, y, width, height, {1.0f, 1.0f, 1.0f, 1.0f});
+
+    const float verticalScale = std::clamp(height / 690.0f, 0.68f, 1.0f);
+    const auto rowY = [y, verticalScale](float offset) {
+        return y + offset * verticalScale;
+    };
+    const float todayX = x + std::max(16.0f, (width - 66.0f) * 0.5f);
+    const float incomingWidth = std::min(380.0f, std::max(250.0f, width * 0.48f));
+    const float outgoingWidth = std::min(235.0f, std::max(180.0f, width * 0.34f));
+    const float reportLeft = std::clamp(width * 0.14f, 52.0f, 116.0f);
+    const float reportRight = std::clamp(width * 0.10f, 52.0f, 94.0f);
+    const float reportWidth = width - reportLeft - reportRight;
+    const float specsWidth = width - 48.0f;
+
+    rect(ui, "chat.today", todayX, rowY(25.0f), 66.0f, 30.0f, kPanelBackground, 8.0f,
+         kBorder);
+    text(ui, "chat.today.text", todayX, rowY(29.0f), 66.0f, 20.0f, "今天", 13.0f,
+         kMutedText, eui::HorizontalAlign::Center);
+    messageBubble(ui, "chat.msg.1", x + 16.0f, rowY(67.0f), incomingWidth,
+                  "能把最新的 Q2 报告发我吗？", false);
+    text(ui, "chat.msg.1.time", x + 30.0f + incomingWidth, rowY(77.0f), 70.0f,
+         20.0f, "09:21", 12.0f, kSubtleText);
+    messageBubble(ui, "chat.msg.2", x + width - outgoingWidth - 92.0f, rowY(131.0f),
+                  outgoingWidth, "可以，正在上传。", true);
+    text(ui, "chat.msg.2.time", x + width - 82.0f, rowY(141.0f), 70.0f, 20.0f,
+         "09:21", 12.0f, kMutedText);
+
+    transferCard(ui, "chat.transfer.report", x + reportLeft, rowY(189.0f), reportWidth,
+                 {"Q2_Report_2024.pdf",
+                  "24.8 MB",
+                  "19.4 MB / 24.8 MB  -  5.2 MB/s  -  剩余 00:00:01",
+                  0.78f,
+                  kTeal});
+    text(ui, "chat.transfer.report.time", x + width - 92.0f, rowY(301.0f), 70.0f,
+         20.0f, "09:22", 12.0f, kMutedText);
+    messageBubble(ui, "chat.msg.3", x + 16.0f, rowY(327.0f), incomingWidth,
+                  "谢谢！设计说明也在吗？", false);
+    text(ui, "chat.msg.3.time", x + 30.0f + incomingWidth, rowY(337.0f), 70.0f,
+         20.0f, "09:23", 12.0f, kSubtleText);
+    transferCard(ui, "chat.transfer.specs", x + 16.0f, rowY(395.0f), specsWidth,
+                 {"Design_Specs_v2.zip",
+                  "112.6 MB",
+                  "50.7 MB / 112.6 MB  -  4.1 MB/s  -  剩余 00:00:15",
+                  0.45f,
+                  kAmber});
+    text(ui, "chat.transfer.specs.time", x + width - 92.0f, rowY(507.0f), 70.0f,
+         20.0f, "09:24", 12.0f, kMutedText);
+    messageBubble(ui, "chat.msg.4", x + width - outgoingWidth - 95.0f, rowY(560.0f),
+                  outgoingWidth, "是的，这是最新版本。", true);
+    text(ui, "chat.msg.4.time", x + width - 82.0f, rowY(570.0f), 70.0f, 20.0f,
+         "09:25", 12.0f, kMutedText);
+}
+
+void drawComposer(eui::Ui& ui, float x, float y, float width)
+{
+    const float horizontalPadding = width < 560.0f ? 12.0f : 16.0f;
+    const float sendWidth = width < 560.0f ? 58.0f : 70.0f;
+    const float sendX = x + width - horizontalPadding - sendWidth;
+    const float iconSize = width < 560.0f ? 34.0f : 38.0f;
+    const float firstActionX = width < 560.0f ? sendX - 48.0f : x + width - 272.0f;
+    const float inputWidth = std::max(140.0f, firstActionX - (x + 28.0f) - 12.0f);
+
+    rect(ui, "composer.bg", x + horizontalPadding, y, width - horizontalPadding * 2.0f,
+         kComposerHeight, kPanelBackground, 8.0f, kBorder);
+    ui.stack("composer.input.pos")
+        .position(x + 28.0f, y + 13.0f)
+        .size(inputWidth, 42.0f)
+        .content([&] {
+            components::input(ui, "composer.input")
+                .size(inputWidth, 42.0f)
+                .placeholder("给 Alex-PC 发消息")
+                .fontSize(14.0f)
+                .build();
+        })
+        .build();
+    if (width < 560.0f) {
+        icon(ui, "composer.file", firstActionX, y + 17.0f, iconSize, 0xF0C6, kText);
+    } else {
+        icon(ui, "composer.smile", firstActionX, y + 15.0f, iconSize, 0xF118, kText);
+        icon(ui, "composer.file", x + width - 212.0f, y + 15.0f, iconSize, 0xF0C6,
+             kText);
+        icon(ui, "composer.folder", x + width - 152.0f, y + 15.0f, iconSize, 0xF07B,
+             kText);
+    }
+    rect(ui, "composer.send.bg", sendX, y + 13.0f, sendWidth, 42.0f, kTeal, 6.0f);
+    text(ui, "composer.send.text", sendX, y + 21.0f, sendWidth, 24.0f, "发送", 14.0f,
+         {1.0f, 1.0f, 1.0f, 1.0f}, eui::HorizontalAlign::Center);
+}
+
+void transferSummary(eui::Ui& ui,
+                     const std::string& id,
+                     float x,
+                     float y,
+                     float width,
+                     const TransferPreview& transfer)
+{
+    icon(ui, id + ".file", x, y + 2.0f, 36.0f, 0xF15B, transfer.accent);
+    text(ui, id + ".name", x + 46.0f, y + 0.0f, width - 112.0f, 24.0f,
+         transfer.fileName, 14.0f);
+    text(ui, id + ".dir", x + 46.0f, y + 24.0f, 150.0f, 20.0f, transfer.direction,
+         12.0f, kMutedText);
+    text(ui, id + ".pct", x + width - 54.0f, y + 18.0f, 54.0f, 22.0f,
+         std::to_string(static_cast<int>(transfer.progress * 100.0f)) + "%", 14.0f,
+         transfer.accent, eui::HorizontalAlign::Right);
+    ui.stack(id + ".bar.pos")
+        .position(x, y + 52.0f)
+        .size(width, 6.0f)
+        .content([&] {
+            components::progress(ui, id + ".bar")
+                .size(width, 6.0f)
+                .value(transfer.progress)
+                .style(progressStyle({0.830f, 0.840f, 0.845f, 1.0f}, transfer.accent))
+                .build();
+        })
+        .build();
+    text(ui, id + ".detail", x, y + 62.0f, width, 20.0f, transfer.detail, 12.0f,
+         kMutedText);
+}
+
+void drawDetails(eui::Ui& ui, float x, float width, float height)
+{
+    const float bottom = kContentTop + height;
+    const float summaryWidth = width - 44.0f;
+
+    rect(ui, "details.bg", x, kContentTop, width, height, kPanelBackground);
+    rect(ui, "details.line", x, kContentTop, 1.0f, height, kBorder);
+    text(ui, "details.title", x + 22.0f, kContentTop + 19.0f, 170.0f, 28.0f,
+         "Alex-PC", 17.0f);
+    icon(ui, "details.close", x + width - 52.0f, kContentTop + 19.0f, 30.0f, 0xF00D,
+         kText);
+    icon(ui, "details.computer", x + 50.0f, kContentTop + 73.0f, 78.0f, 0xF108,
+         kText);
+    statusDot(ui, "details.status", x + 154.0f, kContentTop + 101.0f, kGreen, 12.0f);
+    text(ui, "details.online", x + 176.0f, kContentTop + 91.0f, 120.0f, 28.0f,
+         "在线", 18.0f, kGreen);
+    text(ui, "details.ip", x + 176.0f, kContentTop + 125.0f, 120.0f, 24.0f,
+         "192.168.1.24",
+         15.0f, kText);
+    rect(ui, "details.sep.1", x, kContentTop + 179.0f, width, 1.0f, kBorder);
+    text(ui, "details.device.title", x + 22.0f, kContentTop + 203.0f, 160.0f,
+         26.0f, "设备信息", 15.0f);
+    const std::array labels{
+        "电脑名", "用户", "系统", "IP 地址", "MAC 地址", "在线时长",
+    };
+    const std::array values{
+        "Alex-PC", "Alex", "Windows 11 Pro 23H2", "192.168.1.24",
+        "00-15-5D-8E-2A-7C", "2天 4时 18分",
+    };
+    for (int index = 0; index < static_cast<int>(labels.size()); ++index) {
+        const float rowY = kContentTop + 253.0f + static_cast<float>(index) * 28.0f;
+        text(ui, "details.label." + std::to_string(index), x + 22.0f, rowY,
+             130.0f, 22.0f, labels[static_cast<std::size_t>(index)], 12.0f,
+             kMutedText);
+        text(ui, "details.value." + std::to_string(index), x + 170.0f, rowY,
+             width - 190.0f, 22.0f, values[static_cast<std::size_t>(index)], 12.0f,
+             kText, eui::HorizontalAlign::Right);
+    }
+    rect(ui, "details.sep.2", x, kContentTop + 417.0f, width, 1.0f, kBorder);
+    text(ui, "details.transfers.title", x + 22.0f, kContentTop + 441.0f, 180.0f,
+         26.0f, "活跃传输 (2)", 15.0f);
+    const TransferPreview report{
+        "Q2_Report_2024.pdf",
+        "发给 Alex-PC",
+        "19.4 MB / 24.8 MB  -  5.2 MB/s",
+        0.78f,
+        kTeal,
+    };
+    const TransferPreview specs{
+        "Design_Specs_v2.zip",
+        "来自 Alex-PC",
+        "50.7 MB / 112.6 MB  -  4.1 MB/s",
+        0.45f,
+        kAmber,
+    };
+    const float firstTransferY = kContentTop + 486.0f;
+    const float secondTransferY = std::min(kContentTop + 586.0f, bottom - 82.0f);
+    transferSummary(ui, "details.transfer.report", x + 22.0f, firstTransferY,
+                    summaryWidth, report);
+    rect(ui, "details.transfer.sep", x + 22.0f, secondTransferY - 18.0f, summaryWidth,
+         1.0f, kBorder);
+    transferSummary(ui, "details.transfer.specs", x + 22.0f, secondTransferY,
+                    summaryWidth, specs);
+    if (height > 760.0f) {
+        text(ui, "details.show.all", x + 22.0f, bottom - 80.0f, 180.0f, 24.0f,
+             "查看全部传输", 14.0f, kTeal);
+    }
+}
+
+void drawRelayDesk(eui::Ui& ui, const eui::Screen& screen)
+{
+    const AppLayout layout = makeLayout(screen);
+    const float composerY = layout.height - kComposerHeight - 16.0f;
+    const float timelineY = kContentTop + kChatHeaderHeight;
+    const float timelineHeight = std::max(1.0f, composerY - timelineY - 12.0f);
+
+    rect(ui, "app.bg", 0.0f, 0.0f, layout.width, layout.height, kWindowBackground);
+    drawChrome(ui, layout.width);
+    drawNavigation(ui, layout.navWidth, layout.contentHeight);
+
+    if (layout.showPeers) {
+        drawPeerList(ui, layout.peerX, layout.peerWidth, layout.contentHeight);
+    }
+
+    drawChatHeader(ui, layout.chatX, layout.chatWidth);
+    drawChatTimeline(ui, layout.chatX, timelineY, layout.chatWidth, timelineHeight);
+    drawComposer(ui, layout.chatX, composerY, layout.chatWidth);
+
+    if (layout.showDetails) {
+        drawDetails(ui, layout.detailX, layout.detailWidth, layout.contentHeight);
+    }
+}
+
+} // namespace
+
+namespace app {
+
+const DslAppConfig& dslAppConfig()
+{
+    ensureAppStorage();
+    static const DslAppConfig config = DslAppConfig{}
+        .title("RelayDesk")
+        .pageId("relaydesk")
+        .clearColor(kWindowBackground)
+        .windowSize(1940, 1224)
+        .showDebugStatsInTitle(false)
+        .fps(90.0);
+    return config;
+}
+
+void compose(eui::Ui& ui, const eui::Screen& screen)
+{
+    ui.stack("root")
+        .size(screen.width, screen.height)
+        .clip()
+        .content([&] {
+            rect(ui, "root.bg", 0.0f, 0.0f, screen.width, screen.height,
+                 kWindowBackground);
+            drawRelayDesk(ui, screen);
+        })
+        .build();
+}
+
+} // namespace app
