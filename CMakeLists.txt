@@ -54,6 +54,12 @@ endif()
 
 eui_neo_configure_app(relaydesk)
 
+add_custom_command(TARGET relaydesk POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/assets
+        $<TARGET_FILE_DIR:relaydesk>/assets
+)
+
 enable_testing()
 
 add_executable(relaydesk_storage_tests

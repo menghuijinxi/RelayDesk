@@ -25,9 +25,9 @@ constexpr Color kAmber{0.890f, 0.560f, 0.000f, 1.0f};
 constexpr Color kAmberSoft{1.000f, 0.970f, 0.900f, 1.0f};
 constexpr Color kGreen{0.250f, 0.660f, 0.160f, 1.0f};
 constexpr Color kOffline{0.630f, 0.650f, 0.670f, 1.0f};
-constexpr float kChromeHeight = 52.0f;
-constexpr float kContentTop = 53.0f;
+constexpr float kContentTop = 0.0f;
 constexpr float kChatHeaderHeight = 76.0f;
+constexpr float kChatTimelineContentHeight = 650.0f;
 constexpr float kComposerHeight = 68.0f;
 
 struct PeerPreview {
@@ -197,6 +197,16 @@ components::ProgressStyle progressStyle(Color track, Color fill)
     return style;
 }
 
+components::ScrollStyle scrollStyle()
+{
+    components::ScrollStyle style;
+    style.track = {0.920f, 0.930f, 0.940f, 1.0f};
+    style.thumb = {0.650f, 0.690f, 0.720f, 1.0f};
+    style.thumbHover = {0.520f, 0.570f, 0.610f, 1.0f};
+    style.thumbPressed = kTeal;
+    return style;
+}
+
 void navItem(eui::Ui& ui,
              const std::string& id,
              float navWidth,
@@ -286,20 +296,6 @@ void transferCard(eui::Ui& ui,
          transfer.detail, 12.0f, kMutedText);
 }
 
-void drawChrome(eui::Ui& ui, float width)
-{
-    rect(ui, "chrome.bg", 0.0f, 0.0f, width, kChromeHeight, kPanelBackground, 0.0f);
-    rect(ui, "chrome.line", 0.0f, kChromeHeight, width, 1.0f, kBorder);
-    rect(ui, "chrome.logo", 22.0f, 18.0f, 20.0f, 20.0f, kTeal, 4.0f);
-    icon(ui, "chrome.logo.icon", 18.0f, 14.0f, 28.0f, 0xF075,
-         {1.0f, 1.0f, 1.0f, 1.0f});
-    text(ui, "chrome.title", 55.0f, 14.0f, 180.0f, 28.0f, "RelayDesk", 17.0f);
-    const float statusX = std::max(360.0f, width * 0.44f);
-    statusDot(ui, "chrome.connected.dot", statusX, 22.0f, kGreen, 11.0f);
-    text(ui, "chrome.connected.text", statusX + 24.0f, 14.0f, 260.0f, 28.0f,
-         "已连接到办公局域网", 15.0f, kText);
-}
-
 void drawNavigation(eui::Ui& ui, float navWidth, float height)
 {
     rect(ui, "nav.bg", 0.0f, kContentTop, navWidth, height, kPanelBackground);
@@ -370,15 +366,13 @@ void drawChatHeader(eui::Ui& ui, float x, float width)
          0xF142, kText);
 }
 
-void drawChatTimeline(eui::Ui& ui, float x, float y, float width, float height)
+void drawChatTimelineContent(eui::Ui& ui, float width)
 {
-    rect(ui, "chat.bg", x, y, width, height, {1.0f, 1.0f, 1.0f, 1.0f});
-
-    const float verticalScale = std::clamp(height / 690.0f, 0.68f, 1.0f);
-    const auto rowY = [y, verticalScale](float offset) {
-        return y + offset * verticalScale;
+    const float x = 0.0f;
+    const auto rowY = [](float offset) {
+        return offset;
     };
-    const float todayX = x + std::max(16.0f, (width - 66.0f) * 0.5f);
+    const float todayX = std::max(16.0f, (width - 66.0f) * 0.5f);
     const float incomingWidth = std::min(380.0f, std::max(250.0f, width * 0.48f));
     const float outgoingWidth = std::min(235.0f, std::max(180.0f, width * 0.34f));
     const float reportLeft = std::clamp(width * 0.14f, 52.0f, 116.0f);
@@ -423,6 +417,40 @@ void drawChatTimeline(eui::Ui& ui, float x, float y, float width, float height)
                   outgoingWidth, "是的，这是最新版本。", true);
     text(ui, "chat.msg.4.time", x + width - 82.0f, rowY(570.0f), 70.0f, 20.0f,
          "09:25", 12.0f, kMutedText);
+}
+
+void drawChatTimeline(eui::Ui& ui, float x, float y, float width, float height)
+{
+    rect(ui, "chat.bg", x, y, width, height, {1.0f, 1.0f, 1.0f, 1.0f});
+
+    float& scrollOffset = ui.state<float>("chat.timeline.scroll.offset");
+    ui.stack("chat.timeline.scroll.pos")
+        .position(x, y)
+        .size(width, height)
+        .content([&] {
+            components::scrollView(ui, "chat.timeline.scroll")
+                .size(width, height)
+                .offset(scrollOffset)
+                .gap(0.0f)
+                .step(56.0f)
+                .scrollbarWidth(7.0f)
+                .scrollbarGap(10.0f)
+                .style(scrollStyle())
+                .contentKey("relaydesk.chat.timeline.v1")
+                .onChange([&scrollOffset](float value) {
+                    scrollOffset = value;
+                })
+                .content([&](eui::Ui& contentUi, float contentWidth, float) {
+                    contentUi.stack("chat.timeline.content")
+                        .size(contentWidth, kChatTimelineContentHeight)
+                        .content([&] {
+                            drawChatTimelineContent(contentUi, contentWidth);
+                        })
+                        .build();
+                })
+                .build();
+        })
+        .build();
 }
 
 void drawComposer(eui::Ui& ui, float x, float y, float width)
@@ -568,7 +596,6 @@ void drawRelayDesk(eui::Ui& ui, const eui::Screen& screen)
     const float timelineHeight = std::max(1.0f, composerY - timelineY - 12.0f);
 
     rect(ui, "app.bg", 0.0f, 0.0f, layout.width, layout.height, kWindowBackground);
-    drawChrome(ui, layout.width);
     drawNavigation(ui, layout.navWidth, layout.contentHeight);
 
     if (layout.showPeers) {
@@ -595,6 +622,7 @@ const DslAppConfig& dslAppConfig()
         .title("RelayDesk")
         .pageId("relaydesk")
         .clearColor(kWindowBackground)
+        .iconPath("assets/icon.png")
         .windowSize(1940, 1224)
         .showDebugStatsInTitle(false)
         .fps(90.0);
