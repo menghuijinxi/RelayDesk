@@ -1,11 +1,13 @@
 #include "eui_neo.h"
 
+#include "main/app_runtime.h"
 #include "platform/computer_name.h"
 #include "storage/app_paths.h"
 #include "storage/local_identity.h"
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <exception>
 #include <string>
 #include <vector>
@@ -33,8 +35,8 @@ constexpr float kChatTimelineContentHeight = 650.0f;
 constexpr float kComposerHeight = 68.0f;
 
 struct PeerPreview {
-    const char* name;
-    const char* address;
+    std::string name;
+    std::string address;
     bool online;
     bool selected;
 };
@@ -290,6 +292,102 @@ void transferCard(eui::Ui& ui,
         .build();
     text(ui, id + ".detail", x + 72.0f, y + 84.0f, width - 118.0f, 20.0f,
          transfer.detail, 12.0f, kMutedText);
+}
+
+std::string makeLocalStatusText(const relaydesk::runtime::RelayDeskRuntime& runtime)
+{
+    std::string value = "Local";
+    const auto& localUser = runtime.GetLocalUser();
+    if (!localUser.GetHostName().empty()) {
+        value += " - ";
+        value += localUser.GetHostName();
+    }
+
+    if (runtime.GetDiscoveryStarted()) {
+        value += " - UDP ";
+        value += std::to_string(runtime.GetDiscoveryUdpPort());
+    }
+    return value;
+}
+
+void drawRuntimeLocalUserHeader(eui::Ui& ui,
+                                const relaydesk::runtime::RelayDeskRuntime& runtime,
+                                float x,
+                                float y,
+                                float width)
+{
+    const auto& localUser = runtime.GetLocalUser();
+    const std::string displayName = localUser.GetDisplayName().empty()
+        ? "RelayDesk"
+        : localUser.GetDisplayName();
+
+    rect(ui, "local.avatar.bg", x + 22.0f, y + 16.0f, 44.0f, 44.0f, kAvatarGreen,
+         22.0f);
+    text(ui, "local.avatar.text", x + 22.0f, y + 24.0f, 44.0f, 26.0f, "RD", 18.0f,
+         {1.0f, 1.0f, 1.0f, 1.0f}, eui::HorizontalAlign::Center);
+    text(ui, "local.name", x + 78.0f, y + 15.0f, width - 132.0f, 26.0f,
+         displayName, 17.0f);
+    text(ui, "local.address", x + 78.0f, y + 41.0f, width - 132.0f, 22.0f,
+         makeLocalStatusText(runtime), 13.0f, kMutedText);
+    icon(ui, "local.settings", x + width - 50.0f, y + 21.0f, 32.0f, 0xF013, kText);
+    rect(ui, "local.bottom.line", x, y + 76.0f, width, 1.0f, kBorder);
+}
+
+std::vector<PeerPreview> makePeerPreviews(
+    const std::vector<relaydesk::runtime::PeerListItem>& peers)
+{
+    std::vector<PeerPreview> result;
+    result.reserve(peers.size());
+    for (std::size_t index = 0; index < peers.size(); ++index) {
+        const auto& peer = peers[index];
+        result.push_back(PeerPreview{
+            peer.GetDisplayName().empty() ? peer.GetHostName() : peer.GetDisplayName(),
+            peer.GetAddress(),
+            peer.GetOnline(),
+            index == 0,
+        });
+    }
+    return result;
+}
+
+void drawDiscoveredPeerList(eui::Ui& ui,
+                            relaydesk::runtime::RelayDeskRuntime& runtime,
+                            float x,
+                            float width,
+                            float height)
+{
+    rect(ui, "peers.bg", x, kContentTop, width, height, kPanelBackground);
+    rect(ui, "peers.line", x + width, kContentTop, 1.0f, height, kBorder);
+    drawRuntimeLocalUserHeader(ui, runtime, x, kContentTop, width);
+    rect(ui, "peers.search.bg", x + 20.0f, kContentTop + 96.0f, width - 40.0f,
+         42.0f, {1.0f, 1.0f, 1.0f, 1.0f}, 7.0f, kBorder);
+    icon(ui, "peers.search.icon", x + 32.0f, kContentTop + 102.0f, 30.0f, 0xF002,
+         kText);
+    text(ui, "peers.search.placeholder", x + 74.0f, kContentTop + 105.0f,
+         width - 112.0f, 24.0f,
+         "Search devices", 14.0f, kSubtleText);
+
+    const std::vector<PeerPreview> peers = makePeerPreviews(runtime.GetPeers());
+    text(ui, "peers.online.title", x + 42.0f, kContentTop + 166.0f, 180.0f, 24.0f,
+         std::string("Discovered (") + std::to_string(peers.size()) + ")", 15.0f);
+
+    if (peers.empty()) {
+        text(ui, "peers.empty.title", x + 42.0f, kContentTop + 214.0f,
+             width - 84.0f, 24.0f, "No peers discovered", 14.0f, kMutedText);
+        const std::string detail = runtime.GetStartupErrorMessage().empty()
+            ? "Listening for RelayDesk peers"
+            : runtime.GetStartupErrorMessage();
+        text(ui, "peers.empty.detail", x + 42.0f, kContentTop + 242.0f,
+             width - 84.0f, 22.0f, detail, 12.0f, kSubtleText);
+        return;
+    }
+
+    const float rowGap = height < 740.0f ? 59.0f : 72.0f;
+    const float rowStart = kContentTop + 210.0f;
+    for (int index = 0; index < static_cast<int>(peers.size()); ++index) {
+        const float y = rowStart + static_cast<float>(index) * rowGap;
+        peerRow(ui, peers[static_cast<std::size_t>(index)], index, x, width, y);
+    }
 }
 
 void drawPeerList(eui::Ui& ui, float x, float width, float height)
@@ -584,8 +682,12 @@ void drawDetails(eui::Ui& ui, float x, float width, float height)
     }
 }
 
-void drawRelayDesk(eui::Ui& ui, const eui::Screen& screen)
+void drawRelayDesk(eui::Ui& ui,
+                   const eui::Screen& screen,
+                   relaydesk::runtime::RelayDeskRuntime& runtime)
 {
+    runtime.refreshPeersIfNeeded();
+
     const AppLayout layout = makeLayout(screen);
     const float composerY = layout.height - kComposerHeight - 16.0f;
     const float timelineY = kContentTop + kChatHeaderHeight;
@@ -594,7 +696,11 @@ void drawRelayDesk(eui::Ui& ui, const eui::Screen& screen)
     rect(ui, "app.bg", 0.0f, 0.0f, layout.width, layout.height, kWindowBackground);
 
     if (layout.showPeers) {
-        drawPeerList(ui, layout.peerX, layout.peerWidth, layout.contentHeight);
+        drawDiscoveredPeerList(ui,
+                               runtime,
+                               layout.peerX,
+                               layout.peerWidth,
+                               layout.contentHeight);
     }
 
     drawChatHeader(ui, layout.chatX, layout.chatWidth);
@@ -626,13 +732,15 @@ const DslAppConfig& dslAppConfig()
 
 void compose(eui::Ui& ui, const eui::Screen& screen)
 {
+    auto& runtime = relaydesk::runtime::getRelayDeskRuntime();
+
     ui.stack("root")
         .size(screen.width, screen.height)
         .clip()
         .content([&] {
             rect(ui, "root.bg", 0.0f, 0.0f, screen.width, screen.height,
                  kWindowBackground);
-            drawRelayDesk(ui, screen);
+            drawRelayDesk(ui, screen, runtime);
         })
         .build();
 }

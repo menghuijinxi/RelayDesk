@@ -348,7 +348,7 @@ JSONL 读写策略：
 
 建议端口：
 
-- UDP discovery：39170
+- UDP discovery：25581
 - TCP peer session：39171
 
 发现包示例：

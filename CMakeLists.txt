@@ -86,6 +86,7 @@ if(RELAYDESK_HAS_EUI_NEO)
     add_executable(relaydesk
         external/EUI-NEO/core/app/glfw_app_main.cpp
         src/main/app.cpp
+        src/main/app_runtime.cpp
         src/core/time.cpp
         src/core/uuid.cpp
         src/platform/computer_name_win.cpp
@@ -123,7 +124,10 @@ if(RELAYDESK_HAS_EUI_NEO)
     if(RELAYDESK_HAS_BOOST_ASIO)
         target_sources(relaydesk PRIVATE
             src/net/boost_asio_udp_discovery_transport.cpp
+            src/net/discovery_service.cpp
+            src/net/discovery_worker.cpp
         )
+        target_compile_definitions(relaydesk PRIVATE RELAYDESK_HAS_BOOST_ASIO)
         target_link_libraries(relaydesk PRIVATE relaydesk_boost_asio)
     endif()
 
@@ -344,6 +348,77 @@ if(RELAYDESK_HAS_BOOST_ASIO)
 
     add_test(NAME relaydesk_boost_asio_udp_discovery_transport_tests
              COMMAND relaydesk_boost_asio_udp_discovery_transport_tests)
+
+    add_executable(relaydesk_discovery_service_tests
+        tests/net/discovery_service_tests.cpp
+        src/core/time.cpp
+        src/core/uuid.cpp
+        src/net/boost_asio_udp_discovery_transport.cpp
+        src/net/discovery_local_announcement.cpp
+        src/net/discovery_message.cpp
+        src/net/discovery_peer_profile.cpp
+        src/net/discovery_processor.cpp
+        src/net/discovery_service.cpp
+        src/storage/app_paths.cpp
+        src/storage/local_identity.cpp
+        src/storage/peer_profile.cpp
+    )
+
+    target_include_directories(relaydesk_discovery_service_tests PRIVATE src)
+    target_compile_features(relaydesk_discovery_service_tests PRIVATE cxx_std_23)
+    target_link_libraries(relaydesk_discovery_service_tests
+        PRIVATE relaydesk_boost_asio nlohmann_json::nlohmann_json)
+
+    set(RELAYDESK_DISCOVERY_SERVICE_TEST_PATH
+        "${CMAKE_SOURCE_DIR}/tmp/tests/discovery_service")
+
+    target_compile_definitions(relaydesk_discovery_service_tests PRIVATE
+        "RELAYDESK_DISCOVERY_SERVICE_TEST_WORK_DIR=\"${RELAYDESK_DISCOVERY_SERVICE_TEST_PATH}\""
+    )
+
+    if(MSVC)
+        target_compile_options(relaydesk_discovery_service_tests
+            PRIVATE /W4 /permissive- /utf-8)
+    endif()
+
+    add_test(NAME relaydesk_discovery_service_tests
+             COMMAND relaydesk_discovery_service_tests)
+
+    add_executable(relaydesk_discovery_worker_tests
+        tests/net/discovery_worker_tests.cpp
+        src/core/time.cpp
+        src/core/uuid.cpp
+        src/net/boost_asio_udp_discovery_transport.cpp
+        src/net/discovery_local_announcement.cpp
+        src/net/discovery_message.cpp
+        src/net/discovery_peer_profile.cpp
+        src/net/discovery_processor.cpp
+        src/net/discovery_service.cpp
+        src/net/discovery_worker.cpp
+        src/storage/app_paths.cpp
+        src/storage/local_identity.cpp
+        src/storage/peer_profile.cpp
+    )
+
+    target_include_directories(relaydesk_discovery_worker_tests PRIVATE src)
+    target_compile_features(relaydesk_discovery_worker_tests PRIVATE cxx_std_23)
+    target_link_libraries(relaydesk_discovery_worker_tests
+        PRIVATE relaydesk_boost_asio nlohmann_json::nlohmann_json)
+
+    set(RELAYDESK_DISCOVERY_WORKER_TEST_PATH
+        "${CMAKE_SOURCE_DIR}/tmp/tests/discovery_worker")
+
+    target_compile_definitions(relaydesk_discovery_worker_tests PRIVATE
+        "RELAYDESK_DISCOVERY_WORKER_TEST_WORK_DIR=\"${RELAYDESK_DISCOVERY_WORKER_TEST_PATH}\""
+    )
+
+    if(MSVC)
+        target_compile_options(relaydesk_discovery_worker_tests
+            PRIVATE /W4 /permissive- /utf-8)
+    endif()
+
+    add_test(NAME relaydesk_discovery_worker_tests
+             COMMAND relaydesk_discovery_worker_tests)
 endif()
 
 add_executable(relaydesk_peer_profile_tests
