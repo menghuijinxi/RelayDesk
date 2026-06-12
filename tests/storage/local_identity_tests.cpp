@@ -161,6 +161,26 @@ int roundTripsEscapedDisplayName()
                   "Escaped display name did not round-trip.");
 }
 
+int loadsUnicodeEscapedIdentityFile()
+{
+    const auto appPaths = makeAppPaths("unicode-escape");
+    writeTextFile(
+        appPaths.GetIdentityFilePath(),
+        "{\n"
+        "  \"schema_version\": 1,\n"
+        "  \"device_id\": \"device-id\",\n"
+        "  \"install_id\": \"install-id\",\n"
+        "  \"created_at\": \"2026-06-12T00:00:00Z\",\n"
+        "  \"host_name\": \"HOST-A\",\n"
+        "  \"display_name\": \"\\u4e2d\\u6587\"\n"
+        "}\n");
+
+    const auto loaded = relaydesk::storage::loadLocalIdentity(appPaths);
+    const std::string expectedDisplayName = "\xE4\xB8\xAD\xE6\x96\x87";
+    return expect(loaded.GetDisplayName() == expectedDisplayName,
+                  "Unicode escaped display name was not decoded.");
+}
+
 int rejectsInvalidIdentityFile()
 {
     const auto appPaths = makeAppPaths("invalid");
@@ -194,6 +214,10 @@ int main()
     }
 
     if (const int result = roundTripsEscapedDisplayName(); result != 0) {
+        return result;
+    }
+
+    if (const int result = loadsUnicodeEscapedIdentityFile(); result != 0) {
         return result;
     }
 

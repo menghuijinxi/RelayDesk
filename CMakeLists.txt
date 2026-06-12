@@ -102,6 +102,7 @@ add_executable(relaydesk_identity_tests
 
 target_include_directories(relaydesk_identity_tests PRIVATE src)
 target_compile_features(relaydesk_identity_tests PRIVATE cxx_std_23)
+target_link_libraries(relaydesk_identity_tests PRIVATE nlohmann_json::nlohmann_json)
 
 target_compile_definitions(relaydesk_identity_tests PRIVATE
     RELAYDESK_TEST_WORK_DIR="${CMAKE_SOURCE_DIR}/tmp/tests/local_identity"

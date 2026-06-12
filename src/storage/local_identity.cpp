@@ -1,9 +1,7 @@
 #include "storage/local_identity.h"
 
 #include <array>
-#include <charconv>
 #include <chrono>
-#include <cctype>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -11,8 +9,9 @@
 #include <random>
 #include <sstream>
 #include <stdexcept>
-#include <system_error>
-#include <string_view>
+#include <utility>
+
+#include <nlohmann/json.hpp>
 
 namespace relaydesk::storage {
 namespace {
@@ -62,242 +61,39 @@ std::string createUtcTimestamp()
     return output.str();
 }
 
-std::string escapeJsonString(const std::string& value)
+int readSchemaVersion(const nlohmann::json& value)
 {
-    std::ostringstream output;
-    for (const unsigned char byte : value) {
-        switch (byte) {
-        case '"':
-            output << "\\\"";
-            break;
-        case '\\':
-            output << "\\\\";
-            break;
-        case '\b':
-            output << "\\b";
-            break;
-        case '\f':
-            output << "\\f";
-            break;
-        case '\n':
-            output << "\\n";
-            break;
-        case '\r':
-            output << "\\r";
-            break;
-        case '\t':
-            output << "\\t";
-            break;
-        default:
-            if (byte < 0x20u) {
-                output << "\\u" << std::hex << std::setw(4) << std::setfill('0')
-                       << static_cast<int>(byte) << std::dec;
-            } else {
-                output << static_cast<char>(byte);
-            }
-            break;
-        }
+    if (!value.is_object()
+        || !value.contains("schema_version")
+        || !value["schema_version"].is_number_integer()) {
+        throw std::runtime_error("Local identity schema version is invalid.");
     }
-    return output.str();
+
+    return value["schema_version"].get<int>();
 }
 
-int hexDigitValue(char digit)
+std::string readRequiredString(const nlohmann::json& value, const char* fieldName)
 {
-    if (digit >= '0' && digit <= '9') {
-        return digit - '0';
-    }
-    if (digit >= 'a' && digit <= 'f') {
-        return digit - 'a' + 10;
-    }
-    if (digit >= 'A' && digit <= 'F') {
-        return digit - 'A' + 10;
+    if (!value.contains(fieldName) || !value[fieldName].is_string()
+        || value[fieldName].get<std::string>().empty()) {
+        throw std::runtime_error("Local identity file is missing a required field.");
     }
 
-    throw std::runtime_error("Local identity string escape is unsupported.");
+    return value[fieldName].get<std::string>();
 }
 
-void appendUtf8CodePoint(std::string& value, unsigned int codePoint)
-{
-    if (codePoint <= 0x7Fu) {
-        value.push_back(static_cast<char>(codePoint));
-        return;
-    }
-
-    if (codePoint <= 0x7FFu) {
-        value.push_back(static_cast<char>(0xC0u | ((codePoint >> 6) & 0x1Fu)));
-        value.push_back(static_cast<char>(0x80u | (codePoint & 0x3Fu)));
-        return;
-    }
-
-    if (codePoint <= 0xFFFFu) {
-        value.push_back(static_cast<char>(0xE0u | ((codePoint >> 12) & 0x0Fu)));
-        value.push_back(static_cast<char>(0x80u | ((codePoint >> 6) & 0x3Fu)));
-        value.push_back(static_cast<char>(0x80u | (codePoint & 0x3Fu)));
-        return;
-    }
-
-    if (codePoint <= 0x10FFFFu) {
-        value.push_back(static_cast<char>(0xF0u | ((codePoint >> 18) & 0x07u)));
-        value.push_back(static_cast<char>(0x80u | ((codePoint >> 12) & 0x3Fu)));
-        value.push_back(static_cast<char>(0x80u | ((codePoint >> 6) & 0x3Fu)));
-        value.push_back(static_cast<char>(0x80u | (codePoint & 0x3Fu)));
-        return;
-    }
-
-    throw std::runtime_error("Local identity string escape is unsupported.");
-}
-
-std::string readTextFile(const std::filesystem::path& filePath)
+nlohmann::json readIdentityJson(const std::filesystem::path& filePath)
 {
     std::ifstream input(filePath, std::ios::binary);
     if (!input) {
         throw std::runtime_error("Failed to open local identity file for reading.");
     }
 
-    std::ostringstream content;
-    content << input.rdbuf();
-    return content.str();
-}
-
-void skipWhitespace(std::string_view content, std::size_t& offset)
-{
-    while (offset < content.size()
-           && std::isspace(static_cast<unsigned char>(content[offset])) != 0) {
-        ++offset;
+    try {
+        return nlohmann::json::parse(input);
+    } catch (const nlohmann::json::exception&) {
+        throw std::runtime_error("Local identity file contains invalid JSON.");
     }
-}
-
-std::size_t findValueStart(std::string_view content, std::string_view key)
-{
-    const std::string quotedKey = "\"" + std::string(key) + "\"";
-    const std::size_t keyOffset = content.find(quotedKey);
-    if (keyOffset == std::string_view::npos) {
-        throw std::runtime_error("Local identity file is missing a required field.");
-    }
-
-    std::size_t colonOffset = content.find(':', keyOffset + quotedKey.size());
-    if (colonOffset == std::string_view::npos) {
-        throw std::runtime_error("Local identity field is missing a value separator.");
-    }
-
-    ++colonOffset;
-    skipWhitespace(content, colonOffset);
-    return colonOffset;
-}
-
-int readJsonInt(std::string_view content, std::string_view key)
-{
-    const std::size_t valueOffset = findValueStart(content, key);
-    std::size_t valueEnd = valueOffset;
-    while (valueEnd < content.size()
-           && std::isdigit(static_cast<unsigned char>(content[valueEnd])) != 0) {
-        ++valueEnd;
-    }
-
-    int value = 0;
-    const auto result = std::from_chars(
-        content.data() + valueOffset,
-        content.data() + valueEnd,
-        value);
-    if (result.ec != std::errc{} || result.ptr != content.data() + valueEnd) {
-        throw std::runtime_error("Local identity integer field is invalid.");
-    }
-    return value;
-}
-
-std::string readJsonString(std::string_view content, std::string_view key)
-{
-    std::size_t offset = findValueStart(content, key);
-    if (offset >= content.size() || content[offset] != '"') {
-        throw std::runtime_error("Local identity string field is invalid.");
-    }
-
-    ++offset;
-    std::string value;
-    while (offset < content.size()) {
-        const char current = content[offset++];
-        if (current == '"') {
-            return value;
-        }
-        if (current != '\\') {
-            value.push_back(current);
-            continue;
-        }
-
-        if (offset >= content.size()) {
-            throw std::runtime_error("Local identity string escape is incomplete.");
-        }
-
-        const char escaped = content[offset++];
-        switch (escaped) {
-        case '"':
-        case '\\':
-        case '/':
-            value.push_back(escaped);
-            break;
-        case 'b':
-            value.push_back('\b');
-            break;
-        case 'f':
-            value.push_back('\f');
-            break;
-        case 'n':
-            value.push_back('\n');
-            break;
-        case 'r':
-            value.push_back('\r');
-            break;
-        case 't':
-            value.push_back('\t');
-            break;
-        case 'u': {
-            if (offset + 4 > content.size()) {
-                throw std::runtime_error("Local identity string escape is incomplete.");
-            }
-
-            unsigned int codePoint = 0;
-            for (int digitIndex = 0; digitIndex < 4; ++digitIndex) {
-                codePoint = static_cast<unsigned int>(codePoint << 4)
-                    | static_cast<unsigned int>(hexDigitValue(content[offset++]));
-            }
-
-            if (codePoint >= 0xD800u && codePoint <= 0xDBFFu) {
-                if (offset + 6 > content.size() || content[offset] != '\\'
-                    || content[offset + 1] != 'u') {
-                    throw std::runtime_error("Local identity string escape is unsupported.");
-                }
-
-                offset += 2;
-                unsigned int lowSurrogate = 0;
-                for (int digitIndex = 0; digitIndex < 4; ++digitIndex) {
-                    lowSurrogate = static_cast<unsigned int>(lowSurrogate << 4)
-                        | static_cast<unsigned int>(hexDigitValue(content[offset++]));
-                }
-
-                if (lowSurrogate < 0xDC00u || lowSurrogate > 0xDFFFu) {
-                    throw std::runtime_error("Local identity string escape is unsupported.");
-                }
-
-                const unsigned int combinedCodePoint = 0x10000u
-                    + ((codePoint - 0xD800u) << 10)
-                    + (lowSurrogate - 0xDC00u);
-                appendUtf8CodePoint(value, combinedCodePoint);
-                break;
-            }
-
-            if (codePoint >= 0xDC00u && codePoint <= 0xDFFFu) {
-                throw std::runtime_error("Local identity string escape is unsupported.");
-            }
-
-            appendUtf8CodePoint(value, codePoint);
-            break;
-        }
-        default:
-            throw std::runtime_error("Local identity string escape is unsupported.");
-        }
-    }
-
-    throw std::runtime_error("Local identity string field is not terminated.");
 }
 
 void validateIdentity(const LocalIdentity& identity)
@@ -339,18 +135,18 @@ LocalIdentity::LocalIdentity(std::string deviceId,
 
 LocalIdentity loadLocalIdentity(const AppPaths& appPaths)
 {
-    const std::string content = readTextFile(appPaths.GetIdentityFilePath());
-    const int schemaVersion = readJsonInt(content, "schema_version");
+    const nlohmann::json value = readIdentityJson(appPaths.GetIdentityFilePath());
+    const int schemaVersion = readSchemaVersion(value);
     if (schemaVersion != kSchemaVersion) {
         throw std::runtime_error("Local identity schema version is unsupported.");
     }
 
     LocalIdentity identity(
-        readJsonString(content, "device_id"),
-        readJsonString(content, "install_id"),
-        readJsonString(content, "created_at"),
-        readJsonString(content, "host_name"),
-        readJsonString(content, "display_name"));
+        readRequiredString(value, "device_id"),
+        readRequiredString(value, "install_id"),
+        readRequiredString(value, "created_at"),
+        readRequiredString(value, "host_name"),
+        readRequiredString(value, "display_name"));
     validateIdentity(identity);
     return identity;
 }
@@ -366,14 +162,15 @@ void saveLocalIdentity(const AppPaths& appPaths, const LocalIdentity& identity)
         throw std::runtime_error("Failed to open local identity file for writing.");
     }
 
-    output << "{\n"
-           << "  \"schema_version\": " << kSchemaVersion << ",\n"
-           << "  \"device_id\": \"" << escapeJsonString(identity.GetDeviceId()) << "\",\n"
-           << "  \"install_id\": \"" << escapeJsonString(identity.GetInstallId()) << "\",\n"
-           << "  \"created_at\": \"" << escapeJsonString(identity.GetCreatedAt()) << "\",\n"
-           << "  \"host_name\": \"" << escapeJsonString(identity.GetHostName()) << "\",\n"
-           << "  \"display_name\": \"" << escapeJsonString(identity.GetDisplayName()) << "\"\n"
-           << "}\n";
+    const nlohmann::json value{
+        {"schema_version", kSchemaVersion},
+        {"device_id", identity.GetDeviceId()},
+        {"install_id", identity.GetInstallId()},
+        {"created_at", identity.GetCreatedAt()},
+        {"host_name", identity.GetHostName()},
+        {"display_name", identity.GetDisplayName()},
+    };
+    output << value.dump(4) << '\n';
 
     if (!output) {
         throw std::runtime_error("Failed to write local identity file.");
