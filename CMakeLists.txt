@@ -20,11 +20,54 @@ set(EUI_BUILD_TEST_FIXTURES OFF CACHE BOOL "Build EUI-NEO test fixtures" FORCE)
 set(EUI_DEPS_MODE bundled CACHE STRING "Use vendored EUI-NEO dependencies" FORCE)
 set(EUI_ENABLE_MARKDOWN OFF CACHE BOOL "RelayDesk does not need markdown yet" FORCE)
 set(JSON_BuildTests OFF CACHE INTERNAL "RelayDesk does not build nlohmann/json tests")
+option(RELAYDESK_ENABLE_BOOST_ASIO "Enable Boost.Asio network backend" ON)
 
 if(EXISTS "${CMAKE_SOURCE_DIR}/external/nlohmann-json/CMakeLists.txt")
     add_subdirectory(external/nlohmann-json EXCLUDE_FROM_ALL)
 else()
     message(FATAL_ERROR "external/nlohmann-json is missing.")
+endif()
+
+set(RELAYDESK_HAS_BOOST_ASIO OFF)
+if(RELAYDESK_ENABLE_BOOST_ASIO)
+    find_package(Boost CONFIG QUIET COMPONENTS asio)
+    find_path(RELAYDESK_BOOST_ASIO_INCLUDE_DIR
+        NAMES boost/asio.hpp
+        HINTS ENV BOOST_INCLUDEDIR ENV BOOST_ROOT
+        PATH_SUFFIXES include
+    )
+
+    if(Boost_FOUND OR RELAYDESK_BOOST_ASIO_INCLUDE_DIR)
+        add_library(relaydesk_boost_asio INTERFACE)
+        if(Boost_FOUND AND TARGET Boost::asio)
+            target_link_libraries(relaydesk_boost_asio INTERFACE Boost::asio)
+        elseif(Boost_FOUND AND TARGET Boost::headers)
+            target_link_libraries(relaydesk_boost_asio INTERFACE Boost::headers)
+        elseif(Boost_FOUND AND TARGET Boost::boost)
+            target_link_libraries(relaydesk_boost_asio INTERFACE Boost::boost)
+        else()
+            target_include_directories(relaydesk_boost_asio
+                INTERFACE ${RELAYDESK_BOOST_ASIO_INCLUDE_DIR})
+        endif()
+
+        target_compile_definitions(relaydesk_boost_asio INTERFACE
+            BOOST_ALL_NO_LIB
+            BOOST_ERROR_CODE_HEADER_ONLY
+        )
+
+        if(WIN32)
+            target_compile_definitions(relaydesk_boost_asio INTERFACE
+                NOMINMAX
+                WIN32_LEAN_AND_MEAN
+                _WIN32_WINNT=0x0A00
+            )
+            target_link_libraries(relaydesk_boost_asio INTERFACE ws2_32 mswsock)
+        endif()
+
+        set(RELAYDESK_HAS_BOOST_ASIO ON)
+    else()
+        message(WARNING "Boost was not found; Boost.Asio network backend is skipped.")
+    endif()
 endif()
 
 set(CMAKE_CXX_STANDARD 23)
@@ -75,6 +118,13 @@ if(RELAYDESK_HAS_EUI_NEO)
 
     if(MSVC)
         target_compile_options(relaydesk PRIVATE /W4 /permissive- /utf-8)
+    endif()
+
+    if(RELAYDESK_HAS_BOOST_ASIO)
+        target_sources(relaydesk PRIVATE
+            src/net/boost_asio_udp_discovery_transport.cpp
+        )
+        target_link_libraries(relaydesk PRIVATE relaydesk_boost_asio)
     endif()
 
     eui_neo_configure_app(relaydesk)
@@ -273,6 +323,28 @@ endif()
 
 add_test(NAME relaydesk_discovery_processor_tests
          COMMAND relaydesk_discovery_processor_tests)
+
+if(RELAYDESK_HAS_BOOST_ASIO)
+    add_executable(relaydesk_boost_asio_udp_discovery_transport_tests
+        tests/net/boost_asio_udp_discovery_transport_tests.cpp
+        src/net/boost_asio_udp_discovery_transport.cpp
+    )
+
+    target_include_directories(relaydesk_boost_asio_udp_discovery_transport_tests
+        PRIVATE src)
+    target_compile_features(relaydesk_boost_asio_udp_discovery_transport_tests
+        PRIVATE cxx_std_23)
+    target_link_libraries(relaydesk_boost_asio_udp_discovery_transport_tests
+        PRIVATE relaydesk_boost_asio)
+
+    if(MSVC)
+        target_compile_options(relaydesk_boost_asio_udp_discovery_transport_tests
+            PRIVATE /W4 /permissive- /utf-8)
+    endif()
+
+    add_test(NAME relaydesk_boost_asio_udp_discovery_transport_tests
+             COMMAND relaydesk_boost_asio_udp_discovery_transport_tests)
+endif()
 
 add_executable(relaydesk_peer_profile_tests
     tests/storage/peer_profile_tests.cpp

@@ -7,8 +7,18 @@
   },
   "configurePresets": [
     {
+      "name": "windows-vcpkg-base",
+      "hidden": true,
+      "toolchainFile": "${sourceDir}/../out/vcpkg/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static",
+        "VCPKG_HOST_TRIPLET": "x64-windows"
+      }
+    },
+    {
       "name": "windows-msvc-debug",
       "displayName": "Windows MSVC Debug",
+      "inherits": "windows-vcpkg-base",
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/out/build/windows-msvc-debug",
@@ -20,6 +30,7 @@
     {
       "name": "windows-msvc-release",
       "displayName": "Windows MSVC Release",
+      "inherits": "windows-vcpkg-base",
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/out/build/windows-msvc-release",
@@ -31,6 +42,7 @@
     {
       "name": "windows-msvc-nmake-debug",
       "displayName": "Windows MSVC NMake Debug",
+      "inherits": "windows-vcpkg-base",
       "generator": "NMake Makefiles",
       "binaryDir": "${sourceDir}/out/build/windows-msvc-nmake-debug",
       "cacheVariables": {

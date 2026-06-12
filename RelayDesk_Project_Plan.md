@@ -35,7 +35,7 @@ RelayDesk 是一个面向内网环境的点对点桌面聊天工具。目标是�
 - 窗口后端：优先使用 EUI-NEO 默认 GLFW 后端。
 - 渲染后端：优先 Vulkan，OpenGL 仅作为兼容 fallback 或诊断后端。
 - JSON：建议使用 `nlohmann/json`，便于 JSONL 读写和协议头序列化。
-- 网络：建议使用 standalone Asio，避免引入完整 Boost。
+- 网络：使用 Boost.Asio，后续通过 CMake `find_package(Boost)` 接入。
 - 哈希：SHA-256，用于文件完整性校验、附件去重和内容校验。
 - UUID：UUIDv7 或随机 UUIDv4，用于消息 ID、传输任务 ID。
 
@@ -513,7 +513,7 @@ body       body_len bytes
 线程划分：
 
 - UI 主线程：EUI-NEO 渲染和用户交互。
-- 网络线程：Asio `io_context`，负责 discovery、TCP session、文件传输。
+- 网络线程：Boost.Asio `io_context`，负责 discovery、TCP session、文件传输。
 - 存储线程：顺序写 JSONL，避免 UI 卡顿。
 - 哈希线程池：大文件 SHA-256 和文件夹 manifest 生成。
 
