@@ -1,4 +1,4 @@
-#include "storage/app_paths.h"
+﻿#include "storage/app_paths.h"
 
 #include <array>
 #include <stdexcept>

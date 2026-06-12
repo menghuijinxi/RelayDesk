@@ -7,6 +7,8 @@
 #include <stdexcept>
 #include <string>
 
+#include <nlohmann/json.hpp>
+
 namespace {
 
 int fail(const char* message)
@@ -35,14 +37,16 @@ relaydesk::storage::AppPaths makeAppPaths(const std::filesystem::path& caseName)
     return relaydesk::storage::AppPaths(workDirectory / "relaydesk.exe");
 }
 
-void writeTextFile(const std::filesystem::path& filePath, const std::string& content)
+void writeJsonFile(const std::filesystem::path& filePath,
+                   const nlohmann::json& content,
+                   bool escapeNonAscii = false)
 {
     std::filesystem::create_directories(filePath.parent_path());
     std::ofstream output(filePath, std::ios::binary | std::ios::trunc);
     if (!output) {
         throw std::runtime_error("Failed to write test file.");
     }
-    output << content;
+    output << content.dump(4, ' ', escapeNonAscii) << '\n';
 }
 
 int createsIdentityWhenFileIsMissing()
@@ -164,19 +168,20 @@ int roundTripsEscapedDisplayName()
 int loadsUnicodeEscapedIdentityFile()
 {
     const auto appPaths = makeAppPaths("unicode-escape");
-    writeTextFile(
+    writeJsonFile(
         appPaths.GetIdentityFilePath(),
-        "{\n"
-        "  \"schema_version\": 1,\n"
-        "  \"device_id\": \"device-id\",\n"
-        "  \"install_id\": \"install-id\",\n"
-        "  \"created_at\": \"2026-06-12T00:00:00Z\",\n"
-        "  \"host_name\": \"HOST-A\",\n"
-        "  \"display_name\": \"\\u4e2d\\u6587\"\n"
-        "}\n");
+        nlohmann::json{
+            {"schema_version", 1},
+            {"device_id", "device-id"},
+            {"install_id", "install-id"},
+            {"created_at", "2026-06-12T00:00:00Z"},
+            {"host_name", "HOST-A"},
+            {"display_name", "中文"},
+        },
+        true);
 
     const auto loaded = relaydesk::storage::loadLocalIdentity(appPaths);
-    const std::string expectedDisplayName = "\xE4\xB8\xAD\xE6\x96\x87";
+    const std::string expectedDisplayName = "中文";
     return expect(loaded.GetDisplayName() == expectedDisplayName,
                   "Unicode escaped display name was not decoded.");
 }
@@ -184,7 +189,9 @@ int loadsUnicodeEscapedIdentityFile()
 int rejectsInvalidIdentityFile()
 {
     const auto appPaths = makeAppPaths("invalid");
-    writeTextFile(appPaths.GetIdentityFilePath(), "{\"schema_version\": 1}\n");
+    writeJsonFile(appPaths.GetIdentityFilePath(), nlohmann::json{
+        {"schema_version", 1},
+    });
 
     try {
         static_cast<void>(relaydesk::storage::loadLocalIdentity(appPaths));

@@ -1,65 +1,19 @@
 #include "storage/local_identity.h"
 
-#include <array>
-#include <chrono>
-#include <ctime>
 #include <filesystem>
 #include <fstream>
-#include <iomanip>
-#include <random>
-#include <sstream>
 #include <stdexcept>
 #include <utility>
 
 #include <nlohmann/json.hpp>
 
+#include "core/time.h"
+#include "core/uuid.h"
+
 namespace relaydesk::storage {
 namespace {
 
 constexpr int kSchemaVersion = 1;
-
-std::string createUuidV4()
-{
-    std::array<unsigned char, 16> bytes{};
-    std::random_device randomDevice;
-    for (auto& byte : bytes) {
-        byte = static_cast<unsigned char>(randomDevice());
-    }
-
-    bytes[6] = static_cast<unsigned char>((bytes[6] & 0x0Fu) | 0x40u);
-    bytes[8] = static_cast<unsigned char>((bytes[8] & 0x3Fu) | 0x80u);
-
-    std::ostringstream output;
-    output << std::hex << std::setfill('0');
-    for (std::size_t index = 0; index < bytes.size(); ++index) {
-        if (index == 4 || index == 6 || index == 8 || index == 10) {
-            output << '-';
-        }
-        output << std::setw(2) << static_cast<int>(bytes[index]);
-    }
-    return output.str();
-}
-
-std::string createUtcTimestamp()
-{
-    const auto now = std::chrono::system_clock::now();
-    const std::time_t nowTime = std::chrono::system_clock::to_time_t(now);
-    std::tm utcTime{};
-
-#if defined(_WIN32)
-    if (gmtime_s(&utcTime, &nowTime) != 0) {
-        throw std::runtime_error("Failed to convert identity timestamp to UTC.");
-    }
-#else
-    if (gmtime_r(&nowTime, &utcTime) == nullptr) {
-        throw std::runtime_error("Failed to convert identity timestamp to UTC.");
-    }
-#endif
-
-    std::ostringstream output;
-    output << std::put_time(&utcTime, "%Y-%m-%dT%H:%M:%SZ");
-    return output.str();
-}
 
 int readSchemaVersion(const nlohmann::json& value)
 {
@@ -114,7 +68,10 @@ LocalIdentity createLocalIdentity(const std::string& hostName)
         throw std::invalid_argument("Local identity host name cannot be empty.");
     }
 
-    return LocalIdentity(createUuidV4(), createUuidV4(), createUtcTimestamp(), hostName,
+    return LocalIdentity(relaydesk::core::createUuidV4(),
+                         relaydesk::core::createUuidV4(),
+                         relaydesk::core::currentUtcTimestamp(),
+                         hostName,
                          hostName);
 }
 
