@@ -1,14 +1,24 @@
 #include "net/boost_asio_udp_discovery_transport.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
+#include <exception>
+#include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include <boost/asio.hpp>
 #include <boost/system/error_code.hpp>
+
+#if defined(_WIN32)
+#include <iphlpapi.h>
+#include <ws2tcpip.h>
+#endif
 
 namespace relaydesk::net {
 namespace {
@@ -18,6 +28,7 @@ using boost::asio::ip::udp;
 constexpr std::size_t kMaxUdpPayloadSize = 65507;
 constexpr std::uint16_t kMinUdpPort = 1;
 constexpr auto kReceivePollInterval = std::chrono::milliseconds(5);
+constexpr const char* kLimitedBroadcastAddress = "255.255.255.255";
 
 void throwNetworkError(const char* action, const boost::system::error_code& error)
 {
@@ -37,6 +48,116 @@ udp::endpoint makeUdpEndpoint(const std::string& address, std::uint16_t port)
     }
 
     return udp::endpoint(parsedAddress, port);
+}
+
+#if defined(_WIN32)
+std::optional<std::string> makeDirectedBroadcastAddress(
+    const IP_ADAPTER_UNICAST_ADDRESS& unicastAddress)
+{
+    if (unicastAddress.Address.lpSockaddr == nullptr
+        || unicastAddress.Address.lpSockaddr->sa_family != AF_INET
+        || unicastAddress.OnLinkPrefixLength >= 32) {
+        return std::nullopt;
+    }
+
+    const auto* socketAddress =
+        reinterpret_cast<const SOCKADDR_IN*>(unicastAddress.Address.lpSockaddr);
+    const std::uint32_t localAddress =
+        ntohl(socketAddress->sin_addr.S_un.S_addr);
+    const std::uint32_t networkMask =
+        unicastAddress.OnLinkPrefixLength == 0
+            ? 0
+            : 0xFFFFFFFFu << (32 - unicastAddress.OnLinkPrefixLength);
+    IN_ADDR broadcastAddress{};
+    broadcastAddress.S_un.S_addr = htonl(localAddress | ~networkMask);
+
+    char addressText[INET_ADDRSTRLEN]{};
+    if (InetNtopA(AF_INET,
+                  &broadcastAddress,
+                  addressText,
+                  static_cast<DWORD>(std::size(addressText))) == nullptr) {
+        return std::nullopt;
+    }
+    return std::string(addressText);
+}
+
+std::vector<std::string> findDirectedBroadcastAddresses()
+{
+    ULONG bufferSize = 15 * 1024;
+    std::vector<unsigned char> buffer(bufferSize);
+    constexpr ULONG kAdapterFlags =
+        GAA_FLAG_SKIP_ANYCAST
+        | GAA_FLAG_SKIP_MULTICAST
+        | GAA_FLAG_SKIP_DNS_SERVER;
+    ULONG result = GetAdaptersAddresses(
+        AF_INET,
+        kAdapterFlags,
+        nullptr,
+        reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data()),
+        &bufferSize);
+    if (result == ERROR_BUFFER_OVERFLOW) {
+        buffer.resize(bufferSize);
+        result = GetAdaptersAddresses(
+            AF_INET,
+            kAdapterFlags,
+            nullptr,
+            reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data()),
+            &bufferSize);
+    }
+    if (result != NO_ERROR) {
+        return {};
+    }
+
+    std::vector<std::string> addresses;
+    for (auto* adapter = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
+         adapter != nullptr;
+         adapter = adapter->Next) {
+        if (adapter->OperStatus != IfOperStatusUp
+            || adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK) {
+            continue;
+        }
+
+        for (auto* unicast = adapter->FirstUnicastAddress;
+             unicast != nullptr;
+             unicast = unicast->Next) {
+            const auto broadcastAddress = makeDirectedBroadcastAddress(*unicast);
+            if (broadcastAddress.has_value()
+                && std::find(addresses.begin(),
+                             addresses.end(),
+                             broadcastAddress.value()) == addresses.end()) {
+                addresses.push_back(broadcastAddress.value());
+            }
+        }
+    }
+
+    return addresses;
+}
+#endif
+
+std::vector<std::string> makeBroadcastAddresses()
+{
+    std::vector<std::string> addresses{kLimitedBroadcastAddress};
+#if defined(_WIN32)
+    for (const auto& address : findDirectedBroadcastAddresses()) {
+        if (std::find(addresses.begin(), addresses.end(), address)
+            == addresses.end()) {
+            addresses.push_back(address);
+        }
+    }
+#endif
+    return addresses;
+}
+
+std::string joinAddresses(const std::vector<std::string>& addresses)
+{
+    std::ostringstream output;
+    for (std::size_t index = 0; index < addresses.size(); ++index) {
+        if (index > 0) {
+            output << ',';
+        }
+        output << addresses[index];
+    }
+    return output.str();
 }
 
 } // namespace
@@ -100,6 +221,9 @@ public:
             throw std::invalid_argument("Discovery UDP payload cannot be empty.");
         }
 
+        log("udp.send.begin address=" + address
+            + " port=" + std::to_string(port)
+            + " bytes=" + std::to_string(payload.size()));
         boost::system::error_code error;
         const std::size_t sentBytes = socket_.send_to(
             boost::asio::buffer(payload),
@@ -113,6 +237,9 @@ public:
         if (sentBytes != payload.size()) {
             throw std::runtime_error("Discovery UDP payload was not fully sent.");
         }
+        log("udp.send.success address=" + address
+            + " port=" + std::to_string(port)
+            + " bytes=" + std::to_string(sentBytes));
     }
 
     std::optional<UdpDiscoveryPacket> tryReceiveFor(
@@ -134,6 +261,10 @@ public:
                 0,
                 error);
             if (!error) {
+                log("udp.receive from="
+                    + remoteEndpoint.address().to_string()
+                    + ":" + std::to_string(remoteEndpoint.port())
+                    + " bytes=" + std::to_string(receivedBytes));
                 return makePacket(buffer, receivedBytes, remoteEndpoint);
             }
 
@@ -156,7 +287,23 @@ public:
         socket_.close(ignoredError);
     }
 
-protected:
+    void SetLogCallback(UdpDiscoveryLogCallback logCallback)
+    {
+        logCallback_ = std::move(logCallback);
+    }
+
+    void log(std::string message)
+    {
+        if (!logCallback_) {
+            return;
+        }
+
+        try {
+            logCallback_(std::move(message));
+        } catch (...) {
+        }
+    }
+
     UdpDiscoveryPacket makePacket(const std::array<char, kMaxUdpPayloadSize>& buffer,
                                   std::size_t receivedBytes,
                                   const udp::endpoint& remoteEndpoint)
@@ -168,6 +315,7 @@ protected:
 
     boost::asio::io_context ioContext_;
     udp::socket socket_;
+    UdpDiscoveryLogCallback logCallback_;
 };
 
 BoostAsioUdpDiscoveryTransport::BoostAsioUdpDiscoveryTransport(
@@ -199,7 +347,29 @@ void BoostAsioUdpDiscoveryTransport::sendTo(const std::string& payload,
 void BoostAsioUdpDiscoveryTransport::sendBroadcast(const std::string& payload,
                                                    std::uint16_t port)
 {
-    impl_->sendTo(payload, "255.255.255.255", port);
+    std::exception_ptr firstError;
+    bool sent = false;
+    const auto addresses = makeBroadcastAddresses();
+    impl_->log("udp.broadcast.targets port=" + std::to_string(port)
+               + " count=" + std::to_string(addresses.size())
+               + " addresses=" + joinAddresses(addresses));
+    for (const auto& address : addresses) {
+        try {
+            impl_->sendTo(payload, address, port);
+            sent = true;
+        } catch (const std::exception& error) {
+            impl_->log("udp.broadcast.failed address=" + address
+                       + " port=" + std::to_string(port)
+                       + " error=" + error.what());
+            if (firstError == nullptr) {
+                firstError = std::current_exception();
+            }
+        }
+    }
+
+    if (!sent && firstError != nullptr) {
+        std::rethrow_exception(firstError);
+    }
 }
 
 std::optional<UdpDiscoveryPacket> BoostAsioUdpDiscoveryTransport::tryReceiveFor(
@@ -211,6 +381,12 @@ std::optional<UdpDiscoveryPacket> BoostAsioUdpDiscoveryTransport::tryReceiveFor(
 void BoostAsioUdpDiscoveryTransport::close()
 {
     impl_->close();
+}
+
+void BoostAsioUdpDiscoveryTransport::SetLogCallback(
+    UdpDiscoveryLogCallback logCallback)
+{
+    impl_->SetLogCallback(std::move(logCallback));
 }
 
 }

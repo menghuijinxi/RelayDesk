@@ -7,6 +7,9 @@
 
 namespace relaydesk::net {
 
+constexpr const char* kDiscoveryAnnouncementTypeHello = "hello";
+constexpr const char* kDiscoveryAnnouncementTypeReply = "reply";
+
 class DiscoveryAnnouncement {
 public:
     int GetVersion() const { return version_; }
@@ -35,7 +38,7 @@ public:
 
 protected:
     int version_ = 1;
-    std::string type_ = "hello";
+    std::string type_ = kDiscoveryAnnouncementTypeHello;
     std::string deviceId_;
     std::string hostName_;
     std::string displayName_;

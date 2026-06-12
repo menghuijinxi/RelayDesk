@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cctype>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 
 namespace {
@@ -58,6 +59,27 @@ int formatsUnixEpochAsUtc()
                   "Unix epoch timestamp format mismatch.");
 }
 
+int parsesUtcTimestamp()
+{
+    const auto parsed =
+        relaydesk::core::parseUtcTimestamp("1970-01-02T03:04:05Z");
+    return expect(relaydesk::core::formatUtcTimestamp(parsed)
+                      == "1970-01-02T03:04:05Z",
+                  "UTC timestamp parse mismatch.");
+}
+
+int rejectsInvalidUtcTimestamp()
+{
+    try {
+        static_cast<void>(
+            relaydesk::core::parseUtcTimestamp("1970-13-02T03:04:05Z"));
+    } catch (const std::runtime_error&) {
+        return 0;
+    }
+
+    return fail("Invalid UTC timestamp was accepted.");
+}
+
 int createsUuidV4()
 {
     const std::string first = relaydesk::core::createUuidV4();
@@ -81,6 +103,14 @@ int createsUuidV4()
 int main()
 {
     if (const int result = formatsUnixEpochAsUtc(); result != 0) {
+        return result;
+    }
+
+    if (const int result = parsesUtcTimestamp(); result != 0) {
+        return result;
+    }
+
+    if (const int result = rejectsInvalidUtcTimestamp(); result != 0) {
         return result;
     }
 

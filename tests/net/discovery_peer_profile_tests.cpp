@@ -168,6 +168,35 @@ int deduplicatesObservedAddress()
                   "Observed address mismatch after deduplication.");
 }
 
+int removesStaleProfileForSameHostAndAddress()
+{
+    const auto appPaths = makeAppPaths("stale-device-id");
+    static_cast<void>(relaydesk::net::upsertPeerProfileFromDiscovery(
+        appPaths,
+        makeAnnouncement("2026-06-12T10:00:00Z"),
+        "192.168.1.42"));
+
+    auto stableAnnouncement = makeAnnouncement("2026-06-12T10:05:00Z");
+    stableAnnouncement.SetDeviceId("windows-install-guid");
+    static_cast<void>(relaydesk::net::upsertPeerProfileFromDiscovery(
+        appPaths,
+        stableAnnouncement,
+        "192.168.1.42"));
+
+    const auto staleProfilePath =
+        relaydesk::storage::getPeerProfileFilePath(appPaths, "peer-device");
+    if (const int result = expect(!std::filesystem::exists(staleProfilePath),
+                                  "Stale peer profile was not removed.");
+        result != 0) {
+        return result;
+    }
+
+    const auto stableProfile =
+        relaydesk::storage::loadPeerProfile(appPaths, "windows-install-guid");
+    return expect(stableProfile.GetHostName() == "DESKTOP-OFFICE-12",
+                  "Stable peer profile was not persisted.");
+}
+
 int rejectsEmptyObservedAddress()
 {
     const auto appPaths = makeAppPaths("empty-address");
@@ -198,6 +227,10 @@ int main()
     }
 
     if (const int result = deduplicatesObservedAddress(); result != 0) {
+        return result;
+    }
+
+    if (const int result = removesStaleProfileForSameHostAndAddress(); result != 0) {
         return result;
     }
 

@@ -134,6 +134,48 @@ int preservesIdsAndDisplayNameWhenHostChanges()
                   "Display name should not be overwritten by host refresh.");
 }
 
+int migratesDeviceIdToStableInstallId()
+{
+    const auto appPaths = makeAppPaths("stable-device");
+    const auto created = relaydesk::storage::loadOrCreateLocalIdentity(
+        appPaths,
+        "HOST-A");
+    const auto renamed = relaydesk::storage::updateLocalDisplayName(
+        appPaths,
+        "Custom Name");
+    const auto migrated = relaydesk::storage::loadOrCreateLocalIdentity(
+        appPaths,
+        "HOST-B",
+        "windows-install-guid");
+
+    if (const int result = expect(migrated.GetDeviceId() == "windows-install-guid",
+                                  "Stable device ID was not applied.");
+        result != 0) {
+        return result;
+    }
+
+    if (const int result = expect(migrated.GetDeviceId() != created.GetDeviceId(),
+                                  "Random device ID was not migrated.");
+        result != 0) {
+        return result;
+    }
+
+    if (const int result = expect(migrated.GetInstallId() == renamed.GetInstallId(),
+                                  "Install ID should be preserved during migration.");
+        result != 0) {
+        return result;
+    }
+
+    if (const int result = expect(migrated.GetHostName() == "HOST-B",
+                                  "Host name should still refresh during migration.");
+        result != 0) {
+        return result;
+    }
+
+    return expect(migrated.GetDisplayName() == "Custom Name",
+                  "Display name should survive stable ID migration.");
+}
+
 int rejectsEmptyDisplayNameUpdate()
 {
     const auto appPaths = makeAppPaths("empty-display-name");
@@ -213,6 +255,10 @@ int main()
     }
 
     if (const int result = preservesIdsAndDisplayNameWhenHostChanges(); result != 0) {
+        return result;
+    }
+
+    if (const int result = migratesDeviceIdToStableInstallId(); result != 0) {
         return result;
     }
 

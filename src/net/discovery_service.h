@@ -53,7 +53,11 @@ class DiscoveryServicePollResult {
 public:
     DiscoveryServicePollAction GetAction() const { return action_; }
     const std::string& GetErrorMessage() const { return errorMessage_; }
+    const std::string& GetObservedAddress() const { return observedAddress_; }
+    const std::string& GetAnnouncementType() const { return announcementType_; }
+    std::uint16_t GetObservedPort() const { return observedPort_; }
     bool HasPeerProfile() const { return peerProfile_.has_value(); }
+    bool GetPeerCreated() const { return peerCreated_; }
     const std::optional<relaydesk::storage::PeerProfile>& GetPeerProfile() const
     {
         return peerProfile_;
@@ -63,12 +67,20 @@ public:
     static DiscoveryServicePollResult InvalidPacket(std::string errorMessage);
     static DiscoveryServicePollResult IgnoredSelf();
     static DiscoveryServicePollResult StoredPeer(
-        relaydesk::storage::PeerProfile peerProfile);
+        relaydesk::storage::PeerProfile peerProfile,
+        bool peerCreated,
+        std::string observedAddress,
+        std::string announcementType,
+        std::uint16_t observedPort);
 
 protected:
     DiscoveryServicePollAction action_ = DiscoveryServicePollAction::NoPacket;
     std::string errorMessage_;
+    std::string observedAddress_;
+    std::string announcementType_;
+    std::uint16_t observedPort_ = 0;
     std::optional<relaydesk::storage::PeerProfile> peerProfile_;
+    bool peerCreated_ = false;
 };
 
 class DiscoveryService {
@@ -81,11 +93,13 @@ public:
 
     void broadcastNow();
     void sendAnnouncementTo(const std::string& address, std::uint16_t port);
+    void sendReplyTo(const std::string& address, std::uint16_t port);
     DiscoveryServicePollResult pollOnce(std::chrono::milliseconds timeout);
+    void logDiagnostic(std::string message) const;
     void close();
 
 protected:
-    std::string makeAnnouncementPayload() const;
+    std::string makeAnnouncementPayload(std::string announcementType) const;
 
     relaydesk::storage::AppPaths appPaths_;
     relaydesk::storage::LocalIdentity localIdentity_;

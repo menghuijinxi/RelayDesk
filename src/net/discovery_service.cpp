@@ -1,9 +1,12 @@
 #include "net/discovery_service.h"
 
+#include "core/diagnostic_log.h"
 #include "core/time.h"
 #include "net/discovery_local_announcement.h"
+#include "net/discovery_message.h"
 #include "net/discovery_processor.h"
 
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -12,6 +15,44 @@ namespace relaydesk::net {
 namespace {
 
 constexpr std::uint16_t kMinPort = 1;
+constexpr const char* kDiscoveryLogFileName = "discovery.log";
+
+constexpr bool discoveryTraceEnabled()
+{
+#if defined(RELAYDESK_ENABLE_DISCOVERY_TRACE)
+    return true;
+#else
+    return false;
+#endif
+}
+
+std::filesystem::path makeDiscoveryLogFilePath(
+    const relaydesk::storage::AppPaths& appPaths)
+{
+    return appPaths.GetLogsDirectory() / kDiscoveryLogFileName;
+}
+
+std::string endpointText(const UdpDiscoveryPacket& packet)
+{
+    return packet.GetObservedAddress() + ":"
+        + std::to_string(packet.GetObservedPort());
+}
+
+std::string pollActionText(DiscoveryServicePollAction action)
+{
+    switch (action) {
+    case DiscoveryServicePollAction::NoPacket:
+        return "no_packet";
+    case DiscoveryServicePollAction::InvalidPacket:
+        return "invalid_packet";
+    case DiscoveryServicePollAction::IgnoredSelf:
+        return "ignored_self";
+    case DiscoveryServicePollAction::StoredPeer:
+        return "stored_peer";
+    }
+
+    return "unknown";
+}
 
 void validateConfig(const DiscoveryServiceConfig& config)
 {
@@ -27,7 +68,9 @@ void validateConfig(const DiscoveryServiceConfig& config)
 }
 
 DiscoveryServicePollResult fromProcessResult(
-    const DiscoveryProcessResult& processResult)
+    const DiscoveryProcessResult& processResult,
+    const DiscoveryAnnouncement& announcement,
+    const UdpDiscoveryPacket& packet)
 {
     if (processResult.GetAction() == DiscoveryProcessAction::IgnoredSelf) {
         return DiscoveryServicePollResult::IgnoredSelf();
@@ -38,7 +81,11 @@ DiscoveryServicePollResult fromProcessResult(
     }
 
     return DiscoveryServicePollResult::StoredPeer(
-        processResult.GetPeerProfile().value());
+        processResult.GetPeerProfile().value(),
+        processResult.GetPeerCreated(),
+        packet.GetObservedAddress(),
+        announcement.GetType(),
+        packet.GetObservedPort());
 }
 
 } // namespace
@@ -65,11 +112,19 @@ DiscoveryServicePollResult DiscoveryServicePollResult::IgnoredSelf()
 }
 
 DiscoveryServicePollResult DiscoveryServicePollResult::StoredPeer(
-    relaydesk::storage::PeerProfile peerProfile)
+    relaydesk::storage::PeerProfile peerProfile,
+    bool peerCreated,
+    std::string observedAddress,
+    std::string announcementType,
+    std::uint16_t observedPort)
 {
     DiscoveryServicePollResult result;
     result.action_ = DiscoveryServicePollAction::StoredPeer;
     result.peerProfile_ = std::move(peerProfile);
+    result.peerCreated_ = peerCreated;
+    result.observedAddress_ = std::move(observedAddress);
+    result.announcementType_ = std::move(announcementType);
+    result.observedPort_ = observedPort;
     return result;
 }
 
@@ -82,6 +137,24 @@ DiscoveryService::DiscoveryService(relaydesk::storage::AppPaths appPaths,
       transport_(config_.GetDiscoveryUdpPort())
 {
     validateConfig(config_);
+    if constexpr (discoveryTraceEnabled()) {
+        const auto logFilePath = makeDiscoveryLogFilePath(appPaths_);
+        transport_.SetLogCallback(
+            [logFilePath](std::string message) {
+                relaydesk::core::appendDiagnosticLogLine(
+                    logFilePath,
+                    "transport." + message);
+            });
+        logDiagnostic("service.start local_udp_port="
+                      + std::to_string(transport_.GetLocalPort())
+                      + " discovery_udp_port="
+                      + std::to_string(config_.GetDiscoveryUdpPort())
+                      + " advertised_tcp_port="
+                      + std::to_string(config_.GetAdvertisedTcpPort())
+                      + " device_id=" + localIdentity_.GetDeviceId()
+                      + " host_name=" + localIdentity_.GetHostName()
+                      + " display_name=" + localIdentity_.GetDisplayName());
+    }
 }
 
 std::uint16_t DiscoveryService::GetLocalUdpPort() const
@@ -91,14 +164,56 @@ std::uint16_t DiscoveryService::GetLocalUdpPort() const
 
 void DiscoveryService::broadcastNow()
 {
-    transport_.sendBroadcast(makeAnnouncementPayload(),
-                             config_.GetDiscoveryUdpPort());
+    logDiagnostic("service.broadcast_hello.begin port="
+                  + std::to_string(config_.GetDiscoveryUdpPort()));
+    try {
+        transport_.sendBroadcast(
+            makeAnnouncementPayload(kDiscoveryAnnouncementTypeHello),
+            config_.GetDiscoveryUdpPort());
+        logDiagnostic("service.broadcast_hello.success");
+    } catch (const std::exception& error) {
+        logDiagnostic(std::string("service.broadcast_hello.failed error=")
+                      + error.what());
+        throw;
+    }
 }
 
 void DiscoveryService::sendAnnouncementTo(const std::string& address,
                                           std::uint16_t port)
 {
-    transport_.sendTo(makeAnnouncementPayload(), address, port);
+    logDiagnostic("service.send_hello.begin address=" + address
+                  + " port=" + std::to_string(port));
+    try {
+        transport_.sendTo(makeAnnouncementPayload(kDiscoveryAnnouncementTypeHello),
+                          address,
+                          port);
+        logDiagnostic("service.send_hello.success address=" + address
+                      + " port=" + std::to_string(port));
+    } catch (const std::exception& error) {
+        logDiagnostic("service.send_hello.failed address=" + address
+                      + " port=" + std::to_string(port)
+                      + " error=" + error.what());
+        throw;
+    }
+}
+
+void DiscoveryService::sendReplyTo(const std::string& address,
+                                   std::uint16_t port)
+{
+    logDiagnostic("service.send_reply.begin address=" + address
+                  + " port=" + std::to_string(port));
+    try {
+        transport_.sendTo(makeAnnouncementPayload(kDiscoveryAnnouncementTypeReply),
+                          address,
+                          port);
+        logDiagnostic("service.send_reply.success address=" + address
+                      + " port=" + std::to_string(port));
+    } catch (const std::exception& error) {
+        logDiagnostic("service.send_reply.failed address=" + address
+                      + " port=" + std::to_string(port)
+                      + " error=" + error.what());
+        throw;
+    }
 }
 
 DiscoveryServicePollResult DiscoveryService::pollOnce(
@@ -113,28 +228,57 @@ DiscoveryServicePollResult DiscoveryService::pollOnce(
     try {
         announcement = parseDiscoveryAnnouncement(packet->GetPayload());
     } catch (const std::exception& error) {
+        logDiagnostic("service.packet.invalid from=" + endpointText(packet.value())
+                      + " error=" + error.what());
         return DiscoveryServicePollResult::InvalidPacket(error.what());
     }
 
-    return fromProcessResult(processDiscoveryAnnouncement(
-        appPaths_,
-        localIdentity_.GetDeviceId(),
-        announcement,
-        packet->GetObservedAddress()));
+    logDiagnostic("service.packet.valid from=" + endpointText(packet.value())
+                  + " type=" + announcement.GetType()
+                  + " device_id=" + announcement.GetDeviceId()
+                  + " host_name=" + announcement.GetHostName()
+                  + " display_name=" + announcement.GetDisplayName());
+    const DiscoveryProcessResult processResult =
+        processDiscoveryAnnouncement(appPaths_,
+                                     localIdentity_.GetDeviceId(),
+                                     announcement,
+                                     packet->GetObservedAddress());
+    const DiscoveryServicePollResult result =
+        fromProcessResult(processResult, announcement, packet.value());
+    logDiagnostic("service.packet.result action="
+                  + pollActionText(result.GetAction())
+                  + " type=" + announcement.GetType()
+                  + " peer_created="
+                  + std::to_string(processResult.GetPeerCreated())
+                  + " from=" + endpointText(packet.value()));
+    return result;
 }
 
 void DiscoveryService::close()
 {
+    logDiagnostic("service.close");
     transport_.close();
 }
 
-std::string DiscoveryService::makeAnnouncementPayload() const
+void DiscoveryService::logDiagnostic(std::string message) const
+{
+    (void)message;
+    if constexpr (discoveryTraceEnabled()) {
+        relaydesk::core::appendDiagnosticLogLine(
+            makeDiscoveryLogFilePath(appPaths_),
+            message);
+    }
+}
+
+std::string DiscoveryService::makeAnnouncementPayload(
+    std::string announcementType) const
 {
     DiscoveryAnnouncement announcement = makeLocalDiscoveryAnnouncement(
         localIdentity_,
         config_.GetAdvertisedTcpPort(),
         config_.GetCapabilities(),
         relaydesk::core::currentUtcTimestamp());
+    announcement.SetType(std::move(announcementType));
     return serializeDiscoveryAnnouncement(announcement);
 }
 

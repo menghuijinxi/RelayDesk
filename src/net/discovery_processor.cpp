@@ -2,6 +2,7 @@
 
 #include "net/discovery_peer_profile.h"
 
+#include <filesystem>
 #include <stdexcept>
 #include <utility>
 
@@ -13,11 +14,13 @@ DiscoveryProcessResult DiscoveryProcessResult::IgnoredSelf()
 }
 
 DiscoveryProcessResult DiscoveryProcessResult::StoredPeer(
-    relaydesk::storage::PeerProfile peerProfile)
+    relaydesk::storage::PeerProfile peerProfile,
+    bool peerCreated)
 {
     DiscoveryProcessResult result;
     result.action_ = DiscoveryProcessAction::StoredPeer;
     result.peerProfile_ = std::move(peerProfile);
+    result.peerCreated_ = peerCreated;
     return result;
 }
 
@@ -35,8 +38,12 @@ DiscoveryProcessResult processDiscoveryAnnouncement(
         return DiscoveryProcessResult::IgnoredSelf();
     }
 
+    const bool peerCreated = !std::filesystem::exists(
+        relaydesk::storage::getPeerProfileFilePath(appPaths,
+                                                   announcement.GetDeviceId()));
     return DiscoveryProcessResult::StoredPeer(
-        upsertPeerProfileFromDiscovery(appPaths, announcement, observedAddress));
+        upsertPeerProfileFromDiscovery(appPaths, announcement, observedAddress),
+        peerCreated);
 }
 
 }

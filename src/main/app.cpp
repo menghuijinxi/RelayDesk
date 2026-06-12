@@ -1,14 +1,13 @@
 #include "eui_neo.h"
 
 #include "main/app_runtime.h"
-#include "platform/computer_name.h"
 #include "storage/app_paths.h"
-#include "storage/local_identity.h"
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <exception>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -35,6 +34,7 @@ constexpr float kChatTimelineContentHeight = 650.0f;
 constexpr float kComposerHeight = 68.0f;
 
 struct PeerPreview {
+    std::string deviceId;
     std::string name;
     std::string address;
     bool online;
@@ -109,8 +109,6 @@ void ensureAppStorage()
     try {
         const auto paths = relaydesk::storage::createAppPaths();
         relaydesk::storage::ensureAppDirectories(paths);
-        const std::string hostName = relaydesk::platform::getComputerNameUtf8();
-        relaydesk::storage::loadOrCreateLocalIdentity(paths, hostName);
     } catch (const std::exception&) {
         // UI 仍可启动，后续存储层接入日志后再把启动失败原因展示给用户。
     }
@@ -221,7 +219,7 @@ void drawLocalUserHeader(eui::Ui& ui, float x, float y, float width)
          17.0f);
     text(ui, "local.address", x + 78.0f, y + 41.0f, width - 132.0f, 22.0f,
          "本机 · 192.168.1.8", 13.0f, kMutedText);
-    icon(ui, "local.settings", x + width - 50.0f, y + 21.0f, 32.0f, 0xF013, kText);
+    icon(ui, "local.settings", x + width - 50.0f, y + 21.0f, 32.0f, 0xE713, kText);
     rect(ui, "local.bottom.line", x, y + 76.0f, width, 1.0f, kBorder);
 }
 
@@ -239,7 +237,7 @@ void peerRow(eui::Ui& ui,
     }
 
     statusDot(ui, id + ".state", x + 20.0f, y + 18.0f, peer.online ? kGreen : kOffline);
-    icon(ui, id + ".computer", x + 42.0f, y + 3.0f, 35.0f, 0xF108, kText);
+    icon(ui, id + ".computer", x + 42.0f, y + 3.0f, 35.0f, 0xE7F4, kText);
     text(ui, id + ".name", x + 88.0f, y - 2.0f, width - 110.0f, 24.0f, peer.name,
          15.0f);
     text(ui, id + ".ip", x + 88.0f, y + 23.0f, width - 110.0f, 22.0f, peer.address,
@@ -271,7 +269,7 @@ void transferCard(eui::Ui& ui,
         ? Color{0.950f, 0.760f, 0.420f, 1.0f}
         : Color{0.640f, 0.880f, 0.870f, 1.0f};
     rect(ui, id + ".bg", x, y, width, 112.0f, fill, 8.0f, border);
-    icon(ui, id + ".file", x + 18.0f, y + 22.0f, 42.0f, 0xF15B, transfer.accent);
+    icon(ui, id + ".file", x + 18.0f, y + 22.0f, 42.0f, 0xE7C3, transfer.accent);
     text(ui, id + ".name", x + 72.0f, y + 20.0f, width - 160.0f, 24.0f,
          transfer.fileName, 15.0f);
     text(ui, id + ".size", x + 72.0f, y + 46.0f, 170.0f, 20.0f, transfer.direction,
@@ -296,7 +294,7 @@ void transferCard(eui::Ui& ui,
 
 std::string makeLocalStatusText(const relaydesk::runtime::RelayDeskRuntime& runtime)
 {
-    std::string value = "Local";
+    std::string value = "本机";
     const auto& localUser = runtime.GetLocalUser();
     if (!localUser.GetHostName().empty()) {
         value += " - ";
@@ -304,7 +302,7 @@ std::string makeLocalStatusText(const relaydesk::runtime::RelayDeskRuntime& runt
     }
 
     if (runtime.GetDiscoveryStarted()) {
-        value += " - UDP ";
+        value += " - 发现端口 ";
         value += std::to_string(runtime.GetDiscoveryUdpPort());
     }
     return value;
@@ -329,25 +327,49 @@ void drawRuntimeLocalUserHeader(eui::Ui& ui,
          displayName, 17.0f);
     text(ui, "local.address", x + 78.0f, y + 41.0f, width - 132.0f, 22.0f,
          makeLocalStatusText(runtime), 13.0f, kMutedText);
-    icon(ui, "local.settings", x + width - 50.0f, y + 21.0f, 32.0f, 0xF013, kText);
+    icon(ui, "local.settings", x + width - 50.0f, y + 21.0f, 32.0f, 0xE713, kText);
     rect(ui, "local.bottom.line", x, y + 76.0f, width, 1.0f, kBorder);
 }
 
 std::vector<PeerPreview> makePeerPreviews(
-    const std::vector<relaydesk::runtime::PeerListItem>& peers)
+    const relaydesk::runtime::RelayDeskRuntime& runtime)
 {
+    const auto& peers = runtime.GetPeers();
+    const std::string& selectedDeviceId = runtime.GetSelectedPeerDeviceId();
     std::vector<PeerPreview> result;
     result.reserve(peers.size());
     for (std::size_t index = 0; index < peers.size(); ++index) {
         const auto& peer = peers[index];
         result.push_back(PeerPreview{
+            peer.GetDeviceId(),
             peer.GetDisplayName().empty() ? peer.GetHostName() : peer.GetDisplayName(),
             peer.GetAddress(),
             peer.GetOnline(),
-            index == 0,
+            peer.GetDeviceId() == selectedDeviceId,
         });
     }
     return result;
+}
+
+void peerRowHitTarget(eui::Ui& ui,
+                      const PeerPreview& peer,
+                      int index,
+                      relaydesk::runtime::RelayDeskRuntime& runtime,
+                      float x,
+                      float width,
+                      float y)
+{
+    const std::string id = "peer.hit." + std::to_string(index);
+    const std::string deviceId = peer.deviceId;
+    ui.rect(id)
+        .position(x + 6.0f, y - 8.0f)
+        .size(width - 12.0f, 64.0f)
+        .color({0.0f, 0.0f, 0.0f, 0.0f})
+        .radius(6.0f)
+        .onClick([&runtime, deviceId] {
+            runtime.selectPeer(deviceId);
+        })
+        .build();
 }
 
 void drawDiscoveredPeerList(eui::Ui& ui,
@@ -361,21 +383,21 @@ void drawDiscoveredPeerList(eui::Ui& ui,
     drawRuntimeLocalUserHeader(ui, runtime, x, kContentTop, width);
     rect(ui, "peers.search.bg", x + 20.0f, kContentTop + 96.0f, width - 40.0f,
          42.0f, {1.0f, 1.0f, 1.0f, 1.0f}, 7.0f, kBorder);
-    icon(ui, "peers.search.icon", x + 32.0f, kContentTop + 102.0f, 30.0f, 0xF002,
+    icon(ui, "peers.search.icon", x + 32.0f, kContentTop + 102.0f, 30.0f, 0xE721,
          kText);
     text(ui, "peers.search.placeholder", x + 74.0f, kContentTop + 105.0f,
          width - 112.0f, 24.0f,
-         "Search devices", 14.0f, kSubtleText);
+         "搜索设备", 14.0f, kSubtleText);
 
-    const std::vector<PeerPreview> peers = makePeerPreviews(runtime.GetPeers());
+    const std::vector<PeerPreview> peers = makePeerPreviews(runtime);
     text(ui, "peers.online.title", x + 42.0f, kContentTop + 166.0f, 180.0f, 24.0f,
-         std::string("Discovered (") + std::to_string(peers.size()) + ")", 15.0f);
+         std::string("已发现 (") + std::to_string(peers.size()) + ")", 15.0f);
 
     if (peers.empty()) {
         text(ui, "peers.empty.title", x + 42.0f, kContentTop + 214.0f,
-             width - 84.0f, 24.0f, "No peers discovered", 14.0f, kMutedText);
+             width - 84.0f, 24.0f, "暂无已发现设备", 14.0f, kMutedText);
         const std::string detail = runtime.GetStartupErrorMessage().empty()
-            ? "Listening for RelayDesk peers"
+            ? "正在监听 RelayDesk 设备"
             : runtime.GetStartupErrorMessage();
         text(ui, "peers.empty.detail", x + 42.0f, kContentTop + 242.0f,
              width - 84.0f, 22.0f, detail, 12.0f, kSubtleText);
@@ -387,6 +409,13 @@ void drawDiscoveredPeerList(eui::Ui& ui,
     for (int index = 0; index < static_cast<int>(peers.size()); ++index) {
         const float y = rowStart + static_cast<float>(index) * rowGap;
         peerRow(ui, peers[static_cast<std::size_t>(index)], index, x, width, y);
+        peerRowHitTarget(ui,
+                         peers[static_cast<std::size_t>(index)],
+                         index,
+                         runtime,
+                         x,
+                         width,
+                         y);
     }
 }
 
@@ -397,7 +426,7 @@ void drawPeerList(eui::Ui& ui, float x, float width, float height)
     drawLocalUserHeader(ui, x, kContentTop, width);
     rect(ui, "peers.search.bg", x + 20.0f, kContentTop + 96.0f, width - 40.0f,
          42.0f, {1.0f, 1.0f, 1.0f, 1.0f}, 7.0f, kBorder);
-    icon(ui, "peers.search.icon", x + 32.0f, kContentTop + 102.0f, 30.0f, 0xF002,
+    icon(ui, "peers.search.icon", x + 32.0f, kContentTop + 102.0f, 30.0f, 0xE721,
          kText);
     text(ui, "peers.search.placeholder", x + 74.0f, kContentTop + 105.0f,
          width - 112.0f, 24.0f,
@@ -406,14 +435,14 @@ void drawPeerList(eui::Ui& ui, float x, float width, float height)
          "在线 (5)", 15.0f);
 
     const std::array peers{
-        PeerPreview{"Alex-PC", "192.168.1.24", true, true},
-        PeerPreview{"DESKTOP-J8K2TQ", "192.168.1.31", true, false},
-        PeerPreview{"LAPTOP-9F3V2M", "192.168.1.42", true, false},
-        PeerPreview{"DEV-SERVER", "192.168.1.10", true, false},
-        PeerPreview{"MARK-PC", "192.168.1.77", true, false},
-        PeerPreview{"FINANCE-PC", "192.168.1.15", false, false},
-        PeerPreview{"HR-LAPTOP", "192.168.1.28", false, false},
-        PeerPreview{"OLD-PC", "192.168.1.55", false, false},
+        PeerPreview{"demo-alex", "Alex-PC", "192.168.1.24", true, true},
+        PeerPreview{"demo-desktop", "DESKTOP-J8K2TQ", "192.168.1.31", true, false},
+        PeerPreview{"demo-laptop", "LAPTOP-9F3V2M", "192.168.1.42", true, false},
+        PeerPreview{"demo-server", "DEV-SERVER", "192.168.1.10", true, false},
+        PeerPreview{"demo-mark", "MARK-PC", "192.168.1.77", true, false},
+        PeerPreview{"demo-finance", "FINANCE-PC", "192.168.1.15", false, false},
+        PeerPreview{"demo-hr", "HR-LAPTOP", "192.168.1.28", false, false},
+        PeerPreview{"demo-old", "OLD-PC", "192.168.1.55", false, false},
     };
 
     const float rowGap = height < 740.0f ? 59.0f : 72.0f;
@@ -437,7 +466,7 @@ void drawChatHeader(eui::Ui& ui, float x, float width)
     rect(ui, "chat.header.peer.line", x, kContentTop + 75.0f, width, 1.0f, kBorder);
     rect(ui, "chat.header.line", x, kContentTop + kChatHeaderHeight - 1.0f, width, 1.0f,
          kBorder);
-    icon(ui, "chat.header.computer", x + 22.0f, kContentTop + 23.0f, 42.0f, 0xF108,
+    icon(ui, "chat.header.computer", x + 22.0f, kContentTop + 23.0f, 42.0f, 0xE7F4,
          kText);
     statusDot(ui, "chat.header.dot", x + 62.0f, kContentTop + 46.0f, kGreen, 12.0f);
     text(ui, "chat.header.name", x + 78.0f, kContentTop + 17.0f, 180.0f, 26.0f,
@@ -446,9 +475,9 @@ void drawChatHeader(eui::Ui& ui, float x, float width)
          "192.168.1.24",
          13.0f, kMutedText);
     icon(ui, "chat.header.search", x + width - 100.0f, kContentTop + 25.0f, 34.0f,
-         0xF002, kText);
+         0xE721, kText);
     icon(ui, "chat.header.more", x + width - 44.0f, kContentTop + 25.0f, 34.0f,
-         0xF142, kText);
+         0xE712, kText);
     rect(ui, "chat.tabs.chat.bg", x + 22.0f, kContentTop + 85.0f, 62.0f, 24.0f,
          kTealSoft, 6.0f, {0.640f, 0.880f, 0.870f, 1.0f});
     text(ui, "chat.tabs.chat.text", x + 22.0f, kContentTop + 87.0f, 62.0f, 20.0f,
@@ -457,6 +486,75 @@ void drawChatHeader(eui::Ui& ui, float x, float width)
          "历史", 13.0f, kMutedText, eui::HorizontalAlign::Center);
     text(ui, "chat.tabs.transfers", x + 174.0f, kContentTop + 87.0f, 62.0f, 20.0f,
          "传输", 13.0f, kMutedText, eui::HorizontalAlign::Center);
+}
+
+std::string getPeerDisplayName(const relaydesk::runtime::PeerListItem& peer)
+{
+    if (!peer.GetDisplayName().empty()) {
+        return peer.GetDisplayName();
+    }
+
+    if (!peer.GetHostName().empty()) {
+        return peer.GetHostName();
+    }
+
+    return peer.GetDeviceId();
+}
+
+std::string getSelectedPeerTitle(
+    const std::optional<relaydesk::runtime::PeerListItem>& selectedPeer)
+{
+    if (!selectedPeer.has_value()) {
+        return "未选择设备";
+    }
+
+    return getPeerDisplayName(selectedPeer.value());
+}
+
+std::string getSelectedPeerAddress(
+    const std::optional<relaydesk::runtime::PeerListItem>& selectedPeer)
+{
+    if (!selectedPeer.has_value()) {
+        return "等待发现设备";
+    }
+
+    return selectedPeer->GetAddress();
+}
+
+void drawRuntimeChatHeader(
+    eui::Ui& ui,
+    float x,
+    float width,
+    const std::optional<relaydesk::runtime::PeerListItem>& selectedPeer)
+{
+    const Color statusColor =
+        selectedPeer.has_value() && selectedPeer->GetOnline() ? kGreen : kOffline;
+
+    rect(ui, "chat.header.bg", x, kContentTop, width, kChatHeaderHeight - 1.0f,
+         kPanelBackground);
+    rect(ui, "chat.header.peer.line", x, kContentTop + 75.0f, width, 1.0f, kBorder);
+    rect(ui, "chat.header.line", x, kContentTop + kChatHeaderHeight - 1.0f, width,
+         1.0f, kBorder);
+    icon(ui, "chat.header.computer", x + 22.0f, kContentTop + 23.0f, 42.0f, 0xE7F4,
+         kText);
+    statusDot(ui, "chat.header.dot", x + 62.0f, kContentTop + 46.0f, statusColor,
+              12.0f);
+    text(ui, "chat.header.name", x + 78.0f, kContentTop + 17.0f, width - 180.0f,
+         26.0f, getSelectedPeerTitle(selectedPeer), 18.0f);
+    text(ui, "chat.header.ip", x + 78.0f, kContentTop + 43.0f, width - 180.0f,
+         22.0f, getSelectedPeerAddress(selectedPeer), 13.0f, kMutedText);
+    icon(ui, "chat.header.search", x + width - 100.0f, kContentTop + 25.0f, 34.0f,
+         0xE721, kText);
+    icon(ui, "chat.header.more", x + width - 44.0f, kContentTop + 25.0f, 34.0f,
+         0xE712, kText);
+    rect(ui, "chat.tabs.chat.bg", x + 22.0f, kContentTop + 85.0f, 62.0f, 24.0f,
+         kTealSoft, 6.0f, {0.640f, 0.880f, 0.870f, 1.0f});
+    text(ui, "chat.tabs.chat.text", x + 22.0f, kContentTop + 87.0f, 62.0f, 20.0f,
+         "聊天", 13.0f, kTeal, eui::HorizontalAlign::Center);
+    text(ui, "chat.tabs.history", x + 98.0f, kContentTop + 87.0f, 62.0f, 20.0f,
+         "历史", 13.0f, kMutedText, eui::HorizontalAlign::Center);
+    text(ui, "chat.tabs.transfers", x + 174.0f, kContentTop + 87.0f, 72.0f,
+         20.0f, "文件", 13.0f, kMutedText, eui::HorizontalAlign::Center);
 }
 
 void drawChatTimelineContent(eui::Ui& ui, float width)
@@ -546,6 +644,29 @@ void drawChatTimeline(eui::Ui& ui, float x, float y, float width, float height)
         .build();
 }
 
+void drawRuntimeChatTimeline(
+    eui::Ui& ui,
+    float x,
+    float y,
+    float width,
+    float height,
+    const std::optional<relaydesk::runtime::PeerListItem>& selectedPeer)
+{
+    rect(ui, "chat.bg", x, y, width, height, {1.0f, 1.0f, 1.0f, 1.0f});
+
+    const std::string title = selectedPeer.has_value()
+        ? "暂无本地消息"
+        : "选择一个已发现设备";
+    const std::string detail = selectedPeer.has_value()
+        ? "TCP 会话实现后会在这里显示聊天记录"
+        : "RelayDesk 正在监听发现端口";
+    const float centerY = y + std::max(0.0f, height * 0.5f - 34.0f);
+    text(ui, "chat.empty.title", x + 24.0f, centerY, width - 48.0f, 28.0f,
+         title, 17.0f, kText, eui::HorizontalAlign::Center);
+    text(ui, "chat.empty.detail", x + 24.0f, centerY + 34.0f, width - 48.0f,
+         24.0f, detail, 13.0f, kMutedText, eui::HorizontalAlign::Center);
+}
+
 void drawComposer(eui::Ui& ui, float x, float y, float width)
 {
     const float horizontalPadding = width < 560.0f ? 12.0f : 16.0f;
@@ -570,17 +691,65 @@ void drawComposer(eui::Ui& ui, float x, float y, float width)
         })
         .build();
     if (width < 560.0f) {
-        icon(ui, "composer.file", firstActionX, y + 17.0f, iconSize, 0xF0C6, kText);
+        icon(ui, "composer.file", firstActionX, y + 17.0f, iconSize, 0xE723, kText);
     } else {
-        icon(ui, "composer.smile", firstActionX, y + 15.0f, iconSize, 0xF118, kText);
-        icon(ui, "composer.file", x + width - 212.0f, y + 15.0f, iconSize, 0xF0C6,
+        icon(ui, "composer.smile", firstActionX, y + 15.0f, iconSize, 0xE899, kText);
+        icon(ui, "composer.file", x + width - 212.0f, y + 15.0f, iconSize, 0xE723,
              kText);
-        icon(ui, "composer.folder", x + width - 152.0f, y + 15.0f, iconSize, 0xF07B,
+        icon(ui, "composer.folder", x + width - 152.0f, y + 15.0f, iconSize, 0xE8B7,
              kText);
     }
     rect(ui, "composer.send.bg", sendX, y + 13.0f, sendWidth, 42.0f, kTeal, 6.0f);
     text(ui, "composer.send.text", sendX, y + 21.0f, sendWidth, 24.0f, "发送", 14.0f,
          {1.0f, 1.0f, 1.0f, 1.0f}, eui::HorizontalAlign::Center);
+}
+
+void drawRuntimeComposer(
+    eui::Ui& ui,
+    float x,
+    float y,
+    float width,
+    const std::optional<relaydesk::runtime::PeerListItem>& selectedPeer)
+{
+    const float horizontalPadding = width < 560.0f ? 12.0f : 16.0f;
+    const float innerPadding = width < 560.0f ? 8.0f : 12.0f;
+    const float sendWidth = width < 560.0f ? 58.0f : 70.0f;
+    const float sendX = x + width - horizontalPadding - innerPadding - sendWidth;
+    const float iconSize = width < 560.0f ? 34.0f : 38.0f;
+    const float firstActionX = width < 560.0f ? sendX - 48.0f : x + width - 272.0f;
+    const float inputWidth = std::max(
+        140.0f,
+        firstActionX - (x + 28.0f) - innerPadding);
+    const std::string placeholder = selectedPeer.has_value()
+        ? std::string("发给 ") + getPeerDisplayName(selectedPeer.value())
+        : "请先选择设备";
+
+    rect(ui, "composer.bg", x + horizontalPadding, y, width - horizontalPadding * 2.0f,
+         kComposerHeight, kPanelBackground, 8.0f, kBorder);
+    ui.stack("composer.input.pos")
+        .position(x + 28.0f, y + 13.0f)
+        .size(inputWidth, 42.0f)
+        .content([&] {
+            components::input(ui, "composer.input")
+                .size(inputWidth, 42.0f)
+                .placeholder(placeholder)
+                .fontSize(14.0f)
+                .build();
+        })
+        .build();
+    if (width < 560.0f) {
+        icon(ui, "composer.file", firstActionX, y + 17.0f, iconSize, 0xE723, kText);
+    } else {
+        icon(ui, "composer.smile", firstActionX, y + 15.0f, iconSize, 0xE899, kText);
+        icon(ui, "composer.file", x + width - 212.0f, y + 15.0f, iconSize, 0xE723,
+             kText);
+        icon(ui, "composer.folder", x + width - 152.0f, y + 15.0f, iconSize, 0xE8B7,
+             kText);
+    }
+    rect(ui, "composer.send.bg", sendX, y + 13.0f, sendWidth, 42.0f,
+         selectedPeer.has_value() ? kTeal : kOffline, 6.0f);
+    text(ui, "composer.send.text", sendX, y + 21.0f, sendWidth, 24.0f, "发送",
+         14.0f, {1.0f, 1.0f, 1.0f, 1.0f}, eui::HorizontalAlign::Center);
 }
 
 void transferSummary(eui::Ui& ui,
@@ -590,7 +759,7 @@ void transferSummary(eui::Ui& ui,
                      float width,
                      const TransferPreview& transfer)
 {
-    icon(ui, id + ".file", x, y + 2.0f, 36.0f, 0xF15B, transfer.accent);
+    icon(ui, id + ".file", x, y + 2.0f, 36.0f, 0xE7C3, transfer.accent);
     text(ui, id + ".name", x + 46.0f, y + 0.0f, width - 112.0f, 24.0f,
          transfer.fileName, 14.0f);
     text(ui, id + ".dir", x + 46.0f, y + 24.0f, 150.0f, 20.0f, transfer.direction,
@@ -622,9 +791,9 @@ void drawDetails(eui::Ui& ui, float x, float width, float height)
     rect(ui, "details.line", x, kContentTop, 1.0f, height, kBorder);
     text(ui, "details.title", x + 22.0f, kContentTop + 19.0f, 170.0f, 28.0f,
          "Alex-PC", 17.0f);
-    icon(ui, "details.close", x + width - 52.0f, kContentTop + 19.0f, 30.0f, 0xF00D,
+    icon(ui, "details.close", x + width - 52.0f, kContentTop + 19.0f, 30.0f, 0xE711,
          kText);
-    icon(ui, "details.computer", x + 50.0f, kContentTop + 73.0f, 78.0f, 0xF108,
+    icon(ui, "details.computer", x + 50.0f, kContentTop + 73.0f, 78.0f, 0xE7F4,
          kText);
     statusDot(ui, "details.status", x + 154.0f, kContentTop + 101.0f, kGreen, 12.0f);
     text(ui, "details.online", x + 176.0f, kContentTop + 91.0f, 120.0f, 28.0f,
@@ -682,6 +851,65 @@ void drawDetails(eui::Ui& ui, float x, float width, float height)
     }
 }
 
+void drawRuntimeDetails(
+    eui::Ui& ui,
+    float x,
+    float width,
+    float height,
+    const std::optional<relaydesk::runtime::PeerListItem>& selectedPeer)
+{
+    rect(ui, "details.bg", x, kContentTop, width, height, kPanelBackground);
+    rect(ui, "details.line", x, kContentTop, 1.0f, height, kBorder);
+    text(ui, "details.title", x + 22.0f, kContentTop + 19.0f, width - 74.0f,
+         28.0f, getSelectedPeerTitle(selectedPeer), 17.0f);
+    icon(ui, "details.close", x + width - 52.0f, kContentTop + 19.0f, 30.0f, 0xE711,
+         kText);
+    icon(ui, "details.computer", x + 50.0f, kContentTop + 73.0f, 78.0f, 0xE7F4,
+         kText);
+
+    const bool online = selectedPeer.has_value() && selectedPeer->GetOnline();
+    statusDot(ui, "details.status", x + 154.0f, kContentTop + 101.0f,
+              online ? kGreen : kOffline, 12.0f);
+    text(ui, "details.online", x + 176.0f, kContentTop + 91.0f, 120.0f, 28.0f,
+         online ? "在线" : "离线", 18.0f, online ? kGreen : kOffline);
+    text(ui, "details.ip", x + 176.0f, kContentTop + 125.0f, width - 198.0f,
+         24.0f, getSelectedPeerAddress(selectedPeer), 15.0f, kText);
+    rect(ui, "details.sep.1", x, kContentTop + 179.0f, width, 1.0f, kBorder);
+    text(ui, "details.device.title", x + 22.0f, kContentTop + 203.0f,
+         160.0f, 26.0f, "设备", 15.0f);
+
+    const std::array labels{
+        "显示名",
+        "主机名",
+        "地址",
+        "最后发现",
+        "设备 ID",
+    };
+    const std::array values{
+        selectedPeer.has_value() ? getPeerDisplayName(selectedPeer.value()) : "-",
+        selectedPeer.has_value() ? selectedPeer->GetHostName() : "-",
+        selectedPeer.has_value() ? selectedPeer->GetAddress() : "-",
+        selectedPeer.has_value() ? selectedPeer->GetLastSeenAt() : "-",
+        selectedPeer.has_value() ? selectedPeer->GetDeviceId() : "-",
+    };
+
+    for (int index = 0; index < static_cast<int>(labels.size()); ++index) {
+        const float rowY = kContentTop + 253.0f + static_cast<float>(index) * 32.0f;
+        text(ui, "details.label." + std::to_string(index), x + 22.0f, rowY,
+             100.0f, 22.0f, labels[static_cast<std::size_t>(index)], 12.0f,
+             kMutedText);
+        text(ui, "details.value." + std::to_string(index), x + 128.0f, rowY,
+             width - 150.0f, 22.0f, values[static_cast<std::size_t>(index)],
+             12.0f, kText, eui::HorizontalAlign::Right);
+    }
+
+    rect(ui, "details.sep.2", x, kContentTop + 417.0f, width, 1.0f, kBorder);
+    text(ui, "details.transfers.title", x + 22.0f, kContentTop + 441.0f,
+         width - 44.0f, 26.0f, "传输", 15.0f);
+    text(ui, "details.transfers.empty", x + 22.0f, kContentTop + 485.0f,
+         width - 44.0f, 24.0f, "暂无活动传输", 13.0f, kMutedText);
+}
+
 void drawRelayDesk(eui::Ui& ui,
                    const eui::Screen& screen,
                    relaydesk::runtime::RelayDeskRuntime& runtime)
@@ -692,6 +920,7 @@ void drawRelayDesk(eui::Ui& ui,
     const float composerY = layout.height - kComposerHeight - 16.0f;
     const float timelineY = kContentTop + kChatHeaderHeight;
     const float timelineHeight = std::max(1.0f, composerY - timelineY - 12.0f);
+    const auto selectedPeer = runtime.GetSelectedPeer();
 
     rect(ui, "app.bg", 0.0f, 0.0f, layout.width, layout.height, kWindowBackground);
 
@@ -703,12 +932,21 @@ void drawRelayDesk(eui::Ui& ui,
                                layout.contentHeight);
     }
 
-    drawChatHeader(ui, layout.chatX, layout.chatWidth);
-    drawChatTimeline(ui, layout.chatX, timelineY, layout.chatWidth, timelineHeight);
-    drawComposer(ui, layout.chatX, composerY, layout.chatWidth);
+    drawRuntimeChatHeader(ui, layout.chatX, layout.chatWidth, selectedPeer);
+    drawRuntimeChatTimeline(ui,
+                            layout.chatX,
+                            timelineY,
+                            layout.chatWidth,
+                            timelineHeight,
+                            selectedPeer);
+    drawRuntimeComposer(ui, layout.chatX, composerY, layout.chatWidth, selectedPeer);
 
     if (layout.showDetails) {
-        drawDetails(ui, layout.detailX, layout.detailWidth, layout.contentHeight);
+        drawRuntimeDetails(ui,
+                           layout.detailX,
+                           layout.detailWidth,
+                           layout.contentHeight,
+                           selectedPeer);
     }
 }
 
@@ -724,6 +962,8 @@ const DslAppConfig& dslAppConfig()
         .pageId("relaydesk")
         .clearColor(kWindowBackground)
         .iconPath("assets/icon.png")
+        .textFont("C:/Windows/Fonts/msyh.ttc")
+        .iconFont("C:/Windows/Fonts/segmdl2.ttf")
         .windowSize(1940, 1224)
         .showDebugStatsInTitle(false)
         .fps(90.0);

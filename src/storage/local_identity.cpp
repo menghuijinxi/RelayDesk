@@ -62,13 +62,23 @@ void validateIdentity(const LocalIdentity& identity)
     }
 }
 
-LocalIdentity createLocalIdentity(const std::string& hostName)
+std::string chooseDeviceId(const std::string& stableDeviceId)
+{
+    if (!stableDeviceId.empty()) {
+        return stableDeviceId;
+    }
+
+    return relaydesk::core::createUuidV4();
+}
+
+LocalIdentity createLocalIdentity(const std::string& hostName,
+                                  const std::string& stableDeviceId)
 {
     if (hostName.empty()) {
         throw std::invalid_argument("Local identity host name cannot be empty.");
     }
 
-    return LocalIdentity(relaydesk::core::createUuidV4(),
+    return LocalIdentity(chooseDeviceId(stableDeviceId),
                          relaydesk::core::createUuidV4(),
                          relaydesk::core::currentUtcTimestamp(),
                          hostName,
@@ -136,15 +146,32 @@ void saveLocalIdentity(const AppPaths& appPaths, const LocalIdentity& identity)
 
 LocalIdentity loadOrCreateLocalIdentity(const AppPaths& appPaths, const std::string& hostName)
 {
+    return loadOrCreateLocalIdentity(appPaths, hostName, {});
+}
+
+LocalIdentity loadOrCreateLocalIdentity(const AppPaths& appPaths,
+                                        const std::string& hostName,
+                                        const std::string& stableDeviceId)
+{
     if (!std::filesystem::exists(appPaths.GetIdentityFilePath())) {
-        LocalIdentity identity = createLocalIdentity(hostName);
+        LocalIdentity identity = createLocalIdentity(hostName, stableDeviceId);
         saveLocalIdentity(appPaths, identity);
         return identity;
     }
 
     LocalIdentity identity = loadLocalIdentity(appPaths);
+    bool changed = false;
+    if (!stableDeviceId.empty() && identity.GetDeviceId() != stableDeviceId) {
+        identity.SetDeviceId(stableDeviceId);
+        changed = true;
+    }
+
     if (identity.GetHostName() != hostName) {
         identity.SetHostName(hostName);
+        changed = true;
+    }
+
+    if (changed) {
         saveLocalIdentity(appPaths, identity);
     }
     return identity;

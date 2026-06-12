@@ -21,6 +21,7 @@ public:
     const std::string& GetCreatedAt() const { return createdAt_; }
     const std::string& GetHostName() const { return hostName_; }
     const std::string& GetDisplayName() const { return displayName_; }
+    void SetDeviceId(std::string deviceId) { deviceId_ = std::move(deviceId); }
     void SetHostName(std::string hostName) { hostName_ = std::move(hostName); }
     void SetDisplayName(std::string displayName) { displayName_ = std::move(displayName); }
 
@@ -36,6 +37,9 @@ protected:
 LocalIdentity loadLocalIdentity(const AppPaths& appPaths);
 void saveLocalIdentity(const AppPaths& appPaths, const LocalIdentity& identity);
 LocalIdentity loadOrCreateLocalIdentity(const AppPaths& appPaths, const std::string& hostName);
+LocalIdentity loadOrCreateLocalIdentity(const AppPaths& appPaths,
+                                        const std::string& hostName,
+                                        const std::string& stableDeviceId);
 LocalIdentity updateLocalDisplayName(const AppPaths& appPaths,
                                      const std::string& displayName);
 

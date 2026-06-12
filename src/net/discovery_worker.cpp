@@ -1,5 +1,7 @@
 #include "net/discovery_worker.h"
 
+#include "net/discovery_message.h"
+
 #include <chrono>
 #include <stdexcept>
 #include <string>
@@ -9,9 +11,11 @@
 namespace relaydesk::net {
 
 DiscoveryWorker::DiscoveryWorker(DiscoveryService discoveryService,
-                                 DiscoveryWorkerConfig workerConfig)
+                                 DiscoveryWorkerConfig workerConfig,
+                                 DiscoveryWorkerEvents events)
     : discoveryService_(std::move(discoveryService)),
-      workerConfig_(workerConfig)
+      workerConfig_(workerConfig),
+      events_(std::move(events))
 {
     validateWorkerConfig();
 }
@@ -43,6 +47,7 @@ void DiscoveryWorker::start()
         return;
     }
 
+    discoveryService_.logDiagnostic("worker.start_requested");
     thread_ = std::jthread([this](std::stop_token stopToken) {
         run(stopToken);
     });
@@ -54,15 +59,31 @@ void DiscoveryWorker::stop()
         return;
     }
 
+    discoveryService_.logDiagnostic("worker.stop_requested");
     thread_.request_stop();
     thread_.join();
 }
 
 void DiscoveryWorker::run(std::stop_token stopToken)
 {
+    discoveryService_.logDiagnostic(
+        "worker.run broadcast_enabled="
+        + std::to_string(workerConfig_.GetBroadcastEnabled())
+        + " announce_on_start="
+        + std::to_string(workerConfig_.GetAnnounceOnStart())
+        + " broadcast_interval_ms="
+        + std::to_string(workerConfig_.GetBroadcastInterval().count())
+        + " startup_interval_ms="
+        + std::to_string(workerConfig_.GetStartupBroadcastInterval().count())
+        + " startup_count="
+        + std::to_string(workerConfig_.GetStartupBroadcastCount())
+        + " poll_timeout_ms="
+        + std::to_string(workerConfig_.GetPollTimeout().count()));
     auto nextBroadcastAt = std::chrono::steady_clock::now();
+    int startupBroadcastsLeft = workerConfig_.GetStartupBroadcastCount();
     if (!workerConfig_.GetAnnounceOnStart()) {
         nextBroadcastAt += workerConfig_.GetBroadcastInterval();
+        startupBroadcastsLeft = 0;
     }
 
     while (!stopToken.stop_requested()) {
@@ -71,16 +92,46 @@ void DiscoveryWorker::run(std::stop_token stopToken)
             if (workerConfig_.GetBroadcastEnabled() && now >= nextBroadcastAt) {
                 discoveryService_.broadcastNow();
                 recordBroadcast();
-                nextBroadcastAt = now + workerConfig_.GetBroadcastInterval();
+                if (startupBroadcastsLeft > 0) {
+                    --startupBroadcastsLeft;
+                }
+                if (startupBroadcastsLeft > 0) {
+                    nextBroadcastAt =
+                        now + workerConfig_.GetStartupBroadcastInterval();
+                } else {
+                    nextBroadcastAt = now + workerConfig_.GetBroadcastInterval();
+                }
             }
 
-            recordPollResult(discoveryService_.pollOnce(workerConfig_.GetPollTimeout()));
+            const DiscoveryServicePollResult result =
+                discoveryService_.pollOnce(workerConfig_.GetPollTimeout());
+            recordPollResult(result);
+            notifyStoredPeer(result);
+            if (workerConfig_.GetBroadcastEnabled()
+                && result.GetAction() == DiscoveryServicePollAction::StoredPeer
+                && result.GetAnnouncementType() == kDiscoveryAnnouncementTypeHello) {
+                discoveryService_.logDiagnostic(
+                    "worker.reply_to_hello address="
+                    + result.GetObservedAddress()
+                    + " port=" + std::to_string(result.GetObservedPort()));
+                discoveryService_.sendReplyTo(result.GetObservedAddress(),
+                                              result.GetObservedPort());
+                recordReply();
+            } else if (result.GetAction()
+                       == DiscoveryServicePollAction::StoredPeer) {
+                discoveryService_.logDiagnostic(
+                    "worker.no_reply action=stored_peer type="
+                    + result.GetAnnouncementType());
+            }
         } catch (const std::exception& error) {
+            discoveryService_.logDiagnostic(
+                std::string("worker.error error=") + error.what());
             recordError(error.what());
             std::this_thread::sleep_for(workerConfig_.GetPollTimeout());
         }
     }
 
+    discoveryService_.logDiagnostic("worker.run_exit");
     discoveryService_.close();
 }
 
@@ -88,6 +139,16 @@ void DiscoveryWorker::validateWorkerConfig() const
 {
     if (workerConfig_.GetBroadcastInterval().count() <= 0) {
         throw std::invalid_argument("Discovery broadcast interval must be positive.");
+    }
+
+    if (workerConfig_.GetStartupBroadcastInterval().count() <= 0) {
+        throw std::invalid_argument(
+            "Discovery startup broadcast interval must be positive.");
+    }
+
+    if (workerConfig_.GetStartupBroadcastCount() < 0) {
+        throw std::invalid_argument(
+            "Discovery startup broadcast count cannot be negative.");
     }
 
     if (workerConfig_.GetPollTimeout().count() <= 0) {
@@ -99,6 +160,12 @@ void DiscoveryWorker::recordBroadcast()
 {
     std::lock_guard lock(mutex_);
     stats_.SetBroadcastCount(stats_.GetBroadcastCount() + 1);
+}
+
+void DiscoveryWorker::recordReply()
+{
+    std::lock_guard lock(mutex_);
+    stats_.SetReplyCount(stats_.GetReplyCount() + 1);
 }
 
 void DiscoveryWorker::recordPollResult(const DiscoveryServicePollResult& result)
@@ -118,6 +185,18 @@ void DiscoveryWorker::recordPollResult(const DiscoveryServicePollResult& result)
         stats_.SetStoredPeerCount(stats_.GetStoredPeerCount() + 1);
         break;
     }
+}
+
+void DiscoveryWorker::notifyStoredPeer(const DiscoveryServicePollResult& result)
+{
+    const auto& peerStoredCallback = events_.GetPeerStoredCallback();
+    if (!peerStoredCallback
+        || result.GetAction() != DiscoveryServicePollAction::StoredPeer
+        || !result.HasPeerProfile()) {
+        return;
+    }
+
+    peerStoredCallback(result.GetPeerProfile().value());
 }
 
 void DiscoveryWorker::recordError(std::string errorMessage)

@@ -43,6 +43,32 @@ relaydesk::storage::PeerProfile makeBaseProfile(
     return profile;
 }
 
+bool containsAddress(const std::vector<std::string>& addresses,
+                     const std::string& address)
+{
+    return std::find(addresses.begin(), addresses.end(), address) != addresses.end();
+}
+
+void removeStaleProfilesForAnnouncement(
+    const relaydesk::storage::AppPaths& appPaths,
+    const DiscoveryAnnouncement& announcement,
+    const std::string& observedAddress)
+{
+    for (const auto& profile : relaydesk::storage::loadPeerProfiles(appPaths)) {
+        if (profile.GetDeviceId() == announcement.GetDeviceId()
+            || profile.GetHostName() != announcement.GetHostName()
+            || !containsAddress(profile.GetLastAddresses(), observedAddress)) {
+            continue;
+        }
+
+        const std::filesystem::path stalePath =
+            relaydesk::storage::getPeerProfileFilePath(
+                appPaths,
+                profile.GetDeviceId()).parent_path();
+        std::filesystem::remove_all(stalePath);
+    }
+}
+
 } // namespace
 
 relaydesk::storage::PeerProfile upsertPeerProfileFromDiscovery(
@@ -50,6 +76,8 @@ relaydesk::storage::PeerProfile upsertPeerProfileFromDiscovery(
     const DiscoveryAnnouncement& announcement,
     const std::string& observedAddress)
 {
+    removeStaleProfilesForAnnouncement(appPaths, announcement, observedAddress);
+
     const std::filesystem::path profilePath =
         relaydesk::storage::getPeerProfileFilePath(appPaths, announcement.GetDeviceId());
     if (!std::filesystem::exists(profilePath)) {

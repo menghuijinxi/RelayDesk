@@ -22,14 +22,17 @@ public:
     {
         return peerProfile_;
     }
+    bool GetPeerCreated() const { return peerCreated_; }
 
     static DiscoveryProcessResult IgnoredSelf();
     static DiscoveryProcessResult StoredPeer(
-        relaydesk::storage::PeerProfile peerProfile);
+        relaydesk::storage::PeerProfile peerProfile,
+        bool peerCreated);
 
 protected:
     DiscoveryProcessAction action_ = DiscoveryProcessAction::IgnoredSelf;
     std::optional<relaydesk::storage::PeerProfile> peerProfile_;
+    bool peerCreated_ = false;
 };
 
 DiscoveryProcessResult processDiscoveryAnnouncement(

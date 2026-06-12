@@ -1,9 +1,11 @@
 #pragma once
 
 #include "net/discovery_service.h"
+#include "storage/peer_profile.h"
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <stop_token>
 #include <string>
@@ -18,7 +20,12 @@ public:
     {
         return broadcastInterval_;
     }
+    std::chrono::milliseconds GetStartupBroadcastInterval() const
+    {
+        return startupBroadcastInterval_;
+    }
     std::chrono::milliseconds GetPollTimeout() const { return pollTimeout_; }
+    int GetStartupBroadcastCount() const { return startupBroadcastCount_; }
     bool GetBroadcastEnabled() const { return broadcastEnabled_; }
     bool GetAnnounceOnStart() const { return announceOnStart_; }
 
@@ -26,9 +33,18 @@ public:
     {
         broadcastInterval_ = broadcastInterval;
     }
+    void SetStartupBroadcastInterval(
+        std::chrono::milliseconds startupBroadcastInterval)
+    {
+        startupBroadcastInterval_ = startupBroadcastInterval;
+    }
     void SetPollTimeout(std::chrono::milliseconds pollTimeout)
     {
         pollTimeout_ = pollTimeout;
+    }
+    void SetStartupBroadcastCount(int startupBroadcastCount)
+    {
+        startupBroadcastCount_ = startupBroadcastCount;
     }
     void SetBroadcastEnabled(bool broadcastEnabled)
     {
@@ -41,9 +57,29 @@ public:
 
 protected:
     std::chrono::milliseconds broadcastInterval_{std::chrono::seconds(5)};
+    std::chrono::milliseconds startupBroadcastInterval_{std::chrono::seconds(1)};
     std::chrono::milliseconds pollTimeout_{std::chrono::milliseconds(100)};
+    int startupBroadcastCount_ = 3;
     bool broadcastEnabled_ = true;
     bool announceOnStart_ = true;
+};
+
+using PeerStoredCallback =
+    std::function<void(relaydesk::storage::PeerProfile)>;
+
+class DiscoveryWorkerEvents {
+public:
+    const PeerStoredCallback& GetPeerStoredCallback() const
+    {
+        return peerStoredCallback_;
+    }
+    void SetPeerStoredCallback(PeerStoredCallback peerStoredCallback)
+    {
+        peerStoredCallback_ = std::move(peerStoredCallback);
+    }
+
+protected:
+    PeerStoredCallback peerStoredCallback_;
 };
 
 class DiscoveryWorkerStats {
@@ -52,6 +88,7 @@ public:
     std::uint64_t GetStoredPeerCount() const { return storedPeerCount_; }
     std::uint64_t GetIgnoredSelfCount() const { return ignoredSelfCount_; }
     std::uint64_t GetInvalidPacketCount() const { return invalidPacketCount_; }
+    std::uint64_t GetReplyCount() const { return replyCount_; }
     std::uint64_t GetErrorCount() const { return errorCount_; }
     const std::string& GetLastErrorMessage() const { return lastErrorMessage_; }
 
@@ -71,6 +108,10 @@ public:
     {
         invalidPacketCount_ = invalidPacketCount;
     }
+    void SetReplyCount(std::uint64_t replyCount)
+    {
+        replyCount_ = replyCount;
+    }
     void SetErrorCount(std::uint64_t errorCount)
     {
         errorCount_ = errorCount;
@@ -85,6 +126,7 @@ protected:
     std::uint64_t storedPeerCount_ = 0;
     std::uint64_t ignoredSelfCount_ = 0;
     std::uint64_t invalidPacketCount_ = 0;
+    std::uint64_t replyCount_ = 0;
     std::uint64_t errorCount_ = 0;
     std::string lastErrorMessage_;
 };
@@ -92,7 +134,8 @@ protected:
 class DiscoveryWorker {
 public:
     DiscoveryWorker(DiscoveryService discoveryService,
-                    DiscoveryWorkerConfig workerConfig);
+                    DiscoveryWorkerConfig workerConfig,
+                    DiscoveryWorkerEvents events = {});
     ~DiscoveryWorker();
 
     DiscoveryWorker(const DiscoveryWorker&) = delete;
@@ -109,11 +152,14 @@ protected:
     void run(std::stop_token stopToken);
     void validateWorkerConfig() const;
     void recordBroadcast();
+    void recordReply();
     void recordPollResult(const DiscoveryServicePollResult& result);
+    void notifyStoredPeer(const DiscoveryServicePollResult& result);
     void recordError(std::string errorMessage);
 
     DiscoveryService discoveryService_;
     DiscoveryWorkerConfig workerConfig_;
+    DiscoveryWorkerEvents events_;
     mutable std::mutex mutex_;
     DiscoveryWorkerStats stats_;
     std::jthread thread_;

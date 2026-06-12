@@ -60,6 +60,16 @@ int returnsEmptyWhenNoPacketArrives()
     return expect(!packet.has_value(), "Empty discovery receive should time out.");
 }
 
+int sendsBroadcastWithoutThrowing()
+{
+    relaydesk::net::BoostAsioUdpDiscoveryTransport receiver(0);
+    relaydesk::net::BoostAsioUdpDiscoveryTransport sender(0);
+
+    sender.sendBroadcast("relaydesk.discovery.broadcast.test",
+                         receiver.GetLocalPort());
+    return 0;
+}
+
 int rejectsInvalidSendInputs()
 {
     relaydesk::net::BoostAsioUdpDiscoveryTransport sender(0);
@@ -103,6 +113,10 @@ int main()
     }
 
     if (const int result = returnsEmptyWhenNoPacketArrives(); result != 0) {
+        return result;
+    }
+
+    if (const int result = sendsBroadcastWithoutThrowing(); result != 0) {
         return result;
     }
 

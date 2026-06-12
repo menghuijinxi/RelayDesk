@@ -2,12 +2,15 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 
 namespace relaydesk::net {
+
+using UdpDiscoveryLogCallback = std::function<void(std::string)>;
 
 class UdpDiscoveryPacket {
 public:
@@ -44,6 +47,7 @@ public:
                 std::uint16_t port);
     void sendBroadcast(const std::string& payload, std::uint16_t port);
     std::optional<UdpDiscoveryPacket> tryReceiveFor(std::chrono::milliseconds timeout);
+    void SetLogCallback(UdpDiscoveryLogCallback logCallback);
     void close();
 
 protected:
