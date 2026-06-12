@@ -11,6 +11,7 @@ public:
     const std::filesystem::path& GetExecutablePath() const { return executablePath_; }
     const std::filesystem::path& GetWorkDirectory() const { return workDirectory_; }
     const std::filesystem::path& GetDataDirectory() const { return dataDirectory_; }
+    const std::filesystem::path& GetIdentityFilePath() const { return identityFilePath_; }
     const std::filesystem::path& GetLogsDirectory() const { return logsDirectory_; }
     const std::filesystem::path& GetPeersDirectory() const { return peersDirectory_; }
     const std::filesystem::path& GetTransfersDirectory() const { return transfersDirectory_; }
@@ -25,6 +26,7 @@ protected:
     std::filesystem::path executablePath_;
     std::filesystem::path workDirectory_;
     std::filesystem::path dataDirectory_;
+    std::filesystem::path identityFilePath_;
     std::filesystem::path logsDirectory_;
     std::filesystem::path peersDirectory_;
     std::filesystem::path transfersDirectory_;
@@ -37,4 +39,3 @@ AppPaths createAppPaths();
 void ensureAppDirectories(const AppPaths& appPaths);
 
 }
-

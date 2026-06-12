@@ -2,6 +2,7 @@
 
 #include "platform/computer_name.h"
 #include "storage/app_paths.h"
+#include "storage/local_identity.h"
 
 #include <algorithm>
 #include <array>
@@ -106,6 +107,8 @@ void ensureAppStorage()
     try {
         const auto paths = relaydesk::storage::createAppPaths();
         relaydesk::storage::ensureAppDirectories(paths);
+        const std::string hostName = relaydesk::platform::getComputerNameUtf8();
+        relaydesk::storage::loadOrCreateLocalIdentity(paths, hostName);
     } catch (const std::exception&) {
         // UI 仍可启动，后续存储层接入日志后再把启动失败原因展示给用户。
     }
@@ -344,8 +347,6 @@ void drawChatHeader(eui::Ui& ui, float x, float width)
     text(ui, "chat.header.ip", x + 78.0f, kContentTop + 43.0f, 160.0f, 22.0f,
          "192.168.1.24",
          13.0f, kMutedText);
-    icon(ui, "chat.header.call", x + width - 160.0f, kContentTop + 25.0f, 34.0f,
-         0xF095, kText);
     icon(ui, "chat.header.search", x + width - 100.0f, kContentTop + 25.0f, 34.0f,
          0xF002, kText);
     icon(ui, "chat.header.more", x + width - 44.0f, kContentTop + 25.0f, 34.0f,
@@ -450,11 +451,12 @@ void drawChatTimeline(eui::Ui& ui, float x, float y, float width, float height)
 void drawComposer(eui::Ui& ui, float x, float y, float width)
 {
     const float horizontalPadding = width < 560.0f ? 12.0f : 16.0f;
+    const float innerPadding = width < 560.0f ? 8.0f : 12.0f;
     const float sendWidth = width < 560.0f ? 58.0f : 70.0f;
-    const float sendX = x + width - horizontalPadding - sendWidth;
+    const float sendX = x + width - horizontalPadding - innerPadding - sendWidth;
     const float iconSize = width < 560.0f ? 34.0f : 38.0f;
     const float firstActionX = width < 560.0f ? sendX - 48.0f : x + width - 272.0f;
-    const float inputWidth = std::max(140.0f, firstActionX - (x + 28.0f) - 12.0f);
+    const float inputWidth = std::max(140.0f, firstActionX - (x + 28.0f) - innerPadding);
 
     rect(ui, "composer.bg", x + horizontalPadding, y, width - horizontalPadding * 2.0f,
          kComposerHeight, kPanelBackground, 8.0f, kBorder);

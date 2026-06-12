@@ -1,6 +1,7 @@
 #include "storage/app_paths.h"
 
 #include <array>
+#include <utility>
 
 namespace relaydesk::storage {
 
@@ -8,6 +9,7 @@ AppPaths::AppPaths(std::filesystem::path executablePath)
     : executablePath_(std::move(executablePath)),
       workDirectory_(executablePath_.parent_path()),
       dataDirectory_(workDirectory_ / "data"),
+      identityFilePath_(dataDirectory_ / "identity.json"),
       logsDirectory_(dataDirectory_ / "logs"),
       peersDirectory_(dataDirectory_ / "peers"),
       transfersDirectory_(dataDirectory_ / "transfers"),
@@ -35,4 +37,3 @@ void ensureAppDirectories(const AppPaths& appPaths)
 }
 
 }
-

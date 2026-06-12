@@ -31,6 +31,10 @@ int main()
         return fail("Data directory mismatch.");
     }
 
+    if (appPaths.GetIdentityFilePath() != LR"(C:\RelayDesk\bin\data\identity.json)") {
+        return fail("Identity file path mismatch.");
+    }
+
     if (appPaths.GetInboxDirectory() != LR"(C:\RelayDesk\bin\data\transfers\inbox)") {
         return fail("Inbox directory mismatch.");
     }
@@ -45,4 +49,3 @@ int main()
 
     return 0;
 }
-
