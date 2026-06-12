@@ -47,6 +47,10 @@ if(RELAYDESK_HAS_EUI_NEO)
         src/core/uuid.cpp
         src/platform/computer_name_win.cpp
         src/platform/text_encoding_win.cpp
+        src/net/discovery_local_announcement.cpp
+        src/net/discovery_message.cpp
+        src/net/discovery_peer_profile.cpp
+        src/net/discovery_processor.cpp
         src/storage/app_paths.cpp
         src/storage/history_store.cpp
         src/storage/local_identity.cpp
@@ -177,6 +181,98 @@ if(MSVC)
 endif()
 
 add_test(NAME relaydesk_text_encoding_tests COMMAND relaydesk_text_encoding_tests)
+
+add_executable(relaydesk_discovery_message_tests
+    tests/net/discovery_message_tests.cpp
+    src/net/discovery_message.cpp
+)
+
+target_include_directories(relaydesk_discovery_message_tests PRIVATE src)
+target_compile_features(relaydesk_discovery_message_tests PRIVATE cxx_std_23)
+target_link_libraries(relaydesk_discovery_message_tests PRIVATE nlohmann_json::nlohmann_json)
+
+if(MSVC)
+    target_compile_options(relaydesk_discovery_message_tests PRIVATE /W4 /permissive- /utf-8)
+endif()
+
+add_test(NAME relaydesk_discovery_message_tests COMMAND relaydesk_discovery_message_tests)
+
+add_executable(relaydesk_discovery_local_announcement_tests
+    tests/net/discovery_local_announcement_tests.cpp
+    src/core/time.cpp
+    src/core/uuid.cpp
+    src/net/discovery_local_announcement.cpp
+    src/net/discovery_message.cpp
+    src/storage/app_paths.cpp
+    src/storage/local_identity.cpp
+)
+
+target_include_directories(relaydesk_discovery_local_announcement_tests PRIVATE src)
+target_compile_features(relaydesk_discovery_local_announcement_tests PRIVATE cxx_std_23)
+target_link_libraries(relaydesk_discovery_local_announcement_tests
+    PRIVATE nlohmann_json::nlohmann_json)
+
+if(MSVC)
+    target_compile_options(relaydesk_discovery_local_announcement_tests
+        PRIVATE /W4 /permissive- /utf-8)
+endif()
+
+add_test(NAME relaydesk_discovery_local_announcement_tests
+         COMMAND relaydesk_discovery_local_announcement_tests)
+
+add_executable(relaydesk_discovery_peer_profile_tests
+    tests/net/discovery_peer_profile_tests.cpp
+    src/net/discovery_message.cpp
+    src/net/discovery_peer_profile.cpp
+    src/storage/app_paths.cpp
+    src/storage/peer_profile.cpp
+)
+
+target_include_directories(relaydesk_discovery_peer_profile_tests PRIVATE src)
+target_compile_features(relaydesk_discovery_peer_profile_tests PRIVATE cxx_std_23)
+target_link_libraries(relaydesk_discovery_peer_profile_tests
+    PRIVATE nlohmann_json::nlohmann_json)
+
+target_compile_definitions(relaydesk_discovery_peer_profile_tests PRIVATE
+    RELAYDESK_DISCOVERY_TEST_WORK_DIR="${CMAKE_SOURCE_DIR}/tmp/tests/discovery"
+)
+
+if(MSVC)
+    target_compile_options(relaydesk_discovery_peer_profile_tests
+        PRIVATE /W4 /permissive- /utf-8)
+endif()
+
+add_test(NAME relaydesk_discovery_peer_profile_tests
+         COMMAND relaydesk_discovery_peer_profile_tests)
+
+add_executable(relaydesk_discovery_processor_tests
+    tests/net/discovery_processor_tests.cpp
+    src/net/discovery_message.cpp
+    src/net/discovery_peer_profile.cpp
+    src/net/discovery_processor.cpp
+    src/storage/app_paths.cpp
+    src/storage/peer_profile.cpp
+)
+
+target_include_directories(relaydesk_discovery_processor_tests PRIVATE src)
+target_compile_features(relaydesk_discovery_processor_tests PRIVATE cxx_std_23)
+target_link_libraries(relaydesk_discovery_processor_tests
+    PRIVATE nlohmann_json::nlohmann_json)
+
+set(RELAYDESK_DISCOVERY_PROCESSOR_TEST_PATH
+    "${CMAKE_SOURCE_DIR}/tmp/tests/discovery_processor")
+
+target_compile_definitions(relaydesk_discovery_processor_tests PRIVATE
+    "RELAYDESK_DISCOVERY_PROCESSOR_TEST_WORK_DIR=\"${RELAYDESK_DISCOVERY_PROCESSOR_TEST_PATH}\""
+)
+
+if(MSVC)
+    target_compile_options(relaydesk_discovery_processor_tests
+        PRIVATE /W4 /permissive- /utf-8)
+endif()
+
+add_test(NAME relaydesk_discovery_processor_tests
+         COMMAND relaydesk_discovery_processor_tests)
 
 add_executable(relaydesk_peer_profile_tests
     tests/storage/peer_profile_tests.cpp

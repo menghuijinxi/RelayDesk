@@ -1,0 +1,135 @@
+#include "net/discovery_message.h"
+
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include <nlohmann/json.hpp>
+
+namespace relaydesk::net {
+namespace {
+
+constexpr const char* kProtocol = "relaydesk.discovery";
+constexpr int kVersion = 1;
+constexpr std::uint16_t kMinTcpPort = 1;
+
+void validateStringList(const std::vector<std::string>& values,
+                        const char* fieldName)
+{
+    for (const auto& value : values) {
+        if (value.empty()) {
+            throw std::runtime_error(std::string("Discovery field contains empty value: ")
+                                     + fieldName);
+        }
+    }
+}
+
+void validateAnnouncement(const DiscoveryAnnouncement& announcement)
+{
+    if (announcement.GetVersion() != kVersion
+        || announcement.GetType().empty()
+        || announcement.GetDeviceId().empty()
+        || announcement.GetHostName().empty()
+        || announcement.GetDisplayName().empty()
+        || announcement.GetTcpPort() < kMinTcpPort
+        || announcement.GetTimestamp().empty()) {
+        throw std::runtime_error("Discovery announcement contains invalid fields.");
+    }
+
+    validateStringList(announcement.GetCapabilities(), "capabilities");
+}
+
+std::string readRequiredString(const nlohmann::json& value, const char* fieldName)
+{
+    if (!value.contains(fieldName) || !value[fieldName].is_string()
+        || value[fieldName].get<std::string>().empty()) {
+        throw std::runtime_error("Discovery announcement is missing a string field.");
+    }
+
+    return value[fieldName].get<std::string>();
+}
+
+std::uint16_t readRequiredTcpPort(const nlohmann::json& value)
+{
+    if (!value.contains("tcp_port") || !value["tcp_port"].is_number_unsigned()) {
+        throw std::runtime_error("Discovery announcement is missing tcp_port.");
+    }
+
+    const auto tcpPort = value["tcp_port"].get<unsigned int>();
+    if (tcpPort > 65535u || tcpPort < kMinTcpPort) {
+        throw std::runtime_error("Discovery announcement tcp_port is out of range.");
+    }
+
+    return static_cast<std::uint16_t>(tcpPort);
+}
+
+std::vector<std::string> readCapabilities(const nlohmann::json& value)
+{
+    if (!value.contains("capabilities") || !value["capabilities"].is_array()) {
+        throw std::runtime_error("Discovery announcement is missing capabilities.");
+    }
+
+    std::vector<std::string> capabilities;
+    for (const auto& capability : value["capabilities"]) {
+        if (!capability.is_string() || capability.get<std::string>().empty()) {
+            throw std::runtime_error("Discovery announcement capability is invalid.");
+        }
+        capabilities.push_back(capability.get<std::string>());
+    }
+    return capabilities;
+}
+
+nlohmann::json toJson(const DiscoveryAnnouncement& announcement)
+{
+    validateAnnouncement(announcement);
+    return nlohmann::json{
+        {"protocol", kProtocol},
+        {"version", announcement.GetVersion()},
+        {"type", announcement.GetType()},
+        {"device_id", announcement.GetDeviceId()},
+        {"host_name", announcement.GetHostName()},
+        {"display_name", announcement.GetDisplayName()},
+        {"tcp_port", announcement.GetTcpPort()},
+        {"capabilities", announcement.GetCapabilities()},
+        {"timestamp", announcement.GetTimestamp()},
+    };
+}
+
+DiscoveryAnnouncement fromJson(const nlohmann::json& value)
+{
+    if (!value.is_object()
+        || value.value("protocol", "") != kProtocol
+        || value.value("version", 0) != kVersion) {
+        throw std::runtime_error("Discovery announcement has unsupported schema.");
+    }
+
+    DiscoveryAnnouncement announcement;
+    announcement.SetVersion(value["version"].get<int>());
+    announcement.SetType(readRequiredString(value, "type"));
+    announcement.SetDeviceId(readRequiredString(value, "device_id"));
+    announcement.SetHostName(readRequiredString(value, "host_name"));
+    announcement.SetDisplayName(readRequiredString(value, "display_name"));
+    announcement.SetTcpPort(readRequiredTcpPort(value));
+    announcement.SetCapabilities(readCapabilities(value));
+    announcement.SetTimestamp(readRequiredString(value, "timestamp"));
+    validateAnnouncement(announcement);
+    return announcement;
+}
+
+} // namespace
+
+std::string serializeDiscoveryAnnouncement(const DiscoveryAnnouncement& announcement)
+{
+    return toJson(announcement).dump();
+}
+
+DiscoveryAnnouncement parseDiscoveryAnnouncement(const std::string& payload)
+{
+    try {
+        return fromJson(nlohmann::json::parse(payload));
+    } catch (const nlohmann::json::exception&) {
+        throw std::runtime_error("Discovery announcement payload is invalid JSON.");
+    }
+}
+
+}
