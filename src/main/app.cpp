@@ -181,6 +181,52 @@ void icon(eui::Ui& ui,
         .build();
 }
 
+std::size_t firstUtf8CodepointLength(unsigned char leadByte)
+{
+    if ((leadByte & 0x80u) == 0u) {
+        return 1u;
+    }
+    if ((leadByte & 0xE0u) == 0xC0u) {
+        return 2u;
+    }
+    if ((leadByte & 0xF0u) == 0xE0u) {
+        return 3u;
+    }
+    if ((leadByte & 0xF8u) == 0xF0u) {
+        return 4u;
+    }
+    return 1u;
+}
+
+std::string makeAvatarText(const std::string& displayName)
+{
+    const std::size_t first = displayName.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+        return "?";
+    }
+
+    const auto leadByte = static_cast<unsigned char>(displayName[first]);
+    const std::size_t length = firstUtf8CodepointLength(leadByte);
+    if (first + length > displayName.size()) {
+        return displayName.substr(first, 1u);
+    }
+
+    return displayName.substr(first, length);
+}
+
+void avatar(eui::Ui& ui,
+            const std::string& id,
+            float x,
+            float y,
+            float size,
+            const std::string& displayName)
+{
+    rect(ui, id + ".bg", x, y, size, size, kAvatarGreen, size * 0.5f);
+    text(ui, id + ".text", x, y, size, size, makeAvatarText(displayName),
+         std::clamp(size * 0.44f, 14.0f, 32.0f),
+         {1.0f, 1.0f, 1.0f, 1.0f}, eui::HorizontalAlign::Center);
+}
+
 void statusDot(eui::Ui& ui,
                const std::string& id,
                float x,
@@ -237,7 +283,7 @@ void peerRow(eui::Ui& ui,
     }
 
     statusDot(ui, id + ".state", x + 20.0f, y + 18.0f, peer.online ? kGreen : kOffline);
-    icon(ui, id + ".computer", x + 42.0f, y + 3.0f, 35.0f, 0xE7F4, kText);
+    avatar(ui, id + ".avatar", x + 42.0f, y + 3.0f, 35.0f, peer.name);
     text(ui, id + ".name", x + 88.0f, y - 2.0f, width - 110.0f, 24.0f, peer.name,
          15.0f);
     text(ui, id + ".ip", x + 88.0f, y + 23.0f, width - 110.0f, 22.0f, peer.address,
@@ -319,10 +365,7 @@ void drawRuntimeLocalUserHeader(eui::Ui& ui,
         ? "RelayDesk"
         : localUser.GetDisplayName();
 
-    rect(ui, "local.avatar.bg", x + 22.0f, y + 16.0f, 44.0f, 44.0f, kAvatarGreen,
-         22.0f);
-    text(ui, "local.avatar.text", x + 22.0f, y + 24.0f, 44.0f, 26.0f, "RD", 18.0f,
-         {1.0f, 1.0f, 1.0f, 1.0f}, eui::HorizontalAlign::Center);
+    avatar(ui, "local.avatar", x + 22.0f, y + 16.0f, 44.0f, displayName);
     text(ui, "local.name", x + 78.0f, y + 15.0f, width - 132.0f, 26.0f,
          displayName, 17.0f);
     text(ui, "local.address", x + 78.0f, y + 41.0f, width - 132.0f, 22.0f,
@@ -466,12 +509,13 @@ void drawChatHeader(eui::Ui& ui, float x, float width)
     rect(ui, "chat.header.peer.line", x, kContentTop + 75.0f, width, 1.0f, kBorder);
     rect(ui, "chat.header.line", x, kContentTop + kChatHeaderHeight - 1.0f, width, 1.0f,
          kBorder);
-    icon(ui, "chat.header.computer", x + 22.0f, kContentTop + 23.0f, 42.0f, 0xE7F4,
-         kText);
-    statusDot(ui, "chat.header.dot", x + 62.0f, kContentTop + 46.0f, kGreen, 12.0f);
-    text(ui, "chat.header.name", x + 78.0f, kContentTop + 17.0f, 180.0f, 26.0f,
+    avatar(ui, "chat.header.avatar", x + 34.0f, kContentTop + 24.0f, 38.0f,
+           "Alex-PC");
+    statusDot(ui, "chat.header.dot", x + 96.0f, kContentTop + 50.0f, kGreen, 10.0f);
+    text(ui, "chat.header.name", x + 96.0f, kContentTop + 17.0f, width - 210.0f,
+         26.0f,
          "Alex-PC", 18.0f);
-    text(ui, "chat.header.ip", x + 78.0f, kContentTop + 43.0f, 160.0f, 22.0f,
+    text(ui, "chat.header.ip", x + 112.0f, kContentTop + 43.0f, width - 230.0f, 22.0f,
          "192.168.1.24",
          13.0f, kMutedText);
     icon(ui, "chat.header.search", x + width - 100.0f, kContentTop + 25.0f, 34.0f,
@@ -535,13 +579,13 @@ void drawRuntimeChatHeader(
     rect(ui, "chat.header.peer.line", x, kContentTop + 75.0f, width, 1.0f, kBorder);
     rect(ui, "chat.header.line", x, kContentTop + kChatHeaderHeight - 1.0f, width,
          1.0f, kBorder);
-    icon(ui, "chat.header.computer", x + 22.0f, kContentTop + 23.0f, 42.0f, 0xE7F4,
-         kText);
-    statusDot(ui, "chat.header.dot", x + 62.0f, kContentTop + 46.0f, statusColor,
-              12.0f);
-    text(ui, "chat.header.name", x + 78.0f, kContentTop + 17.0f, width - 180.0f,
+    avatar(ui, "chat.header.avatar", x + 34.0f, kContentTop + 24.0f, 38.0f,
+           getSelectedPeerTitle(selectedPeer));
+    statusDot(ui, "chat.header.dot", x + 96.0f, kContentTop + 50.0f, statusColor,
+              10.0f);
+    text(ui, "chat.header.name", x + 96.0f, kContentTop + 17.0f, width - 210.0f,
          26.0f, getSelectedPeerTitle(selectedPeer), 18.0f);
-    text(ui, "chat.header.ip", x + 78.0f, kContentTop + 43.0f, width - 180.0f,
+    text(ui, "chat.header.ip", x + 112.0f, kContentTop + 43.0f, width - 230.0f,
          22.0f, getSelectedPeerAddress(selectedPeer), 13.0f, kMutedText);
     icon(ui, "chat.header.search", x + width - 100.0f, kContentTop + 25.0f, 34.0f,
          0xE721, kText);
@@ -793,8 +837,8 @@ void drawDetails(eui::Ui& ui, float x, float width, float height)
          "Alex-PC", 17.0f);
     icon(ui, "details.close", x + width - 52.0f, kContentTop + 19.0f, 30.0f, 0xE711,
          kText);
-    icon(ui, "details.computer", x + 50.0f, kContentTop + 73.0f, 78.0f, 0xE7F4,
-         kText);
+    avatar(ui, "details.avatar", x + 50.0f, kContentTop + 73.0f, 78.0f,
+           "Alex-PC");
     statusDot(ui, "details.status", x + 154.0f, kContentTop + 101.0f, kGreen, 12.0f);
     text(ui, "details.online", x + 176.0f, kContentTop + 91.0f, 120.0f, 28.0f,
          "在线", 18.0f, kGreen);
@@ -864,8 +908,8 @@ void drawRuntimeDetails(
          28.0f, getSelectedPeerTitle(selectedPeer), 17.0f);
     icon(ui, "details.close", x + width - 52.0f, kContentTop + 19.0f, 30.0f, 0xE711,
          kText);
-    icon(ui, "details.computer", x + 50.0f, kContentTop + 73.0f, 78.0f, 0xE7F4,
-         kText);
+    avatar(ui, "details.avatar", x + 50.0f, kContentTop + 73.0f, 78.0f,
+           getSelectedPeerTitle(selectedPeer));
 
     const bool online = selectedPeer.has_value() && selectedPeer->GetOnline();
     statusDot(ui, "details.status", x + 154.0f, kContentTop + 101.0f,
