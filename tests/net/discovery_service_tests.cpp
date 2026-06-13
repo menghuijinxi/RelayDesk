@@ -1,6 +1,7 @@
 #include "net/discovery_service.h"
 
 #include "net/boost_asio_udp_discovery_transport.h"
+#include "net/discovery_message.h"
 #include "storage/peer_profile.h"
 
 #include <chrono>
@@ -120,6 +121,32 @@ int sendsAnnouncementAndStoresPeer()
                   "Stored discovery peer observed address mismatch.");
 }
 
+int sendsOfflineAnnouncement()
+{
+    relaydesk::net::DiscoveryService sender(
+        makeAppPaths("offline-sender"),
+        makeIdentity("offline-sender-device", "Offline-Sender"),
+        makeTestConfig());
+    relaydesk::net::DiscoveryService receiver(
+        makeAppPaths("offline-receiver"),
+        makeIdentity("offline-receiver-device", "Offline-Receiver"),
+        makeTestConfig());
+
+    sender.sendOfflineTo("127.0.0.1", receiver.GetLocalUdpPort());
+    const auto result = receiver.pollOnce(500ms);
+
+    if (const int check = expect(result.GetAction()
+                                     == relaydesk::net::DiscoveryServicePollAction::StoredPeer,
+                                 "Offline announcement was not stored.");
+        check != 0) {
+        return check;
+    }
+
+    return expect(result.GetAnnouncementType()
+                      == relaydesk::net::kDiscoveryAnnouncementTypeOffline,
+                  "Offline announcement type mismatch.");
+}
+
 int ignoresSelfAnnouncement()
 {
     const auto appPaths = makeAppPaths("self");
@@ -207,6 +234,10 @@ int main()
     }
 
     if (const int result = sendsAnnouncementAndStoresPeer(); result != 0) {
+        return result;
+    }
+
+    if (const int result = sendsOfflineAnnouncement(); result != 0) {
         return result;
     }
 

@@ -1,6 +1,7 @@
 #include "net/discovery_worker.h"
 
 #include "net/boost_asio_udp_discovery_transport.h"
+#include "net/discovery_message.h"
 #include "storage/peer_profile.h"
 
 #include <chrono>
@@ -222,11 +223,15 @@ int notifiesStoredPeerInMemory()
 {
     std::mutex mutex;
     std::optional<relaydesk::storage::PeerProfile> notifiedPeer;
+    std::optional<std::string> notifiedType;
     relaydesk::net::DiscoveryWorkerEvents events;
     events.SetPeerStoredCallback(
-        [&mutex, &notifiedPeer](relaydesk::storage::PeerProfile profile) {
+        [&mutex, &notifiedPeer, &notifiedType](
+            relaydesk::storage::PeerProfile profile,
+            std::string announcementType) {
             std::lock_guard lock(mutex);
             notifiedPeer = std::move(profile);
+            notifiedType = std::move(announcementType);
         });
 
     relaydesk::net::DiscoveryWorker receiver(
@@ -248,8 +253,71 @@ int notifiesStoredPeerInMemory()
     receiver.stop();
 
     std::lock_guard lock(mutex);
-    return expect(notifiedPeer->GetDeviceId() == "sender-device",
-                  "Discovery worker stored peer notification mismatch.");
+    if (const int result = expect(notifiedPeer->GetDeviceId() == "sender-device",
+                                  "Discovery worker stored peer notification mismatch.");
+        result != 0) {
+        return result;
+    }
+
+    return expect(notifiedType.value_or("")
+                      == relaydesk::net::kDiscoveryAnnouncementTypeHello,
+                  "Discovery worker stored peer notification type mismatch.");
+}
+
+int notifiesOfflinePeerInMemory()
+{
+    std::mutex mutex;
+    std::optional<relaydesk::storage::PeerProfile> notifiedPeer;
+    std::optional<std::string> notifiedType;
+    relaydesk::net::DiscoveryWorkerEvents events;
+    events.SetPeerStoredCallback(
+        [&mutex, &notifiedPeer, &notifiedType](
+            relaydesk::storage::PeerProfile profile,
+            std::string announcementType) {
+            std::lock_guard lock(mutex);
+            notifiedPeer = std::move(profile);
+            notifiedType = std::move(announcementType);
+        });
+
+    relaydesk::net::DiscoveryWorker receiver(
+        makeService(makeAppPaths("offline-notify-receiver"),
+                    "receiver-device",
+                    "Receiver-PC"),
+        makeWorkerConfig(),
+        std::move(events));
+    relaydesk::net::DiscoveryService sender =
+        makeService(makeAppPaths("offline-notify-sender"),
+                    "sender-device",
+                    "Sender-PC");
+
+    receiver.start();
+    sender.sendOfflineTo("127.0.0.1", receiver.GetLocalUdpPort());
+
+    if (const int result = expect(waitForNotifiedPeer(mutex, notifiedPeer),
+                                  "Discovery worker did not notify offline peer.");
+        result != 0) {
+        receiver.stop();
+        return result;
+    }
+    std::this_thread::sleep_for(100ms);
+    receiver.stop();
+
+    std::lock_guard lock(mutex);
+    if (const int result = expect(notifiedPeer->GetDeviceId() == "sender-device",
+                                  "Discovery worker offline peer notification mismatch.");
+        result != 0) {
+        return result;
+    }
+
+    if (const int result = expect(notifiedType.value_or("")
+                                      == relaydesk::net::kDiscoveryAnnouncementTypeOffline,
+                                  "Discovery worker offline notification type mismatch.");
+        result != 0) {
+        return result;
+    }
+
+    return expect(receiver.GetStats().GetReplyCount() == 0,
+                  "Discovery worker should not reply to offline packet.");
 }
 
 int repliesAfterReceivingPeerAnnouncement()
@@ -364,6 +432,48 @@ int doesNotReplyToReplyAnnouncement()
                   "Discovery worker should not reply to a reply packet.");
 }
 
+int doesNotReplyAfterStopRequested()
+{
+    auto receiverConfig = makeWorkerConfig();
+    receiverConfig.SetBroadcastEnabled(true);
+    receiverConfig.SetAnnounceOnStart(false);
+    receiverConfig.SetBroadcastInterval(10s);
+    receiverConfig.SetPollTimeout(250ms);
+
+    relaydesk::net::DiscoveryWorker receiver(
+        makeService(makeAppPaths("stopping-reply-receiver"),
+                    "receiver-device",
+                    "Receiver-PC",
+                    findUnusedDiscoveryPort()),
+        receiverConfig);
+    relaydesk::net::DiscoveryService sender =
+        makeService(makeAppPaths("stopping-reply-sender"),
+                    "sender-device",
+                    "Sender-PC");
+
+    receiver.start();
+    std::this_thread::sleep_for(30ms);
+    const std::uint16_t receiverPort = receiver.GetLocalUdpPort();
+    std::thread stopper([&receiver] {
+        receiver.stop();
+    });
+    std::this_thread::sleep_for(30ms);
+    sender.sendAnnouncementTo("127.0.0.1", receiverPort);
+    stopper.join();
+
+    const auto replyResult = sender.pollOnce(200ms);
+    if (const int result = expect(
+            replyResult.GetAnnouncementType()
+                != relaydesk::net::kDiscoveryAnnouncementTypeReply,
+            "Discovery worker replied after stop was requested.");
+        result != 0) {
+        return result;
+    }
+
+    return expect(receiver.GetStats().GetReplyCount() == 0,
+                  "Discovery worker recorded reply after stop was requested.");
+}
+
 int continuesBroadcastingAfterStartupBurst()
 {
     auto config = makeWorkerConfig();
@@ -444,6 +554,10 @@ int main()
         return result;
     }
 
+    if (const int result = notifiesOfflinePeerInMemory(); result != 0) {
+        return result;
+    }
+
     if (const int result = repliesAfterReceivingPeerAnnouncement(); result != 0) {
         return result;
     }
@@ -454,6 +568,10 @@ int main()
     }
 
     if (const int result = doesNotReplyToReplyAnnouncement(); result != 0) {
+        return result;
+    }
+
+    if (const int result = doesNotReplyAfterStopRequested(); result != 0) {
         return result;
     }
 

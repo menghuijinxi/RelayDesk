@@ -9,6 +9,7 @@
 #include "storage/peer_profile.h"
 
 #if defined(RELAYDESK_HAS_BOOST_ASIO)
+#include "net/discovery_message.h"
 #include "net/discovery_service.h"
 #include "net/discovery_worker.h"
 #endif
@@ -20,6 +21,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -29,7 +31,8 @@ namespace {
 using namespace std::chrono_literals;
 
 constexpr const char* kDiscoveryLogFileName = "discovery.log";
-constexpr auto kPeerOnlineTimeout = 45s;
+constexpr auto kPeerOnlineTimeout = 10s;
+constexpr auto kPeerStatusRefreshInterval = 1s;
 
 constexpr bool discoveryTraceEnabled()
 {
@@ -74,6 +77,16 @@ bool isStalePeerForProfile(const PeerListItem& peer,
     }
 
     return hasPeerAddress(profile, peer.GetAddress());
+}
+
+bool isStaleOnlineProfile(const PeerListItem& peer,
+                          const relaydesk::storage::PeerProfile& profile,
+                          bool online)
+{
+    return online
+        && !peer.GetLastSeenAt().empty()
+        && !profile.GetLastSeenAt().empty()
+        && profile.GetLastSeenAt() <= peer.GetLastSeenAt();
 }
 
 PeerListItem makePeerListItem(const relaydesk::storage::PeerProfile& profile,
@@ -185,6 +198,14 @@ void PeerListItem::SetOnline(bool online)
     online_ = online;
 }
 
+PendingPeerProfile::PendingPeerProfile(
+    relaydesk::storage::PeerProfile profile,
+    bool online)
+    : profile_(std::move(profile)),
+      online_(online)
+{
+}
+
 RelayDeskRuntime::RelayDeskRuntime()
 {
     initialize();
@@ -217,8 +238,9 @@ void RelayDeskRuntime::refreshPeersIfNeeded()
     drainPendingPeerProfiles();
     if (now >= nextPeerStatusRefreshAt_) {
         refreshPeerOnlineStates();
-        nextPeerStatusRefreshAt_ = now + 1s;
+        nextPeerStatusRefreshAt_ = now + kPeerStatusRefreshInterval;
     }
+    requestPeerStatusRefresh();
 }
 
 void RelayDeskRuntime::selectPeer(std::string deviceId)
@@ -266,8 +288,12 @@ void RelayDeskRuntime::initialize()
             serviceConfig);
         relaydesk::net::DiscoveryWorkerEvents workerEvents;
         workerEvents.SetPeerStoredCallback(
-            [this](relaydesk::storage::PeerProfile profile) {
-                enqueuePeerProfile(std::move(profile));
+            [this](relaydesk::storage::PeerProfile profile,
+                   std::string announcementType) {
+                enqueuePeerProfile(
+                    std::move(profile),
+                    announcementType
+                        != relaydesk::net::kDiscoveryAnnouncementTypeOffline);
             });
         auto discoveryWorker = std::make_unique<relaydesk::net::DiscoveryWorker>(
             std::move(discoveryService),
@@ -308,26 +334,31 @@ void RelayDeskRuntime::refreshPeers()
     }
 }
 
-void RelayDeskRuntime::enqueuePeerProfile(relaydesk::storage::PeerProfile profile)
+void RelayDeskRuntime::enqueuePeerProfile(
+    relaydesk::storage::PeerProfile profile,
+    bool online)
 {
     const std::string deviceId = profile.GetDeviceId();
     const std::string address = choosePeerAddress(profile);
+    const std::string lastSeenAt = profile.GetLastSeenAt();
     std::size_t pendingCount = 0;
     {
         std::lock_guard lock(pendingPeerMutex_);
-        pendingPeerProfiles_.push_back(std::move(profile));
+        pendingPeerProfiles_.emplace_back(std::move(profile), online);
         pendingCount = pendingPeerProfiles_.size();
     }
 
     logDiagnostic("runtime.peer.enqueue device_id=" + deviceId
                   + " address=" + address
+                  + " online=" + std::to_string(online)
+                  + " last_seen=" + lastSeenAt
                   + " pending_count=" + std::to_string(pendingCount));
     requestUiRefresh();
 }
 
 void RelayDeskRuntime::drainPendingPeerProfiles()
 {
-    std::vector<relaydesk::storage::PeerProfile> pendingProfiles;
+    std::vector<PendingPeerProfile> pendingProfiles;
     {
         std::lock_guard lock(pendingPeerMutex_);
         pendingProfiles.swap(pendingPeerProfiles_);
@@ -340,14 +371,17 @@ void RelayDeskRuntime::drainPendingPeerProfiles()
     logDiagnostic("runtime.peer.drain count="
                   + std::to_string(pendingProfiles.size()));
     const auto now = std::chrono::steady_clock::now();
-    for (const auto& profile : pendingProfiles) {
-        applyPeerProfile(profile, now);
+    for (const auto& pendingProfile : pendingProfiles) {
+        applyPeerProfile(pendingProfile.GetProfile(),
+                         pendingProfile.GetOnline(),
+                         now);
     }
     syncSelectedPeer();
 }
 
 void RelayDeskRuntime::applyPeerProfile(
     const relaydesk::storage::PeerProfile& profile,
+    bool online,
     std::chrono::steady_clock::time_point now)
 {
     const auto peerCountBeforeCleanup = peers_.size();
@@ -367,24 +401,41 @@ void RelayDeskRuntime::applyPeerProfile(
         [&profile](const PeerListItem& peer) {
             return peer.GetDeviceId() == profile.GetDeviceId();
         });
-    PeerListItem item = makePeerListItem(profile, true);
-    item.SetLastOnlineSignalAt(now);
+    if (existing != peers_.end()
+        && isStaleOnlineProfile(*existing, profile, online)) {
+        logDiagnostic("runtime.peer.apply action=ignored_stale_online device_id="
+                      + profile.GetDeviceId()
+                      + " incoming_last_seen=" + profile.GetLastSeenAt()
+                      + " current_last_seen=" + existing->GetLastSeenAt());
+        return;
+    }
+
+    PeerListItem item = makePeerListItem(profile, online);
+    if (online) {
+        item.SetLastOnlineSignalAt(now);
+    }
     if (existing == peers_.end()) {
         peers_.push_back(item);
         logDiagnostic("runtime.peer.apply action=added device_id="
                       + profile.GetDeviceId()
                       + " address=" + item.GetAddress()
-                      + " online=1 stale_removed="
+                      + " online=" + std::to_string(online)
+                      + " last_seen=" + item.GetLastSeenAt()
+                      + " stale_removed="
                       + std::to_string(stalePeerCount));
         return;
     }
 
     const bool wasOnline = existing->GetOnline();
+    const std::string previousLastSeenAt = existing->GetLastSeenAt();
     *existing = item;
     logDiagnostic("runtime.peer.apply action=updated device_id="
                   + profile.GetDeviceId()
                   + " address=" + item.GetAddress()
-                  + " online=1 was_online=" + std::to_string(wasOnline)
+                  + " online=" + std::to_string(online)
+                  + " was_online=" + std::to_string(wasOnline)
+                  + " incoming_last_seen=" + item.GetLastSeenAt()
+                  + " previous_last_seen=" + previousLastSeenAt
                   + " stale_removed=" + std::to_string(stalePeerCount));
 }
 
@@ -444,6 +495,32 @@ void RelayDeskRuntime::requestUiRefresh()
         });
     if (!accepted) {
         uiRefreshPending_.store(false);
+    }
+}
+
+void RelayDeskRuntime::requestPeerStatusRefresh()
+{
+    bool expected = false;
+    if (!peerStatusRefreshPending_.compare_exchange_strong(expected, true)) {
+        return;
+    }
+
+    const bool accepted = ::core::async::restart(
+        "relaydesk.peer.status.refresh",
+        [](const ::core::async::CancelToken& token) {
+            const auto waitUntil =
+                std::chrono::steady_clock::now() + kPeerStatusRefreshInterval;
+            while (!token.canceled()
+                   && std::chrono::steady_clock::now() < waitUntil) {
+                std::this_thread::sleep_for(50ms);
+            }
+            return ::core::async::success();
+        },
+        [this](const ::core::async::Result<void>&) {
+            peerStatusRefreshPending_.store(false);
+        });
+    if (!accepted) {
+        peerStatusRefreshPending_.store(false);
     }
 }
 

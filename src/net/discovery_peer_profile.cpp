@@ -49,6 +49,18 @@ bool containsAddress(const std::vector<std::string>& addresses,
     return std::find(addresses.begin(), addresses.end(), address) != addresses.end();
 }
 
+bool isNewerThanProfile(const DiscoveryAnnouncement& announcement,
+                        const relaydesk::storage::PeerProfile& profile)
+{
+    return announcement.GetTimestamp() >= profile.GetLastSeenAt();
+}
+
+bool isStaleForProfile(const DiscoveryAnnouncement& announcement,
+                       const relaydesk::storage::PeerProfile& profile)
+{
+    return announcement.GetTimestamp() <= profile.GetLastSeenAt();
+}
+
 void removeStaleProfilesForAnnouncement(
     const relaydesk::storage::AppPaths& appPaths,
     const DiscoveryAnnouncement& announcement,
@@ -57,7 +69,8 @@ void removeStaleProfilesForAnnouncement(
     for (const auto& profile : relaydesk::storage::loadPeerProfiles(appPaths)) {
         if (profile.GetDeviceId() == announcement.GetDeviceId()
             || profile.GetHostName() != announcement.GetHostName()
-            || !containsAddress(profile.GetLastAddresses(), observedAddress)) {
+            || !containsAddress(profile.GetLastAddresses(), observedAddress)
+            || !isNewerThanProfile(announcement, profile)) {
             continue;
         }
 
@@ -76,11 +89,10 @@ relaydesk::storage::PeerProfile upsertPeerProfileFromDiscovery(
     const DiscoveryAnnouncement& announcement,
     const std::string& observedAddress)
 {
-    removeStaleProfilesForAnnouncement(appPaths, announcement, observedAddress);
-
     const std::filesystem::path profilePath =
         relaydesk::storage::getPeerProfileFilePath(appPaths, announcement.GetDeviceId());
     if (!std::filesystem::exists(profilePath)) {
+        removeStaleProfilesForAnnouncement(appPaths, announcement, observedAddress);
         relaydesk::storage::PeerProfile createdProfile = makeBaseProfile(
             announcement,
             announcement.GetTimestamp(),
@@ -91,6 +103,11 @@ relaydesk::storage::PeerProfile upsertPeerProfileFromDiscovery(
 
     const relaydesk::storage::PeerProfile existingProfile =
         relaydesk::storage::loadPeerProfile(appPaths, announcement.GetDeviceId());
+    if (isStaleForProfile(announcement, existingProfile)) {
+        return existingProfile;
+    }
+
+    removeStaleProfilesForAnnouncement(appPaths, announcement, observedAddress);
     relaydesk::storage::PeerProfile updatedProfile = makeBaseProfile(
         announcement,
         existingProfile.GetFirstSeenAt(),

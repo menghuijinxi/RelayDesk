@@ -178,6 +178,22 @@ void DiscoveryService::broadcastNow()
     }
 }
 
+void DiscoveryService::broadcastOfflineNow()
+{
+    logDiagnostic("service.broadcast_offline.begin port="
+                  + std::to_string(config_.GetDiscoveryUdpPort()));
+    try {
+        transport_.sendBroadcast(
+            makeAnnouncementPayload(kDiscoveryAnnouncementTypeOffline),
+            config_.GetDiscoveryUdpPort());
+        logDiagnostic("service.broadcast_offline.success");
+    } catch (const std::exception& error) {
+        logDiagnostic(std::string("service.broadcast_offline.failed error=")
+                      + error.what());
+        throw;
+    }
+}
+
 void DiscoveryService::sendAnnouncementTo(const std::string& address,
                                           std::uint16_t port)
 {
@@ -216,6 +232,26 @@ void DiscoveryService::sendReplyTo(const std::string& address,
     }
 }
 
+void DiscoveryService::sendOfflineTo(const std::string& address,
+                                     std::uint16_t port)
+{
+    logDiagnostic("service.send_offline.begin address=" + address
+                  + " port=" + std::to_string(port));
+    try {
+        transport_.sendTo(
+            makeAnnouncementPayload(kDiscoveryAnnouncementTypeOffline),
+            address,
+            port);
+        logDiagnostic("service.send_offline.success address=" + address
+                      + " port=" + std::to_string(port));
+    } catch (const std::exception& error) {
+        logDiagnostic("service.send_offline.failed address=" + address
+                      + " port=" + std::to_string(port)
+                      + " error=" + error.what());
+        throw;
+    }
+}
+
 DiscoveryServicePollResult DiscoveryService::pollOnce(
     std::chrono::milliseconds timeout)
 {
@@ -235,6 +271,7 @@ DiscoveryServicePollResult DiscoveryService::pollOnce(
 
     logDiagnostic("service.packet.valid from=" + endpointText(packet.value())
                   + " type=" + announcement.GetType()
+                  + " timestamp=" + announcement.GetTimestamp()
                   + " device_id=" + announcement.GetDeviceId()
                   + " host_name=" + announcement.GetHostName()
                   + " display_name=" + announcement.GetDisplayName());
@@ -248,6 +285,8 @@ DiscoveryServicePollResult DiscoveryService::pollOnce(
     logDiagnostic("service.packet.result action="
                   + pollActionText(result.GetAction())
                   + " type=" + announcement.GetType()
+                  + " timestamp=" + announcement.GetTimestamp()
+                  + " device_id=" + announcement.GetDeviceId()
                   + " peer_created="
                   + std::to_string(processResult.GetPeerCreated())
                   + " from=" + endpointText(packet.value()));

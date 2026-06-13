@@ -63,6 +63,18 @@ protected:
     bool online_ = false;
 };
 
+class PendingPeerProfile {
+public:
+    PendingPeerProfile(relaydesk::storage::PeerProfile profile, bool online);
+
+    const relaydesk::storage::PeerProfile& GetProfile() const { return profile_; }
+    bool GetOnline() const { return online_; }
+
+protected:
+    relaydesk::storage::PeerProfile profile_;
+    bool online_ = false;
+};
+
 class RelayDeskRuntime {
 public:
     RelayDeskRuntime();
@@ -86,25 +98,29 @@ public:
 protected:
     void initialize();
     void refreshPeers();
-    void enqueuePeerProfile(relaydesk::storage::PeerProfile profile);
+    void enqueuePeerProfile(relaydesk::storage::PeerProfile profile,
+                            bool online);
     void drainPendingPeerProfiles();
     void applyPeerProfile(const relaydesk::storage::PeerProfile& profile,
+                          bool online,
                           std::chrono::steady_clock::time_point now);
     void refreshPeerOnlineStates();
     void syncSelectedPeer();
     void setStartupError(std::string errorMessage);
     void requestUiRefresh();
+    void requestPeerStatusRefresh();
     void logDiagnostic(const std::string& message) const noexcept;
 
     LocalUserSummary localUser_;
     std::vector<PeerListItem> peers_;
-    std::vector<relaydesk::storage::PeerProfile> pendingPeerProfiles_;
+    std::vector<PendingPeerProfile> pendingPeerProfiles_;
     std::string selectedPeerDeviceId_;
     std::string startupErrorMessage_;
     std::chrono::steady_clock::time_point nextPeerStatusRefreshAt_{};
     std::filesystem::path diagnosticLogFilePath_;
     std::mutex pendingPeerMutex_;
     std::atomic_bool uiRefreshPending_ = false;
+    std::atomic_bool peerStatusRefreshPending_ = false;
     bool storageAvailable_ = false;
     bool discoveryStarted_ = false;
     std::uint16_t discoveryUdpPort_ = 0;

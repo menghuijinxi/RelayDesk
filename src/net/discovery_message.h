@@ -9,6 +9,7 @@ namespace relaydesk::net {
 
 constexpr const char* kDiscoveryAnnouncementTypeHello = "hello";
 constexpr const char* kDiscoveryAnnouncementTypeReply = "reply";
+constexpr const char* kDiscoveryAnnouncementTypeOffline = "offline";
 
 class DiscoveryAnnouncement {
 public:

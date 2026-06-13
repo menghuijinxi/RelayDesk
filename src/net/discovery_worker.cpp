@@ -47,6 +47,7 @@ void DiscoveryWorker::start()
         return;
     }
 
+    stopping_.store(false);
     discoveryService_.logDiagnostic("worker.start_requested");
     thread_ = std::jthread([this](std::stop_token stopToken) {
         run(stopToken);
@@ -60,8 +61,27 @@ void DiscoveryWorker::stop()
     }
 
     discoveryService_.logDiagnostic("worker.stop_requested");
+    stopping_.store(true);
+    discoveryService_.logDiagnostic("worker.stop.stopping_flag_set");
     thread_.request_stop();
+    discoveryService_.logDiagnostic("worker.stop.join_begin");
     thread_.join();
+    discoveryService_.logDiagnostic("worker.stop.joined");
+    if (workerConfig_.GetBroadcastEnabled()) {
+        try {
+            discoveryService_.logDiagnostic("worker.stop.offline_broadcast_begin");
+            discoveryService_.broadcastOfflineNow();
+            recordBroadcast();
+            discoveryService_.logDiagnostic("worker.stop.offline_broadcast_done");
+        } catch (const std::exception& error) {
+            discoveryService_.logDiagnostic(
+                std::string("worker.offline_broadcast_error error=")
+                + error.what());
+            recordError(error.what());
+        }
+    }
+    discoveryService_.close();
+    discoveryService_.logDiagnostic("worker.stop.closed");
 }
 
 void DiscoveryWorker::run(std::stop_token stopToken)
@@ -89,7 +109,9 @@ void DiscoveryWorker::run(std::stop_token stopToken)
     while (!stopToken.stop_requested()) {
         try {
             const auto now = std::chrono::steady_clock::now();
-            if (workerConfig_.GetBroadcastEnabled() && now >= nextBroadcastAt) {
+            if (workerConfig_.GetBroadcastEnabled()
+                && !isStopping()
+                && now >= nextBroadcastAt) {
                 discoveryService_.broadcastNow();
                 recordBroadcast();
                 if (startupBroadcastsLeft > 0) {
@@ -108,6 +130,7 @@ void DiscoveryWorker::run(std::stop_token stopToken)
             recordPollResult(result);
             notifyStoredPeer(result);
             if (workerConfig_.GetBroadcastEnabled()
+                && !isStopping()
                 && result.GetAction() == DiscoveryServicePollAction::StoredPeer
                 && result.GetAnnouncementType() == kDiscoveryAnnouncementTypeHello) {
                 discoveryService_.logDiagnostic(
@@ -121,7 +144,8 @@ void DiscoveryWorker::run(std::stop_token stopToken)
                        == DiscoveryServicePollAction::StoredPeer) {
                 discoveryService_.logDiagnostic(
                     "worker.no_reply action=stored_peer type="
-                    + result.GetAnnouncementType());
+                    + result.GetAnnouncementType()
+                    + " stopping=" + std::to_string(isStopping()));
             }
         } catch (const std::exception& error) {
             discoveryService_.logDiagnostic(
@@ -132,7 +156,11 @@ void DiscoveryWorker::run(std::stop_token stopToken)
     }
 
     discoveryService_.logDiagnostic("worker.run_exit");
-    discoveryService_.close();
+}
+
+bool DiscoveryWorker::isStopping() const
+{
+    return stopping_.load();
 }
 
 void DiscoveryWorker::validateWorkerConfig() const
@@ -196,7 +224,8 @@ void DiscoveryWorker::notifyStoredPeer(const DiscoveryServicePollResult& result)
         return;
     }
 
-    peerStoredCallback(result.GetPeerProfile().value());
+    peerStoredCallback(result.GetPeerProfile().value(),
+                       result.GetAnnouncementType());
 }
 
 void DiscoveryWorker::recordError(std::string errorMessage)

@@ -92,8 +92,10 @@ public:
     std::uint16_t GetLocalUdpPort() const;
 
     void broadcastNow();
+    void broadcastOfflineNow();
     void sendAnnouncementTo(const std::string& address, std::uint16_t port);
     void sendReplyTo(const std::string& address, std::uint16_t port);
+    void sendOfflineTo(const std::string& address, std::uint16_t port);
     DiscoveryServicePollResult pollOnce(std::chrono::milliseconds timeout);
     void logDiagnostic(std::string message) const;
     void close();

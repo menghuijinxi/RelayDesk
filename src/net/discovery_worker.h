@@ -3,6 +3,7 @@
 #include "net/discovery_service.h"
 #include "storage/peer_profile.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -65,7 +66,7 @@ protected:
 };
 
 using PeerStoredCallback =
-    std::function<void(relaydesk::storage::PeerProfile)>;
+    std::function<void(relaydesk::storage::PeerProfile, std::string)>;
 
 class DiscoveryWorkerEvents {
 public:
@@ -150,6 +151,7 @@ public:
 
 protected:
     void run(std::stop_token stopToken);
+    bool isStopping() const;
     void validateWorkerConfig() const;
     void recordBroadcast();
     void recordReply();
@@ -163,6 +165,7 @@ protected:
     mutable std::mutex mutex_;
     DiscoveryWorkerStats stats_;
     std::jthread thread_;
+    std::atomic_bool stopping_ = false;
 };
 
 }

@@ -168,6 +168,45 @@ int deduplicatesObservedAddress()
                   "Observed address mismatch after deduplication.");
 }
 
+int ignoresStaleAnnouncementTimestamp()
+{
+    const auto appPaths = makeAppPaths("stale-timestamp");
+    static_cast<void>(relaydesk::net::upsertPeerProfileFromDiscovery(
+        appPaths,
+        makeAnnouncement("2026-06-12T10:10:00Z"),
+        "192.168.1.42"));
+
+    auto staleAnnouncement = makeAnnouncement("2026-06-12T10:05:00Z");
+    staleAnnouncement.SetDisplayName("Alice-Old");
+    const auto profile = relaydesk::net::upsertPeerProfileFromDiscovery(
+        appPaths,
+        staleAnnouncement,
+        "192.168.1.50");
+
+    if (const int result = expect(profile.GetLastSeenAt()
+                                      == "2026-06-12T10:10:00Z",
+                                  "Stale announcement moved last seen backward.");
+        result != 0) {
+        return result;
+    }
+
+    if (const int result = expect(profile.GetDisplayName() == "Alice-PC",
+                                  "Stale announcement overwrote display name.");
+        result != 0) {
+        return result;
+    }
+
+    const auto loaded = relaydesk::storage::loadPeerProfile(appPaths, "peer-device");
+    if (const int result = expect(loaded.GetLastAddresses()[0] == "192.168.1.42",
+                                  "Stale announcement overwrote observed address.");
+        result != 0) {
+        return result;
+    }
+
+    return expect(loaded.GetLastSeenAt() == "2026-06-12T10:10:00Z",
+                  "Persisted peer profile accepted stale announcement.");
+}
+
 int removesStaleProfileForSameHostAndAddress()
 {
     const auto appPaths = makeAppPaths("stale-device-id");
@@ -227,6 +266,10 @@ int main()
     }
 
     if (const int result = deduplicatesObservedAddress(); result != 0) {
+        return result;
+    }
+
+    if (const int result = ignoresStaleAnnouncementTimestamp(); result != 0) {
         return result;
     }
 
