@@ -21,6 +21,7 @@ set(EUI_DEPS_MODE bundled CACHE STRING "Use vendored EUI-NEO dependencies" FORCE
 set(EUI_ENABLE_MARKDOWN OFF CACHE BOOL "RelayDesk does not need markdown yet" FORCE)
 set(JSON_BuildTests OFF CACHE INTERNAL "RelayDesk does not build nlohmann/json tests")
 option(RELAYDESK_ENABLE_BOOST_ASIO "Enable Boost.Asio network backend" ON)
+option(RELAYDESK_USE_SKIA_EUI_BACKEND "Use the experimental Skia-backed EUI renderer" OFF)
 
 if(EXISTS "${CMAKE_SOURCE_DIR}/external/nlohmann-json/CMakeLists.txt")
     add_subdirectory(external/nlohmann-json EXCLUDE_FROM_ALL)
@@ -76,16 +77,49 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(RELAYDESK_HAS_EUI_NEO OFF)
-if(EXISTS "${CMAKE_SOURCE_DIR}/external/EUI-NEO/CMakeLists.txt")
-    add_subdirectory(external/EUI-NEO)
+set(RELAYDESK_EUI_NEO_SOURCE_ROOT "${CMAKE_SOURCE_DIR}/external/EUI-NEO")
+set(RELAYDESK_EUI_NEO_SOURCE_DIR "${RELAYDESK_EUI_NEO_SOURCE_ROOT}")
+if(EXISTS "${RELAYDESK_EUI_NEO_SOURCE_ROOT}/CMakeLists.txt")
+    if(RELAYDESK_USE_SKIA_EUI_BACKEND)
+        set(RELAYDESK_EUI_NEO_SOURCE_DIR
+            "${CMAKE_BINARY_DIR}/_deps/eui-neo-skia-src")
+        set(RELAYDESK_EUI_NEO_BINARY_DIR
+            "${CMAKE_BINARY_DIR}/_deps/eui-neo-skia-build")
+        file(REMOVE_RECURSE "${RELAYDESK_EUI_NEO_SOURCE_DIR}")
+        file(COPY "${RELAYDESK_EUI_NEO_SOURCE_ROOT}/"
+             DESTINATION "${RELAYDESK_EUI_NEO_SOURCE_DIR}"
+             PATTERN ".git" EXCLUDE)
+
+        find_package(unofficial-skia CONFIG REQUIRED)
+        include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/PatchEuiNeoSkiaTextMetrics.cmake")
+        relaydesk_patch_eui_neo_skia_text_metrics("${RELAYDESK_EUI_NEO_SOURCE_DIR}")
+        include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/PatchEuiNeoSkiaTextSource.cmake")
+        relaydesk_patch_eui_neo_skia_text_source("${RELAYDESK_EUI_NEO_SOURCE_DIR}")
+        include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/PatchEuiNeoSkiaBackend.cmake")
+        relaydesk_patch_eui_neo_skia_backend("${RELAYDESK_EUI_NEO_SOURCE_DIR}")
+
+        add_subdirectory("${RELAYDESK_EUI_NEO_SOURCE_DIR}"
+                         "${RELAYDESK_EUI_NEO_BINARY_DIR}")
+    else()
+        add_subdirectory("${RELAYDESK_EUI_NEO_SOURCE_DIR}")
+    endif()
+
     set(RELAYDESK_HAS_EUI_NEO ON)
+    if(RELAYDESK_USE_SKIA_EUI_BACKEND)
+        target_sources(eui_neo PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/eui-skia/SkiaOpenGLRenderBackend.cpp")
+        target_include_directories(eui_neo PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/eui-skia")
+        target_link_libraries(eui_neo PUBLIC unofficial::skia::skia)
+        target_compile_definitions(eui_neo PRIVATE RELAYDESK_EUI_SKIA_BACKEND=1)
+    endif()
 else()
     message(WARNING "external/EUI-NEO is missing; relaydesk UI target will be skipped.")
 endif()
 
 if(RELAYDESK_HAS_EUI_NEO)
     add_executable(relaydesk
-        external/EUI-NEO/core/app/glfw_app_main.cpp
+        "${RELAYDESK_EUI_NEO_SOURCE_DIR}/core/app/glfw_app_main.cpp"
         src/main/app.cpp
         src/main/app_runtime.cpp
         src/core/diagnostic_log.cpp

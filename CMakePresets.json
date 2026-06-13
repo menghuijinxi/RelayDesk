@@ -12,14 +12,16 @@
       "toolchainFile": "${sourceDir}/../out/vcpkg/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
         "VCPKG_TARGET_TRIPLET": "x64-windows-static",
-        "VCPKG_HOST_TRIPLET": "x64-windows"
+        "VCPKG_HOST_TRIPLET": "x64-windows",
+        "VCPKG_MANIFEST_FEATURES": "skia-renderer",
+        "RELAYDESK_USE_SKIA_EUI_BACKEND": "ON"
       }
     },
     {
       "name": "windows-msvc-debug",
       "displayName": "Windows MSVC Debug",
       "inherits": "windows-vcpkg-base",
-      "generator": "Visual Studio 17 2022",
+      "generator": "Visual Studio 18 2026",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/out/build/windows-msvc-debug",
       "cacheVariables": {
@@ -31,7 +33,7 @@
       "name": "windows-msvc-release",
       "displayName": "Windows MSVC Release",
       "inherits": "windows-vcpkg-base",
-      "generator": "Visual Studio 17 2022",
+      "generator": "Visual Studio 18 2026",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/out/build/windows-msvc-release",
       "cacheVariables": {

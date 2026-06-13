@@ -3,5 +3,19 @@
   "version-string": "0.1.0",
   "dependencies": [
     "boost-asio"
-  ]
+  ],
+  "features": {
+    "skia-renderer": {
+      "description": "Experimental Skia OpenGL renderer for EUI-NEO.",
+      "dependencies": [
+        {
+          "name": "skia",
+          "default-features": false,
+          "features": [
+            "gl"
+          ]
+        }
+      ]
+    }
+  }
 }
