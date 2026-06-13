@@ -2,12 +2,18 @@
     cmake_path(ABSOLUTE_PATH eui_source_dir
                NORMALIZE
                OUTPUT_VARIABLE eui_patch_source_dir)
-    set(eui_third_party_source_dir "${CMAKE_SOURCE_DIR}/external/EUI-NEO")
-    cmake_path(ABSOLUTE_PATH eui_third_party_source_dir
-               NORMALIZE
-               OUTPUT_VARIABLE eui_third_party_source_dir)
-    if(eui_patch_source_dir STREQUAL eui_third_party_source_dir)
-        message(FATAL_ERROR "Refusing to patch third-party EUI-NEO source tree")
+    if(DEFINED RELAYDESK_BUILD_DIR)
+        set(eui_allowed_fetchcontent_dir "${RELAYDESK_BUILD_DIR}/_deps")
+        cmake_path(ABSOLUTE_PATH eui_allowed_fetchcontent_dir
+                   NORMALIZE
+                   OUTPUT_VARIABLE eui_allowed_fetchcontent_dir)
+        cmake_path(IS_PREFIX eui_allowed_fetchcontent_dir
+                   "${eui_patch_source_dir}"
+                   NORMALIZE
+                   eui_source_is_fetchcontent)
+        if(NOT eui_source_is_fetchcontent)
+            message(FATAL_ERROR "Refusing to patch EUI-NEO outside the FetchContent build tree")
+        endif()
     endif()
 
     set(eui_render_backend_source "${eui_source_dir}/core/render/render_backend.cpp")

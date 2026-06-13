@@ -1,5 +1,7 @@
 /out/
 /tmp/
+/external/EUI-NEO/
+/external/nlohmann-json/
 
 /output
 /.vs

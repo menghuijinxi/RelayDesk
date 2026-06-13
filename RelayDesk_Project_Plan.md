@@ -31,22 +31,23 @@ RelayDesk 是一个面向内网环境的点对点桌面聊天工具。目标是�
 
 - 语言：C++23。
 - 构建：CMake。
-- UI：EUI-NEO，作为 `external/EUI-NEO` 子目录集成。
+- UI：EUI-NEO，通过 CMake `FetchContent` 拉取固定 commit 集成，不使用 git submodule。
 - 窗口后端：优先使用 EUI-NEO 默认 GLFW 后端。
 - 渲染后端：优先 Vulkan，OpenGL 仅作为兼容 fallback 或诊断后端。
-- JSON：建议使用 `nlohmann/json`，便于 JSONL 读写和协议头序列化。
-- 网络：使用 Boost.Asio，后续通过 CMake `find_package(Boost)` 接入。
+- JSON：使用 vcpkg 提供的 `nlohmann-json`，便于 JSONL 读写和协议头序列化。
+- 网络：使用 vcpkg 提供的 Boost.Asio，通过 CMake `find_package(Boost)` 接入。
 - 哈希：SHA-256，用于文件完整性校验、附件去重和内容校验。
 - UUID：UUIDv7 或随机 UUIDv4，用于消息 ID、传输任务 ID。
 
 ### 2.2 EUI-NEO 集成方式
 
-EUI-NEO README 推荐的最简单集成方式是：
+RelayDesk 使用 `FetchContent` 集成 EUI-NEO：
 
-- `add_subdirectory(external/EUI-NEO)`
-- 使用 `external/EUI-NEO/core/app/glfw_app_main.cpp`
+- `FetchContent_Declare(eui_neo ...)`
+- 使用 `${RELAYDESK_EUI_NEO_SOURCE_DIR}/core/app/glfw_app_main.cpp`
 - 应用代码实现 `app::dslAppConfig()` 和 `app::compose()`
 - 调用 `eui_neo_configure_app(target)`
+- Skia 后端相关修改通过项目内 CMake patch 脚本应用到 FetchContent 构建副本，不直接修改第三方源码仓库。
 
 计划中的 CMake 结构：
 
@@ -65,10 +66,17 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(BUILD_SHARED_LIBS OFF)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-add_subdirectory(external/EUI-NEO)
+include(FetchContent)
+FetchContent_Declare(eui_neo
+    GIT_REPOSITORY "https://github.com/sudoevolve/EUI-NEO.git"
+    GIT_TAG "<pinned-commit>"
+)
+FetchContent_MakeAvailable(eui_neo)
+FetchContent_GetProperties(eui_neo)
+set(RELAYDESK_EUI_NEO_SOURCE_DIR "${eui_neo_SOURCE_DIR}")
 
 add_executable(relaydesk
-    external/EUI-NEO/core/app/glfw_app_main.cpp
+    ${RELAYDESK_EUI_NEO_SOURCE_DIR}/core/app/glfw_app_main.cpp
     src/main/app.cpp
     src/ui/main_window.cpp
     src/net/discovery_service.cpp
@@ -99,7 +107,7 @@ target_link_options(relaydesk PRIVATE
 - CMake 全局设置 `BUILD_SHARED_LIBS=OFF`。
 - MSVC 使用 `/MT` 和 `/MTd`，避免依赖 Visual C++ Redistributable DLL。
 - MinGW 构建时使用 `-static -static-libgcc -static-libstdc++`。
-- 第三方依赖通过源码子目录、FetchContent 或预编译静态库引入，不使用只提供动态库的包。
+- 第三方依赖通过 vcpkg、FetchContent 或预编译静态库引入，不使用 git submodule，不使用只提供动态库的包。
 - CI 和发布流程必须检查输出目录，不允许出现非系统依赖 DLL。
 
 Windows 上仍然会依赖系统自带 DLL，例如 `kernel32.dll`、`user32.dll`、`ws2_32.dll` 等。Vulkan 也通常依赖目标机器显卡驱动或 Vulkan Runtime 提供的 `vulkan-1.dll`。项目目标是不随 RelayDesk 发布包携带一组应用私有 DLL；如果目标机器没有 Vulkan Runtime，则启动时提示安装显卡驱动/Vulkan Runtime，或自动切换到 OpenGL fallback。
@@ -123,8 +131,8 @@ tools/check_release_dependencies.ps1
 RelayDesk/
   CMakeLists.txt
   CMakePresets.json
-  external/
-    EUI-NEO/
+  cmake/
+    eui-skia/
   src/
     main/
       app.cpp
@@ -671,7 +679,7 @@ MVP 必须实现：
 产出：
 
 - CMake 项目初始化，语言标准固定为 C++23。
-- EUI-NEO 作为 external 依赖集成。
+- EUI-NEO 通过 FetchContent 固定 commit 集成。
 - Vulkan 优先的空白窗口启动成功。
 - OpenGL fallback 能在 Vulkan 不可用时作为兼容路径保留。
 - 软件工作目录、数据目录、日志目录、传输目录确定。

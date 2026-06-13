@@ -6,6 +6,8 @@ endif()
 
 project(RelayDesk LANGUAGES CXX)
 
+include(FetchContent)
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -19,15 +21,17 @@ set(EUI_BUILD_APPS OFF CACHE BOOL "Build EUI-NEO examples" FORCE)
 set(EUI_BUILD_TEST_FIXTURES OFF CACHE BOOL "Build EUI-NEO test fixtures" FORCE)
 set(EUI_DEPS_MODE bundled CACHE STRING "Use vendored EUI-NEO dependencies" FORCE)
 set(EUI_ENABLE_MARKDOWN OFF CACHE BOOL "RelayDesk does not need markdown yet" FORCE)
-set(JSON_BuildTests OFF CACHE INTERNAL "RelayDesk does not build nlohmann/json tests")
 option(RELAYDESK_ENABLE_BOOST_ASIO "Enable Boost.Asio network backend" ON)
 option(RELAYDESK_USE_SKIA_EUI_BACKEND "Use the experimental Skia-backed EUI renderer" OFF)
 
-if(EXISTS "${CMAKE_SOURCE_DIR}/external/nlohmann-json/CMakeLists.txt")
-    add_subdirectory(external/nlohmann-json EXCLUDE_FROM_ALL)
-else()
-    message(FATAL_ERROR "external/nlohmann-json is missing.")
-endif()
+set(RELAYDESK_EUI_NEO_GIT_REPOSITORY
+    "https://github.com/sudoevolve/EUI-NEO.git"
+    CACHE STRING "EUI-NEO Git repository used by FetchContent")
+set(RELAYDESK_EUI_NEO_GIT_TAG
+    "f2dfa6eae5b7c344ad68a3eb152eabe78330a02c"
+    CACHE STRING "EUI-NEO Git commit used by FetchContent")
+
+find_package(nlohmann_json CONFIG REQUIRED)
 
 set(RELAYDESK_HAS_BOOST_ASIO OFF)
 if(RELAYDESK_ENABLE_BOOST_ASIO)
@@ -77,33 +81,32 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(RELAYDESK_HAS_EUI_NEO OFF)
-set(RELAYDESK_EUI_NEO_SOURCE_ROOT "${CMAKE_SOURCE_DIR}/external/EUI-NEO")
-set(RELAYDESK_EUI_NEO_SOURCE_DIR "${RELAYDESK_EUI_NEO_SOURCE_ROOT}")
-if(EXISTS "${RELAYDESK_EUI_NEO_SOURCE_ROOT}/CMakeLists.txt")
-    if(RELAYDESK_USE_SKIA_EUI_BACKEND)
-        set(RELAYDESK_EUI_NEO_SOURCE_DIR
-            "${CMAKE_BINARY_DIR}/_deps/eui-neo-skia-src")
-        set(RELAYDESK_EUI_NEO_BINARY_DIR
-            "${CMAKE_BINARY_DIR}/_deps/eui-neo-skia-build")
-        file(REMOVE_RECURSE "${RELAYDESK_EUI_NEO_SOURCE_DIR}")
-        file(COPY "${RELAYDESK_EUI_NEO_SOURCE_ROOT}/"
-             DESTINATION "${RELAYDESK_EUI_NEO_SOURCE_DIR}"
-             PATTERN ".git" EXCLUDE)
+if(RELAYDESK_USE_SKIA_EUI_BACKEND)
+    find_package(unofficial-skia CONFIG REQUIRED)
+    FetchContent_Declare(eui_neo_skia
+        GIT_REPOSITORY "${RELAYDESK_EUI_NEO_GIT_REPOSITORY}"
+        GIT_TAG "${RELAYDESK_EUI_NEO_GIT_TAG}"
+        PATCH_COMMAND
+            ${CMAKE_COMMAND}
+             "-DRELAYDESK_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+             "-DRELAYDESK_BUILD_DIR=${CMAKE_BINARY_DIR}"
+             "-DEUI_NEO_SOURCE_DIR=<SOURCE_DIR>"
+             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/PatchEuiNeoSkia.cmake"
+    )
+    FetchContent_MakeAvailable(eui_neo_skia)
+    FetchContent_GetProperties(eui_neo_skia)
+    set(RELAYDESK_EUI_NEO_SOURCE_DIR "${eui_neo_skia_SOURCE_DIR}")
+else()
+    FetchContent_Declare(eui_neo
+        GIT_REPOSITORY "${RELAYDESK_EUI_NEO_GIT_REPOSITORY}"
+        GIT_TAG "${RELAYDESK_EUI_NEO_GIT_TAG}"
+    )
+    FetchContent_MakeAvailable(eui_neo)
+    FetchContent_GetProperties(eui_neo)
+    set(RELAYDESK_EUI_NEO_SOURCE_DIR "${eui_neo_SOURCE_DIR}")
+endif()
 
-        find_package(unofficial-skia CONFIG REQUIRED)
-        include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/PatchEuiNeoSkiaTextMetrics.cmake")
-        relaydesk_patch_eui_neo_skia_text_metrics("${RELAYDESK_EUI_NEO_SOURCE_DIR}")
-        include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/PatchEuiNeoSkiaTextSource.cmake")
-        relaydesk_patch_eui_neo_skia_text_source("${RELAYDESK_EUI_NEO_SOURCE_DIR}")
-        include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/PatchEuiNeoSkiaBackend.cmake")
-        relaydesk_patch_eui_neo_skia_backend("${RELAYDESK_EUI_NEO_SOURCE_DIR}")
-
-        add_subdirectory("${RELAYDESK_EUI_NEO_SOURCE_DIR}"
-                         "${RELAYDESK_EUI_NEO_BINARY_DIR}")
-    else()
-        add_subdirectory("${RELAYDESK_EUI_NEO_SOURCE_DIR}")
-    endif()
-
+if(TARGET eui_neo)
     set(RELAYDESK_HAS_EUI_NEO ON)
     if(RELAYDESK_USE_SKIA_EUI_BACKEND)
         target_sources(eui_neo PRIVATE
@@ -114,7 +117,7 @@ if(EXISTS "${RELAYDESK_EUI_NEO_SOURCE_ROOT}/CMakeLists.txt")
         target_compile_definitions(eui_neo PRIVATE RELAYDESK_EUI_SKIA_BACKEND=1)
     endif()
 else()
-    message(WARNING "external/EUI-NEO is missing; relaydesk UI target will be skipped.")
+    message(WARNING "EUI-NEO target was not created; relaydesk UI target will be skipped.")
 endif()
 
 if(RELAYDESK_HAS_EUI_NEO)
