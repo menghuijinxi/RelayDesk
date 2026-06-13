@@ -16,7 +16,7 @@ enum class MessageDirection {
     Outgoing,
 };
 
-enum class MessageContentType {
+enum class MessagePartType {
     Text,
     Emoji,
     Image,
@@ -32,6 +32,64 @@ enum class DeliveryState {
     Completed,
     Failed,
     Cancelled,
+};
+
+enum class TransferState {
+    Pending,
+    Offered,
+    Transferring,
+    Completed,
+    Failed,
+    Cancelled,
+};
+
+class ChatMessagePart {
+public:
+    const std::string& GetPartId() const { return partId_; }
+    MessagePartType GetType() const { return type_; }
+    const std::optional<std::string>& GetText() const { return text_; }
+    const std::optional<std::string>& GetEmoji() const { return emoji_; }
+    const std::optional<std::string>& GetTransferId() const { return transferId_; }
+    const std::optional<TransferState>& GetTransferState() const
+    {
+        return transferState_;
+    }
+    const std::optional<std::string>& GetFileName() const { return fileName_; }
+    const std::optional<std::uintmax_t>& GetFileSize() const { return fileSize_; }
+    const std::optional<std::string>& GetSha256() const { return sha256_; }
+    const std::optional<std::string>& GetLocalPath() const { return localPath_; }
+    const std::optional<std::string>& GetManifestPath() const { return manifestPath_; }
+
+    void SetPartId(std::string partId) { partId_ = std::move(partId); }
+    void SetType(MessagePartType type) { type_ = type; }
+    void SetText(std::string text) { text_ = std::move(text); }
+    void SetEmoji(std::string emoji) { emoji_ = std::move(emoji); }
+    void SetTransferId(std::string transferId) { transferId_ = std::move(transferId); }
+    void SetTransferState(TransferState transferState)
+    {
+        transferState_ = transferState;
+    }
+    void SetFileName(std::string fileName) { fileName_ = std::move(fileName); }
+    void SetFileSize(std::uintmax_t fileSize) { fileSize_ = fileSize; }
+    void SetSha256(std::string sha256) { sha256_ = std::move(sha256); }
+    void SetLocalPath(std::string localPath) { localPath_ = std::move(localPath); }
+    void SetManifestPath(std::string manifestPath)
+    {
+        manifestPath_ = std::move(manifestPath);
+    }
+
+protected:
+    std::string partId_;
+    MessagePartType type_ = MessagePartType::Text;
+    std::optional<std::string> text_;
+    std::optional<std::string> emoji_;
+    std::optional<std::string> transferId_;
+    std::optional<TransferState> transferState_;
+    std::optional<std::string> fileName_;
+    std::optional<std::uintmax_t> fileSize_;
+    std::optional<std::string> sha256_;
+    std::optional<std::string> localPath_;
+    std::optional<std::string> manifestPath_;
 };
 
 class ChatMessageRecord {
@@ -51,16 +109,8 @@ public:
         return receiverDisplayNameSnapshot_;
     }
     const std::string& GetCreatedAt() const { return createdAt_; }
-    MessageContentType GetContentType() const { return contentType_; }
     DeliveryState GetDeliveryState() const { return deliveryState_; }
-    const std::optional<std::string>& GetText() const { return text_; }
-    const std::optional<std::string>& GetEmoji() const { return emoji_; }
-    const std::optional<std::string>& GetTransferId() const { return transferId_; }
-    const std::optional<std::string>& GetFileName() const { return fileName_; }
-    const std::optional<std::uintmax_t>& GetFileSize() const { return fileSize_; }
-    const std::optional<std::string>& GetSha256() const { return sha256_; }
-    const std::optional<std::string>& GetLocalPath() const { return localPath_; }
-    const std::optional<std::string>& GetManifestPath() const { return manifestPath_; }
+    const std::vector<ChatMessagePart>& GetParts() const { return parts_; }
 
     void SetMessageId(std::string messageId) { messageId_ = std::move(messageId); }
     void SetConversationId(std::string conversationId)
@@ -85,22 +135,15 @@ public:
         receiverDisplayNameSnapshot_ = std::move(displayName);
     }
     void SetCreatedAt(std::string createdAt) { createdAt_ = std::move(createdAt); }
-    void SetContentType(MessageContentType contentType) { contentType_ = contentType; }
     void SetDeliveryState(DeliveryState deliveryState) { deliveryState_ = deliveryState; }
-    void SetText(std::string text) { text_ = std::move(text); }
-    void SetEmoji(std::string emoji) { emoji_ = std::move(emoji); }
-    void SetTransferId(std::string transferId) { transferId_ = std::move(transferId); }
-    void SetFileName(std::string fileName) { fileName_ = std::move(fileName); }
-    void SetFileSize(std::uintmax_t fileSize) { fileSize_ = fileSize; }
-    void SetSha256(std::string sha256) { sha256_ = std::move(sha256); }
-    void SetLocalPath(std::string localPath) { localPath_ = std::move(localPath); }
-    void SetManifestPath(std::string manifestPath)
+    void AddPart(ChatMessagePart part) { parts_.push_back(std::move(part)); }
+    void SetParts(std::vector<ChatMessagePart> parts)
     {
-        manifestPath_ = std::move(manifestPath);
+        parts_ = std::move(parts);
     }
 
 protected:
-    int schemaVersion_ = 1;
+    int schemaVersion_ = 2;
     std::string messageId_;
     std::string conversationId_;
     MessageDirection direction_ = MessageDirection::Outgoing;
@@ -109,16 +152,8 @@ protected:
     std::string senderDisplayNameSnapshot_;
     std::string receiverDisplayNameSnapshot_;
     std::string createdAt_;
-    MessageContentType contentType_ = MessageContentType::Text;
     DeliveryState deliveryState_ = DeliveryState::Pending;
-    std::optional<std::string> text_;
-    std::optional<std::string> emoji_;
-    std::optional<std::string> transferId_;
-    std::optional<std::string> fileName_;
-    std::optional<std::uintmax_t> fileSize_;
-    std::optional<std::string> sha256_;
-    std::optional<std::string> localPath_;
-    std::optional<std::string> manifestPath_;
+    std::vector<ChatMessagePart> parts_;
 };
 
 class ChatHistoryLoadResult {

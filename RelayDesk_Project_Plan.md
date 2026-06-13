@@ -277,7 +277,7 @@ relaydesk.exe --work-dir D:/RelayDeskWork
   "display_name": "Alice-PC",
   "last_addresses": ["192.168.1.42"],
   "tcp_port": 39171,
-  "capabilities": ["text", "emoji", "file", "folder"],
+  "capabilities": ["rich_message", "text", "emoji", "image", "file", "folder"],
   "first_seen_at": "2026-06-11T14:02:00Z",
   "last_seen_at": "2026-06-11T14:30:00Z"
 }
@@ -297,25 +297,96 @@ relaydesk.exe --work-dir D:/RelayDeskWork
 
 ## 5. 聊天记录 JSONL 设计
 
-每行是一条独立事件。追加写入，便于恢复和增量索引。
+每行是一条独立记录。追加写入，便于恢复和增量索引。
 
-文本消息示例：
+核心规则：
 
-```json
-{"schema_version":1,"record_type":"message","message_id":"01JZ9Q4D4T8H9NFN5Z8R3N1WBZ","conversation_id":"dm_01JZ9N0K7Y6YV6WM8AQZ9DPC6P_01JZ9N1EQJ3BNR1P7PMYD30KX4","direction":"out","sender_device_id":"01JZ9N0K7Y6YV6WM8AQZ9DPC6P","receiver_device_id":"01JZ9N1EQJ3BNR1P7PMYD30KX4","sender_display_name_snapshot":"Bob-PC","receiver_display_name_snapshot":"Alice-PC","created_at":"2026-06-11T14:05:12Z","content_type":"text","text":"下午三点开会。","delivery_state":"sent"}
-```
+- 一条用户发送的聊天消息只写成一条 `message` 记录。
+- 一条消息可以包含多个有序内容块，字段名为 `parts`。
+- `parts` 按用户发送时的组合顺序保存，UI 按顺序渲染。
+- 文本、表情、图片、文件、文件夹可以混在同一条消息里。
+- 图片、文件和文件夹的二进制内容不写入 JSONL，只写元数据、传输 ID 和软件工作目录内的相对路径。
+- 新写入统一使用 `schema_version = 2`。
+- 旧版 `schema_version = 1` 的单 `content_type` 记录仍可兼容读取，加载时转换成只有一个 `part` 的消息；不主动重写旧历史。
 
-表情消息示例：
-
-```json
-{"schema_version":1,"record_type":"message","message_id":"01JZ9Q5EEQS6YQD2W31Q1B6ZGS","conversation_id":"dm_01JZ9N0K7Y6YV6WM8AQZ9DPC6P_01JZ9N1EQJ3BNR1P7PMYD30KX4","direction":"in","sender_device_id":"01JZ9N1EQJ3BNR1P7PMYD30KX4","receiver_device_id":"01JZ9N0K7Y6YV6WM8AQZ9DPC6P","sender_display_name_snapshot":"Alice-PC","receiver_display_name_snapshot":"Bob-PC","created_at":"2026-06-11T14:05:20Z","content_type":"emoji","emoji":":thumbs_up:","delivery_state":"received"}
-```
-
-文件消息示例：
+混合消息示例：
 
 ```json
-{"schema_version":1,"record_type":"message","message_id":"01JZ9Q763QYA33EGV4K3YHBS8J","conversation_id":"dm_01JZ9N0K7Y6YV6WM8AQZ9DPC6P_01JZ9N1EQJ3BNR1P7PMYD30KX4","direction":"out","sender_device_id":"01JZ9N0K7Y6YV6WM8AQZ9DPC6P","receiver_device_id":"01JZ9N1EQJ3BNR1P7PMYD30KX4","sender_display_name_snapshot":"Bob-PC","receiver_display_name_snapshot":"Alice-PC","created_at":"2026-06-11T14:08:33Z","content_type":"file","transfer_id":"01JZ9Q74ZAZT4V2Y3S43DSVDK3","file_name":"report.pdf","file_size":2388102,"sha256":"b7e23ec29af22b0b4e41da31e868d57226121c84d4d13150c10d33c37c4c7f74","local_path":"data/transfers/outbox/01JZ9N1EQJ3BNR1P7PMYD30KX4/01JZ9Q74ZAZT4V2Y3S43DSVDK3/report.pdf","delivery_state":"completed"}
+{
+  "schema_version": 2,
+  "record_type": "message",
+  "message_id": "01JZ9Q4D4T8H9NFN5Z8R3N1WBZ",
+  "conversation_id": "dm_01JZ9N0K7Y6YV6WM8AQZ9DPC6P_01JZ9N1EQJ3BNR1P7PMYD30KX4",
+  "direction": "out",
+  "sender_device_id": "01JZ9N0K7Y6YV6WM8AQZ9DPC6P",
+  "receiver_device_id": "01JZ9N1EQJ3BNR1P7PMYD30KX4",
+  "sender_display_name_snapshot": "Bob-PC",
+  "receiver_display_name_snapshot": "Alice-PC",
+  "created_at": "2026-06-11T14:05:12Z",
+  "delivery_state": "sent",
+  "parts": [
+    {
+      "part_id": "p1",
+      "type": "text",
+      "text": "这个版本你看一下"
+    },
+    {
+      "part_id": "p2",
+      "type": "emoji",
+      "emoji": "thumbs_up"
+    },
+    {
+      "part_id": "p3",
+      "type": "image",
+      "transfer_id": "01JZ9Q74ZAZT4V2Y3S43DSVDK3",
+      "transfer_state": "completed",
+      "file_name": "screenshot.png",
+      "file_size": 283923,
+      "sha256": "b7e23ec29af22b0b4e41da31e868d57226121c84d4d13150c10d33c37c4c7f74",
+      "local_path": "data/transfers/outbox/01JZ9N1EQJ3BNR1P7PMYD30KX4/01JZ9Q74ZAZT4V2Y3S43DSVDK3/screenshot.png"
+    },
+    {
+      "part_id": "p4",
+      "type": "file",
+      "transfer_id": "01JZ9Q82BY1EVXXDF1XG5S1V32",
+      "transfer_state": "completed",
+      "file_name": "report.pdf",
+      "file_size": 2388102,
+      "sha256": "9cfc7e22f38d3a9fd3d33e7b54854ef534fc5579d52d1aaf8c72e35d8f7a4a90",
+      "local_path": "data/transfers/outbox/01JZ9N1EQJ3BNR1P7PMYD30KX4/01JZ9Q82BY1EVXXDF1XG5S1V32/report.pdf"
+    },
+    {
+      "part_id": "p5",
+      "type": "folder",
+      "transfer_id": "01JZ9Q8WQA1S280Y2EB5VZ3J6P",
+      "transfer_state": "completed",
+      "file_name": "ProjectDocs",
+      "local_path": "data/transfers/outbox/01JZ9N1EQJ3BNR1P7PMYD30KX4/01JZ9Q8WQA1S280Y2EB5VZ3J6P/ProjectDocs",
+      "manifest_path": "data/transfers/outbox/01JZ9N1EQJ3BNR1P7PMYD30KX4/01JZ9Q8WQA1S280Y2EB5VZ3J6P/manifest.json"
+    }
+  ]
+}
 ```
+
+实际写入 JSONL 时仍序列化为单行 JSON，上面的格式仅用于说明。
+
+字段规则：
+
+- `message_id`：整条聊天消息的稳定 ID，所有回执、重试、传输状态更新都引用它。
+- `part_id`：消息内内容块 ID，只需要在同一条消息内唯一。
+- `type`：内容块类型，取值为 `text`、`emoji`、`image`、`file`、`folder`。
+- `delivery_state`：整条消息外壳的投递状态，取值为 `pending`、`sent`、`delivered`、`received`、`failed`、`cancelled`。
+- `transfer_state`：图片、文件、文件夹内容块的传输状态，取值为 `pending`、`offered`、`transferring`、`completed`、`failed`、`cancelled`。
+- `local_path` 和 `manifest_path` 必须是相对 `<work_dir>` 的路径，禁止绝对路径和 `..` 路径穿越。
+- `sha256` 用于文件完整性校验；文件夹整体可在 manifest 中记录每个文件的 SHA-256。
+
+兼容读取规则：
+
+- `schema_version = 1` 且存在 `content_type` 的旧记录，加载为一条 `schema_version = 2` 内存消息。
+- 旧 `content_type = text` 转换为一个 `type = text` 的 `part`。
+- 旧 `content_type = emoji` 转换为一个 `type = emoji` 的 `part`。
+- 旧 `content_type = image/file/folder` 转换为一个对应类型的文件类 `part`，沿用旧 `transfer_id`、`file_name`、`file_size`、`sha256`、`local_path`、`manifest_path` 字段。
+- 新代码不再写入顶层 `content_type`。
 
 会话 ID 规则：
 
@@ -330,6 +401,7 @@ JSONL 读写策略：
 - 写入时先序列化为单行 JSON，末尾加 `\n`。
 - 单条记录追加失败时不能破坏已存在记录。
 - 启动加载时遇到损坏行，记录日志并跳过，不中断整个历史加载。
+- 同一条消息的内容组合在写入前确定，后续只通过状态更新事件或索引刷新改变投递/传输状态，不拆成多条用户消息。
 - 为提高历史列表速度，可增加 `messages.index`，但 JSONL 是权威数据源。
 - 后续 schema 变更使用 `schema_version` 做兼容迁移。
 
@@ -362,7 +434,7 @@ JSONL 读写策略：
   "host_name": "DESKTOP-7K92P1",
   "display_name": "Bob-PC",
   "tcp_port": 39171,
-  "capabilities": ["text", "emoji", "file", "folder"],
+  "capabilities": ["rich_message", "text", "emoji", "image", "file", "folder"],
   "timestamp": "2026-06-11T14:00:00Z"
 }
 ```
@@ -409,8 +481,8 @@ body       body_len bytes
 
 - `profile_hello`
 - `profile_update`
-- `chat_text`
-- `chat_emoji`
+- `chat_message`
+- `chat_message_update`
 - `delivery_receipt`
 - `transfer_offer`
 - `transfer_accept`
@@ -420,12 +492,21 @@ body       body_len bytes
 - `transfer_cancel`
 - `heartbeat`
 
+`chat_message` 发送整条消息外壳和全部 `parts` 元数据。文本和表情内容直接放在 JSON 头内；图片、文件、文件夹内容块只放 `transfer_id`、文件名、大小、哈希和路径等元数据，实际二进制内容通过后续传输帧发送。
+
+当一条 `chat_message` 包含图片、文件或文件夹时：
+
+1. 发送端先为每个文件类 `part` 创建发送快照和 `transfer_id`。
+2. 发送端发送一条 `chat_message`，其中每个文件类 `part` 都包含 `message_id` 内唯一的 `part_id` 和全局唯一的 `transfer_id`。
+3. 发送端为每个文件类 `part` 发送 `transfer_offer`，`transfer_offer` 必须同时引用 `message_id`、`part_id` 和 `transfer_id`。
+4. 传输进度、完成、失败和取消事件都引用同一组 ID，UI 在原消息内部更新对应内容块状态。
+
 ### 7.3 可靠性
 
 - TCP 保证顺序传输，但应用层仍保存 `message_id` 去重。
 - 发送消息先写本地 JSONL，状态为 `pending`。
 - 对端确认后更新状态为 `delivered`。
-- 文件传输完成并校验 SHA-256 后更新为 `completed`。
+- 文件类内容块传输完成并校验 SHA-256 后，将对应 `part.transfer_state` 更新为 `completed`。
 - 断线后文件传输可按 chunk offset 续传。
 
 ## 8. 文件和文件夹传输设计
@@ -434,15 +515,16 @@ body       body_len bytes
 
 流程：
 
-1. 发送端选择文件。
+1. 发送端在消息编辑区添加文件内容块。
 2. 发送端把文件复制到 `<work_dir>/data/transfers/outbox/<peer_device_id>/<transfer_id>/`，形成发送快照。
 3. 计算快照文件大小和 SHA-256，可边传边计算以避免大文件阻塞。
-4. 发送 `transfer_offer`。
-5. 接收端显示文件名、大小、来源，用户接受或拒绝。
-6. 接受后发送端从 outbox 快照按 chunk 发送。
-7. 接收端写入 `<work_dir>/data/transfers/temp/<transfer_id>/`。
-8. 完成后校验 SHA-256。
-9. 校验通过后移动到 `<work_dir>/data/transfers/inbox/<peer_device_id>/<transfer_id>/`，并写入 JSONL 状态。
+4. 发送包含该文件 `part` 的 `chat_message`。
+5. 发送引用 `message_id`、`part_id` 和 `transfer_id` 的 `transfer_offer`。
+6. 接收端在同一条消息内显示文件卡片，用户接受或拒绝。
+7. 接受后发送端从 outbox 快照按 chunk 发送。
+8. 接收端写入 `<work_dir>/data/transfers/temp/<transfer_id>/`。
+9. 完成后校验 SHA-256。
+10. 校验通过后移动到 `<work_dir>/data/transfers/inbox/<peer_device_id>/<transfer_id>/`，并更新 JSONL 中对应 `part` 的传输状态。
 
 默认 chunk 大小：1 MiB。
 
@@ -489,7 +571,7 @@ body       body_len bytes
 主界面布局：
 
 - 左侧：在线/离线用户列表，显示头像占位、显示名、电脑名、在线状态、最后活跃时间。
-- 中间：聊天记录区域，按时间展示文本、表情、文件和文件夹消息。
+- 中间：聊天记录区域，按时间展示消息；每条消息内部按 `parts` 顺序展示文本、表情、图片、文件和文件夹内容块。
 - 底部：输入框、表情按钮、发送文件按钮、发送文件夹按钮、发送按钮。
 - 右侧可选：当前会话详情和传输队列。
 
@@ -505,7 +587,8 @@ body       body_len bytes
 - 正在扫描时显示轻量状态，不阻塞聊天。
 - 离线用户仍可点击查看历史。
 - 发送失败的消息可以重试。
-- 文件传输失败可以重试或取消。
+- 文件类内容块传输失败可以在原消息内重试或取消。
+- 用户一次点击发送时，输入框文字、已选表情、图片、文件、文件夹组成同一条消息，不拆成多条消息。
 - 用户名修改后立即广播 `profile_update`，其他客户端更新联系人列表。
 
 ## 10. 应用状态和线程模型
@@ -530,13 +613,27 @@ struct PeerInfo {
     TimePoint last_seen_at;
 };
 
+struct MessagePart {
+    PartId part_id;
+    MessagePartType type;
+    std::optional<std::string> text;
+    std::optional<std::string> emoji;
+    std::optional<TransferId> transfer_id;
+    std::optional<std::string> file_name;
+    std::optional<uint64_t> file_size;
+    std::optional<std::string> sha256;
+    std::optional<std::filesystem::path> local_path;
+    std::optional<std::filesystem::path> manifest_path;
+    std::optional<TransferState> transfer_state;
+};
+
 struct ChatMessage {
     MessageId message_id;
     ConversationId conversation_id;
     DeviceId sender_device_id;
     DeviceId receiver_device_id;
     std::string sender_display_name_snapshot;
-    MessageContent content;
+    std::vector<MessagePart> parts;
     DeliveryState delivery_state;
     TimePoint created_at;
 };
@@ -623,13 +720,14 @@ MVP 必须实现：
 产出：
 
 - TCP peer session。
-- 文本消息发送/接收。
-- 简单表情选择和发送。
+- `schema_version = 2` 的 `parts` 聊天记录模型。
+- 文本和简单表情可以在同一条消息内组合发送和接收。
+- 兼容读取旧 `schema_version = 1` 单内容类型历史记录。
 - 消息状态：pending、sent、delivered、failed。
 
 验收：
 
-- 两台电脑能互发文本和表情。
+- 两台电脑能互发文本、表情以及文本加表情的混合消息。
 - 重启应用后能查看历史。
 - 改名后历史仍按同一对端归档。
 
@@ -637,7 +735,8 @@ MVP 必须实现：
 
 产出：
 
-- 单文件发送/接收。
+- 图片和单文件内容块发送/接收。
+- 文字、表情、图片、文件可以组合在同一条消息中发送。
 - 传输进度 UI。
 - SHA-256 校验。
 - 失败重试。
@@ -646,7 +745,7 @@ MVP 必须实现：
 
 - 发送大文件时 UI 不冻结。
 - 传输完成后文件哈希一致。
-- 取消和失败状态能写入历史。
+- 取消和失败状态能更新原消息内对应 `part`。
 - 发送文件默认保留到 `data/transfers/outbox/`。
 - 接收文件默认保存到 `data/transfers/inbox/`。
 
@@ -655,6 +754,7 @@ MVP 必须实现：
 产出：
 
 - 文件夹 manifest。
+- 文件夹内容块可以和文字、表情、图片、文件组合在同一条消息中发送。
 - 多文件顺序/并发传输。
 - 路径安全校验。
 - 文件夹接收目录恢复。
@@ -673,7 +773,7 @@ MVP 必须实现：
 
 - 按联系人查看历史。
 - 按关键词搜索文本。
-- 按文件类型筛选附件消息。
+- 按 `part` 类型筛选包含图片、文件或文件夹的消息。
 - 历史分页加载。
 
 验收：
@@ -723,6 +823,7 @@ MVP 必须实现：
 - 发现列表显示显示名、电脑名、在线状态。
 - 能发送和接收文本。
 - 能发送和接收简单表情。
+- 能把文本、表情、图片、文件、文件夹组合为同一条消息发送和接收。
 - 能发送和接收单个文件。
 - 能发送和接收文件夹。
 - 能查看离线历史记录。

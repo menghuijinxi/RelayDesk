@@ -12,7 +12,8 @@
 namespace relaydesk::storage {
 namespace {
 
-constexpr int kSchemaVersion = 1;
+constexpr int kSchemaVersion = 2;
+constexpr int kLegacySchemaVersion = 1;
 constexpr const char* kRecordType = "message";
 
 std::string toJsonValue(MessageDirection direction)
@@ -39,43 +40,43 @@ MessageDirection messageDirectionFromJsonValue(const std::string& value)
     throw std::runtime_error("Unsupported message direction value.");
 }
 
-std::string toJsonValue(MessageContentType contentType)
+std::string toJsonValue(MessagePartType partType)
 {
-    switch (contentType) {
-    case MessageContentType::Text:
+    switch (partType) {
+    case MessagePartType::Text:
         return "text";
-    case MessageContentType::Emoji:
+    case MessagePartType::Emoji:
         return "emoji";
-    case MessageContentType::Image:
+    case MessagePartType::Image:
         return "image";
-    case MessageContentType::File:
+    case MessagePartType::File:
         return "file";
-    case MessageContentType::Folder:
+    case MessagePartType::Folder:
         return "folder";
     }
 
-    throw std::runtime_error("Unsupported message content type.");
+    throw std::runtime_error("Unsupported message part type.");
 }
 
-MessageContentType messageContentTypeFromJsonValue(const std::string& value)
+MessagePartType messagePartTypeFromJsonValue(const std::string& value)
 {
     if (value == "text") {
-        return MessageContentType::Text;
+        return MessagePartType::Text;
     }
     if (value == "emoji") {
-        return MessageContentType::Emoji;
+        return MessagePartType::Emoji;
     }
     if (value == "image") {
-        return MessageContentType::Image;
+        return MessagePartType::Image;
     }
     if (value == "file") {
-        return MessageContentType::File;
+        return MessagePartType::File;
     }
     if (value == "folder") {
-        return MessageContentType::Folder;
+        return MessagePartType::Folder;
     }
 
-    throw std::runtime_error("Unsupported message content type value.");
+    throw std::runtime_error("Unsupported message part type value.");
 }
 
 std::string toJsonValue(DeliveryState deliveryState)
@@ -127,6 +128,70 @@ DeliveryState deliveryStateFromJsonValue(const std::string& value)
     throw std::runtime_error("Unsupported delivery state value.");
 }
 
+std::string toJsonValue(TransferState transferState)
+{
+    switch (transferState) {
+    case TransferState::Pending:
+        return "pending";
+    case TransferState::Offered:
+        return "offered";
+    case TransferState::Transferring:
+        return "transferring";
+    case TransferState::Completed:
+        return "completed";
+    case TransferState::Failed:
+        return "failed";
+    case TransferState::Cancelled:
+        return "cancelled";
+    }
+
+    throw std::runtime_error("Unsupported transfer state.");
+}
+
+TransferState transferStateFromJsonValue(const std::string& value)
+{
+    if (value == "pending") {
+        return TransferState::Pending;
+    }
+    if (value == "offered") {
+        return TransferState::Offered;
+    }
+    if (value == "transferring") {
+        return TransferState::Transferring;
+    }
+    if (value == "completed") {
+        return TransferState::Completed;
+    }
+    if (value == "failed") {
+        return TransferState::Failed;
+    }
+    if (value == "cancelled") {
+        return TransferState::Cancelled;
+    }
+
+    throw std::runtime_error("Unsupported transfer state value.");
+}
+
+TransferState transferStateFromLegacyDeliveryState(DeliveryState deliveryState)
+{
+    switch (deliveryState) {
+    case DeliveryState::Pending:
+        return TransferState::Pending;
+    case DeliveryState::Sent:
+    case DeliveryState::Delivered:
+    case DeliveryState::Received:
+        return TransferState::Offered;
+    case DeliveryState::Completed:
+        return TransferState::Completed;
+    case DeliveryState::Failed:
+        return TransferState::Failed;
+    case DeliveryState::Cancelled:
+        return TransferState::Cancelled;
+    }
+
+    throw std::runtime_error("Unsupported delivery state.");
+}
+
 void requireStringField(const nlohmann::json& value, const char* fieldName)
 {
     if (!value.contains(fieldName) || !value[fieldName].is_string()
@@ -164,48 +229,6 @@ void validateCoreFields(const ChatMessageRecord& record)
     }
 }
 
-void validateContentFields(const ChatMessageRecord& record)
-{
-    switch (record.GetContentType()) {
-    case MessageContentType::Text:
-        if (!record.GetText().has_value() || record.GetText()->empty()) {
-            throw std::runtime_error("Text message record is missing text.");
-        }
-        return;
-    case MessageContentType::Emoji:
-        if (!record.GetEmoji().has_value() || record.GetEmoji()->empty()) {
-            throw std::runtime_error("Emoji message record is missing emoji.");
-        }
-        return;
-    case MessageContentType::Image:
-    case MessageContentType::File:
-        if (!record.GetTransferId().has_value() || record.GetTransferId()->empty()
-            || !record.GetFileName().has_value() || record.GetFileName()->empty()
-            || !record.GetFileSize().has_value()
-            || !record.GetLocalPath().has_value() || record.GetLocalPath()->empty()) {
-            throw std::runtime_error("File-like message record is missing transfer fields.");
-        }
-        return;
-    case MessageContentType::Folder:
-        if (!record.GetTransferId().has_value() || record.GetTransferId()->empty()
-            || !record.GetFileName().has_value() || record.GetFileName()->empty()
-            || !record.GetLocalPath().has_value() || record.GetLocalPath()->empty()
-            || !record.GetManifestPath().has_value()
-            || record.GetManifestPath()->empty()) {
-            throw std::runtime_error("Folder message record is missing transfer fields.");
-        }
-        return;
-    }
-
-    throw std::runtime_error("Unsupported chat history content type.");
-}
-
-void validateRecord(const ChatMessageRecord& record)
-{
-    validateCoreFields(record);
-    validateContentFields(record);
-}
-
 void addOptionalString(nlohmann::json& value,
                        const char* fieldName,
                        const std::optional<std::string>& fieldValue)
@@ -213,6 +236,96 @@ void addOptionalString(nlohmann::json& value,
     if (fieldValue.has_value()) {
         value[fieldName] = *fieldValue;
     }
+}
+
+void addOptionalFileSize(nlohmann::json& value,
+                         const std::optional<std::uintmax_t>& fieldValue)
+{
+    if (fieldValue.has_value()) {
+        value["file_size"] = *fieldValue;
+    }
+}
+
+bool hasRequiredString(const std::optional<std::string>& value)
+{
+    return value.has_value() && !value->empty();
+}
+
+void validatePart(const ChatMessagePart& part)
+{
+    if (part.GetPartId().empty()) {
+        throw std::runtime_error("Chat message part is missing part ID.");
+    }
+
+    switch (part.GetType()) {
+    case MessagePartType::Text:
+        if (!hasRequiredString(part.GetText())) {
+            throw std::runtime_error("Text message part is missing text.");
+        }
+        return;
+    case MessagePartType::Emoji:
+        if (!hasRequiredString(part.GetEmoji())) {
+            throw std::runtime_error("Emoji message part is missing emoji.");
+        }
+        return;
+    case MessagePartType::Image:
+    case MessagePartType::File:
+        if (!hasRequiredString(part.GetTransferId())
+            || !part.GetTransferState().has_value()
+            || !hasRequiredString(part.GetFileName())
+            || !part.GetFileSize().has_value()
+            || !hasRequiredString(part.GetLocalPath())) {
+            throw std::runtime_error("File-like message part is missing transfer fields.");
+        }
+        return;
+    case MessagePartType::Folder:
+        if (!hasRequiredString(part.GetTransferId())
+            || !part.GetTransferState().has_value()
+            || !hasRequiredString(part.GetFileName())
+            || !hasRequiredString(part.GetLocalPath())
+            || !hasRequiredString(part.GetManifestPath())) {
+            throw std::runtime_error("Folder message part is missing transfer fields.");
+        }
+        return;
+    }
+
+    throw std::runtime_error("Unsupported chat history part type.");
+}
+
+void validateRecord(const ChatMessageRecord& record)
+{
+    validateCoreFields(record);
+    if (record.GetParts().empty()) {
+        throw std::runtime_error("Chat history record is missing message parts.");
+    }
+
+    for (const auto& part : record.GetParts()) {
+        validatePart(part);
+    }
+}
+
+nlohmann::json partToJson(const ChatMessagePart& part)
+{
+    validatePart(part);
+
+    nlohmann::json value{
+        {"part_id", part.GetPartId()},
+        {"type", toJsonValue(part.GetType())},
+    };
+
+    addOptionalString(value, "text", part.GetText());
+    addOptionalString(value, "emoji", part.GetEmoji());
+    addOptionalString(value, "transfer_id", part.GetTransferId());
+    if (part.GetTransferState().has_value()) {
+        value["transfer_state"] = toJsonValue(*part.GetTransferState());
+    }
+    addOptionalString(value, "file_name", part.GetFileName());
+    addOptionalFileSize(value, part.GetFileSize());
+    addOptionalString(value, "sha256", part.GetSha256());
+    addOptionalString(value, "local_path", part.GetLocalPath());
+    addOptionalString(value, "manifest_path", part.GetManifestPath());
+
+    return value;
 }
 
 nlohmann::json toJson(const ChatMessageRecord& record)
@@ -230,33 +343,20 @@ nlohmann::json toJson(const ChatMessageRecord& record)
         {"sender_display_name_snapshot", record.GetSenderDisplayNameSnapshot()},
         {"receiver_display_name_snapshot", record.GetReceiverDisplayNameSnapshot()},
         {"created_at", record.GetCreatedAt()},
-        {"content_type", toJsonValue(record.GetContentType())},
         {"delivery_state", toJsonValue(record.GetDeliveryState())},
     };
 
-    addOptionalString(value, "text", record.GetText());
-    addOptionalString(value, "emoji", record.GetEmoji());
-    addOptionalString(value, "transfer_id", record.GetTransferId());
-    addOptionalString(value, "file_name", record.GetFileName());
-    if (record.GetFileSize().has_value()) {
-        value["file_size"] = *record.GetFileSize();
+    nlohmann::json parts = nlohmann::json::array();
+    for (const auto& part : record.GetParts()) {
+        parts.push_back(partToJson(part));
     }
-    addOptionalString(value, "sha256", record.GetSha256());
-    addOptionalString(value, "local_path", record.GetLocalPath());
-    addOptionalString(value, "manifest_path", record.GetManifestPath());
+    value["parts"] = std::move(parts);
 
     return value;
 }
 
-ChatMessageRecord fromJson(const nlohmann::json& value)
+void readCommonRecordFields(const nlohmann::json& value, ChatMessageRecord& record)
 {
-    if (!value.is_object()
-        || value.value("schema_version", 0) != kSchemaVersion
-        || value.value("record_type", "") != kRecordType) {
-        throw std::runtime_error("Chat history record has unsupported schema.");
-    }
-
-    ChatMessageRecord record;
     record.SetMessageId(readRequiredString(value, "message_id"));
     record.SetConversationId(readRequiredString(value, "conversation_id"));
     record.SetDirection(
@@ -268,38 +368,134 @@ ChatMessageRecord fromJson(const nlohmann::json& value)
     record.SetReceiverDisplayNameSnapshot(
         readRequiredString(value, "receiver_display_name_snapshot"));
     record.SetCreatedAt(readRequiredString(value, "created_at"));
-    record.SetContentType(
-        messageContentTypeFromJsonValue(readRequiredString(value, "content_type")));
     record.SetDeliveryState(
         deliveryStateFromJsonValue(readRequiredString(value, "delivery_state")));
+}
 
-    switch (record.GetContentType()) {
-    case MessageContentType::Text:
-        record.SetText(readRequiredString(value, "text"));
+ChatMessagePart partFromJson(const nlohmann::json& value)
+{
+    if (!value.is_object()) {
+        throw std::runtime_error("Chat message part must be an object.");
+    }
+
+    ChatMessagePart part;
+    part.SetPartId(readRequiredString(value, "part_id"));
+    part.SetType(messagePartTypeFromJsonValue(readRequiredString(value, "type")));
+
+    switch (part.GetType()) {
+    case MessagePartType::Text:
+        part.SetText(readRequiredString(value, "text"));
         break;
-    case MessageContentType::Emoji:
-        record.SetEmoji(readRequiredString(value, "emoji"));
+    case MessagePartType::Emoji:
+        part.SetEmoji(readRequiredString(value, "emoji"));
         break;
-    case MessageContentType::Image:
-    case MessageContentType::File:
-        record.SetTransferId(readRequiredString(value, "transfer_id"));
-        record.SetFileName(readRequiredString(value, "file_name"));
-        record.SetFileSize(readRequiredFileSize(value));
-        record.SetLocalPath(readRequiredString(value, "local_path"));
+    case MessagePartType::Image:
+    case MessagePartType::File:
+        part.SetTransferId(readRequiredString(value, "transfer_id"));
+        part.SetTransferState(
+            transferStateFromJsonValue(readRequiredString(value, "transfer_state")));
+        part.SetFileName(readRequiredString(value, "file_name"));
+        part.SetFileSize(readRequiredFileSize(value));
+        part.SetLocalPath(readRequiredString(value, "local_path"));
         if (value.contains("sha256") && value["sha256"].is_string()) {
-            record.SetSha256(value["sha256"].get<std::string>());
+            part.SetSha256(value["sha256"].get<std::string>());
         }
         break;
-    case MessageContentType::Folder:
-        record.SetTransferId(readRequiredString(value, "transfer_id"));
-        record.SetFileName(readRequiredString(value, "file_name"));
-        record.SetLocalPath(readRequiredString(value, "local_path"));
-        record.SetManifestPath(readRequiredString(value, "manifest_path"));
+    case MessagePartType::Folder:
+        part.SetTransferId(readRequiredString(value, "transfer_id"));
+        part.SetTransferState(
+            transferStateFromJsonValue(readRequiredString(value, "transfer_state")));
+        part.SetFileName(readRequiredString(value, "file_name"));
+        part.SetLocalPath(readRequiredString(value, "local_path"));
+        part.SetManifestPath(readRequiredString(value, "manifest_path"));
         break;
+    }
+
+    validatePart(part);
+    return part;
+}
+
+ChatMessagePart legacyPartFromJson(const nlohmann::json& value,
+                                   DeliveryState deliveryState)
+{
+    ChatMessagePart part;
+    part.SetPartId("legacy-1");
+    part.SetType(messagePartTypeFromJsonValue(readRequiredString(value, "content_type")));
+
+    switch (part.GetType()) {
+    case MessagePartType::Text:
+        part.SetText(readRequiredString(value, "text"));
+        break;
+    case MessagePartType::Emoji:
+        part.SetEmoji(readRequiredString(value, "emoji"));
+        break;
+    case MessagePartType::Image:
+    case MessagePartType::File:
+        part.SetTransferId(readRequiredString(value, "transfer_id"));
+        part.SetTransferState(transferStateFromLegacyDeliveryState(deliveryState));
+        part.SetFileName(readRequiredString(value, "file_name"));
+        part.SetFileSize(readRequiredFileSize(value));
+        part.SetLocalPath(readRequiredString(value, "local_path"));
+        if (value.contains("sha256") && value["sha256"].is_string()) {
+            part.SetSha256(value["sha256"].get<std::string>());
+        }
+        break;
+    case MessagePartType::Folder:
+        part.SetTransferId(readRequiredString(value, "transfer_id"));
+        part.SetTransferState(transferStateFromLegacyDeliveryState(deliveryState));
+        part.SetFileName(readRequiredString(value, "file_name"));
+        part.SetLocalPath(readRequiredString(value, "local_path"));
+        part.SetManifestPath(readRequiredString(value, "manifest_path"));
+        break;
+    }
+
+    validatePart(part);
+    return part;
+}
+
+ChatMessageRecord fromJsonV2(const nlohmann::json& value)
+{
+    ChatMessageRecord record;
+    readCommonRecordFields(value, record);
+
+    if (!value.contains("parts") || !value["parts"].is_array()
+        || value["parts"].empty()) {
+        throw std::runtime_error("Chat history record is missing message parts.");
+    }
+
+    for (const auto& partValue : value["parts"]) {
+        record.AddPart(partFromJson(partValue));
     }
 
     validateRecord(record);
     return record;
+}
+
+ChatMessageRecord fromJsonV1(const nlohmann::json& value)
+{
+    ChatMessageRecord record;
+    readCommonRecordFields(value, record);
+    record.AddPart(legacyPartFromJson(value, record.GetDeliveryState()));
+
+    validateRecord(record);
+    return record;
+}
+
+ChatMessageRecord fromJson(const nlohmann::json& value)
+{
+    if (!value.is_object() || value.value("record_type", "") != kRecordType) {
+        throw std::runtime_error("Chat history record has unsupported schema.");
+    }
+
+    const int schemaVersion = value.value("schema_version", 0);
+    if (schemaVersion == kSchemaVersion) {
+        return fromJsonV2(value);
+    }
+    if (schemaVersion == kLegacySchemaVersion) {
+        return fromJsonV1(value);
+    }
+
+    throw std::runtime_error("Chat history record has unsupported schema.");
 }
 
 } // namespace
