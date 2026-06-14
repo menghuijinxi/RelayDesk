@@ -128,6 +128,7 @@ if(RELAYDESK_HAS_EUI_NEO)
         src/core/diagnostic_log.cpp
         src/core/time.cpp
         src/core/uuid.cpp
+        src/platform/attachment_input_win.cpp
         src/platform/computer_name_win.cpp
         src/platform/text_encoding_win.cpp
         src/platform/windows_install_id_win.cpp
@@ -135,10 +136,14 @@ if(RELAYDESK_HAS_EUI_NEO)
         src/net/discovery_message.cpp
         src/net/discovery_peer_profile.cpp
         src/net/discovery_processor.cpp
+        src/net/peer_frame.cpp
+        src/net/peer_message.cpp
         src/storage/app_paths.cpp
         src/storage/history_store.cpp
         src/storage/local_identity.cpp
         src/storage/peer_profile.cpp
+        src/storage/sticker_store.cpp
+        src/storage/ui_preferences.cpp
         src/storage/app_paths_win.cpp
     )
 
@@ -156,6 +161,7 @@ if(RELAYDESK_HAS_EUI_NEO)
         target_sources(relaydesk PRIVATE
             ${CMAKE_SOURCE_DIR}/relaydesk.rc
         )
+        target_link_libraries(relaydesk PRIVATE shell32)
     else()
         message(FATAL_ERROR "RelayDesk currently targets Windows only.")
     endif()
@@ -166,6 +172,7 @@ if(RELAYDESK_HAS_EUI_NEO)
 
     if(RELAYDESK_HAS_BOOST_ASIO)
         target_sources(relaydesk PRIVATE
+            src/net/boost_asio_tcp_peer_transport.cpp
             src/net/boost_asio_udp_discovery_transport.cpp
             src/net/discovery_service.cpp
             src/net/discovery_worker.cpp
@@ -227,6 +234,46 @@ if(MSVC)
 endif()
 
 add_test(NAME relaydesk_identity_tests COMMAND relaydesk_identity_tests)
+
+add_executable(relaydesk_ui_preferences_tests
+    tests/storage/ui_preferences_tests.cpp
+    src/storage/app_paths.cpp
+    src/storage/ui_preferences.cpp
+)
+
+target_include_directories(relaydesk_ui_preferences_tests PRIVATE src)
+target_compile_features(relaydesk_ui_preferences_tests PRIVATE cxx_std_23)
+target_link_libraries(relaydesk_ui_preferences_tests PRIVATE nlohmann_json::nlohmann_json)
+
+target_compile_definitions(relaydesk_ui_preferences_tests PRIVATE
+    RELAYDESK_TEST_WORK_DIR="${CMAKE_SOURCE_DIR}/tmp/tests/ui_preferences"
+)
+
+if(MSVC)
+    target_compile_options(relaydesk_ui_preferences_tests PRIVATE /W4 /permissive- /utf-8)
+endif()
+
+add_test(NAME relaydesk_ui_preferences_tests COMMAND relaydesk_ui_preferences_tests)
+
+add_executable(relaydesk_sticker_store_tests
+    tests/storage/sticker_store_tests.cpp
+    src/storage/app_paths.cpp
+    src/storage/sticker_store.cpp
+)
+
+target_include_directories(relaydesk_sticker_store_tests PRIVATE src)
+target_compile_features(relaydesk_sticker_store_tests PRIVATE cxx_std_23)
+target_link_libraries(relaydesk_sticker_store_tests PRIVATE nlohmann_json::nlohmann_json)
+
+target_compile_definitions(relaydesk_sticker_store_tests PRIVATE
+    RELAYDESK_STICKER_TEST_WORK_DIR="${CMAKE_SOURCE_DIR}/tmp/tests/sticker_store"
+)
+
+if(MSVC)
+    target_compile_options(relaydesk_sticker_store_tests PRIVATE /W4 /permissive- /utf-8)
+endif()
+
+add_test(NAME relaydesk_sticker_store_tests COMMAND relaydesk_sticker_store_tests)
 
 add_executable(relaydesk_history_tests
     tests/storage/history_store_tests.cpp
@@ -300,6 +347,37 @@ if(MSVC)
 endif()
 
 add_test(NAME relaydesk_discovery_message_tests COMMAND relaydesk_discovery_message_tests)
+
+add_executable(relaydesk_peer_frame_tests
+    tests/net/peer_frame_tests.cpp
+    src/net/peer_frame.cpp
+)
+
+target_include_directories(relaydesk_peer_frame_tests PRIVATE src)
+target_compile_features(relaydesk_peer_frame_tests PRIVATE cxx_std_23)
+
+if(MSVC)
+    target_compile_options(relaydesk_peer_frame_tests PRIVATE /W4 /permissive- /utf-8)
+endif()
+
+add_test(NAME relaydesk_peer_frame_tests COMMAND relaydesk_peer_frame_tests)
+
+add_executable(relaydesk_peer_message_tests
+    tests/net/peer_message_tests.cpp
+    src/net/peer_frame.cpp
+    src/net/peer_message.cpp
+    src/storage/history_store.cpp
+)
+
+target_include_directories(relaydesk_peer_message_tests PRIVATE src)
+target_compile_features(relaydesk_peer_message_tests PRIVATE cxx_std_23)
+target_link_libraries(relaydesk_peer_message_tests PRIVATE nlohmann_json::nlohmann_json)
+
+if(MSVC)
+    target_compile_options(relaydesk_peer_message_tests PRIVATE /W4 /permissive- /utf-8)
+endif()
+
+add_test(NAME relaydesk_peer_message_tests COMMAND relaydesk_peer_message_tests)
 
 add_executable(relaydesk_discovery_local_announcement_tests
     tests/net/discovery_local_announcement_tests.cpp
@@ -398,6 +476,29 @@ if(RELAYDESK_HAS_BOOST_ASIO)
 
     add_test(NAME relaydesk_boost_asio_udp_discovery_transport_tests
              COMMAND relaydesk_boost_asio_udp_discovery_transport_tests)
+
+    add_executable(relaydesk_boost_asio_tcp_peer_transport_tests
+        tests/net/boost_asio_tcp_peer_transport_tests.cpp
+        src/net/boost_asio_tcp_peer_transport.cpp
+        src/net/peer_frame.cpp
+        src/net/peer_message.cpp
+        src/storage/history_store.cpp
+    )
+
+    target_include_directories(relaydesk_boost_asio_tcp_peer_transport_tests
+        PRIVATE src)
+    target_compile_features(relaydesk_boost_asio_tcp_peer_transport_tests
+        PRIVATE cxx_std_23)
+    target_link_libraries(relaydesk_boost_asio_tcp_peer_transport_tests
+        PRIVATE relaydesk_boost_asio nlohmann_json::nlohmann_json)
+
+    if(MSVC)
+        target_compile_options(relaydesk_boost_asio_tcp_peer_transport_tests
+            PRIVATE /W4 /permissive- /utf-8)
+    endif()
+
+    add_test(NAME relaydesk_boost_asio_tcp_peer_transport_tests
+             COMMAND relaydesk_boost_asio_tcp_peer_transport_tests)
 
     add_executable(relaydesk_discovery_service_tests
         tests/net/discovery_service_tests.cpp

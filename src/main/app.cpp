@@ -1,14 +1,26 @@
 #include "eui_neo.h"
 
+#include "core/platform/platform.h"
+#include "core/uuid.h"
 #include "main/app_runtime.h"
+#include "platform/attachment_input.h"
+#include "platform/text_encoding.h"
 #include "storage/app_paths.h"
+#include "storage/sticker_store.h"
+#include "storage/ui_preferences.h"
 
 #include <algorithm>
 #include <array>
+#include <cctype>
+#include <cstdint>
 #include <cstddef>
 #include <exception>
+#include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
+#include <system_error>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -31,7 +43,113 @@ constexpr Color kAvatarGreen{0.080f, 0.600f, 0.440f, 1.0f};
 constexpr float kContentTop = 0.0f;
 constexpr float kChatHeaderHeight = 118.0f;
 constexpr float kChatTimelineContentHeight = 650.0f;
-constexpr float kComposerHeight = 68.0f;
+constexpr float kComposerHeight = 156.0f;
+constexpr std::size_t kMaxRecentEmojiCount = 10;
+constexpr std::size_t kMaxPendingAttachmentCount = 8;
+
+struct EmojiEntry {
+    const char* glyph;
+    const char* name;
+};
+
+constexpr std::array<EmojiEntry, 96> kEmojiEntries{{
+    {"😀", "grinning"},
+    {"😃", "smiley"},
+    {"😄", "smile"},
+    {"😁", "grin"},
+    {"😆", "laughing"},
+    {"😅", "sweat_smile"},
+    {"😂", "joy"},
+    {"🤣", "rofl"},
+    {"😊", "blush"},
+    {"🙂", "slightly_smiling"},
+    {"😉", "wink"},
+    {"😌", "relieved"},
+    {"😍", "heart_eyes"},
+    {"🥰", "smiling_hearts"},
+    {"😘", "kissing_heart"},
+    {"😋", "yum"},
+    {"😛", "stuck_out_tongue"},
+    {"😜", "wink_tongue"},
+    {"🤪", "zany"},
+    {"🤨", "raised_eyebrow"},
+    {"🧐", "monocle"},
+    {"🤓", "nerd"},
+    {"😎", "sunglasses"},
+    {"🥳", "party"},
+    {"😏", "smirk"},
+    {"😒", "unamused"},
+    {"😞", "disappointed"},
+    {"😔", "pensive"},
+    {"😟", "worried"},
+    {"😕", "confused"},
+    {"🙁", "slightly_frowning"},
+    {"☹️", "frowning"},
+    {"😣", "persevere"},
+    {"😖", "confounded"},
+    {"😫", "tired"},
+    {"😩", "weary"},
+    {"🥺", "pleading"},
+    {"😢", "cry"},
+    {"😭", "sob"},
+    {"😤", "triumph"},
+    {"😠", "angry"},
+    {"😡", "rage"},
+    {"🤬", "symbols_mouth"},
+    {"🤯", "mind_blown"},
+    {"😳", "flushed"},
+    {"🥵", "hot"},
+    {"🥶", "cold"},
+    {"😱", "scream"},
+    {"😨", "fearful"},
+    {"😰", "cold_sweat"},
+    {"😥", "sad_relieved"},
+    {"😓", "sweat"},
+    {"🤗", "hug"},
+    {"🤔", "thinking"},
+    {"🤭", "hand_over_mouth"},
+    {"🤫", "shushing"},
+    {"🤥", "lying"},
+    {"😶", "no_mouth"},
+    {"🙄", "rolling_eyes"},
+    {"😬", "grimacing"},
+    {"😴", "sleeping"},
+    {"🤤", "drooling"},
+    {"😪", "sleepy"},
+    {"😵", "dizzy"},
+    {"🤐", "zipper_mouth"},
+    {"🤢", "nauseated"},
+    {"🤮", "vomiting"},
+    {"🤧", "sneezing"},
+    {"😷", "mask"},
+    {"🤒", "thermometer"},
+    {"🤕", "head_bandage"},
+    {"👍", "thumbs_up"},
+    {"🤦", "facepalm"},
+    {"🤷", "shrug"},
+    {"🙈", "see_no_evil"},
+    {"🙉", "hear_no_evil"},
+    {"🙊", "speak_no_evil"},
+    {"🤡", "clown"},
+    {"🥴", "woozy"},
+    {"🫠", "melting"},
+    {"😮‍💨", "face_exhaling"},
+    {"🫥", "dotted_line_face"},
+    {"🥲", "smiling_tear"},
+    {"🙌", "raised_hands"},
+    {"👏", "clap"},
+    {"🤝", "handshake"},
+    {"✌️", "victory"},
+    {"🤞", "crossed_fingers"},
+    {"👊", "fist"},
+    {"💪", "muscle"},
+    {"🫶", "heart_hands"},
+    {"🫰", "finger_heart"},
+    {"💯", "hundred"},
+    {"🔥", "fire"},
+    {"💥", "boom"},
+    {"🍉", "melon"},
+}};
 
 struct PeerPreview {
     std::string deviceId;
@@ -47,6 +165,34 @@ struct TransferPreview {
     const char* detail;
     float progress;
     Color accent;
+};
+
+struct StickerImageCandidate {
+    std::string localPath;
+    std::string displayName;
+};
+
+struct StickerPickerItem {
+    std::string packId;
+    std::string itemId;
+    std::string displayName;
+    std::string relativePath;
+    std::string absolutePath;
+};
+
+enum class PendingAttachmentKind {
+    Image,
+    File,
+};
+
+struct PendingAttachmentItem {
+    PendingAttachmentKind kind = PendingAttachmentKind::File;
+    std::string displayName;
+    std::string localPath;
+    std::string previewPath;
+    std::filesystem::path sourcePath;
+    std::uintmax_t fileSize = 0;
+    bool stageOnSend = false;
 };
 
 struct AppLayout {
@@ -255,6 +401,1036 @@ components::ScrollStyle scrollStyle()
     return style;
 }
 
+components::InputStyle composerInputStyle()
+{
+    components::InputStyle style;
+    style.background = kPanelBackground;
+    style.hover = kPanelBackground;
+    style.focused = kPanelBackground;
+    style.pressed = kPanelBackground;
+    style.border = {0.0f, 0.0f, 0.0f, 0.0f};
+    style.focusBorder = {0.0f, 0.0f, 0.0f, 0.0f};
+    style.text = kText;
+    style.placeholder = kSubtleText;
+    style.cursor = kTeal;
+    style.shadow = {};
+    style.radius = 0.0f;
+    return style;
+}
+
+components::ContextMenuStyle stickerContextMenuStyle()
+{
+    components::ContextMenuStyle style;
+    style.background = kPanelBackground;
+    style.hover = kTealSoft;
+    style.pressed = {0.790f, 0.940f, 0.930f, 1.0f};
+    style.text = kText;
+    style.mutedText = kMutedText;
+    style.border = kBorder;
+    style.shadow = {true, {0.0f, 5.0f}, 12.0f, 0.0f,
+                    {0.0f, 0.0f, 0.0f, 0.14f}, false};
+    style.radius = 8.0f;
+    return style;
+}
+
+bool hasComposerText(const std::string& value)
+{
+    return value.find_first_not_of(" \t\r\n") != std::string::npos;
+}
+
+std::string emojiPreviewText(const std::string& emoji)
+{
+    if (emoji == "thumbs_up") {
+        return "👍";
+    }
+    if (emoji == "smile") {
+        return "🙂";
+    }
+    return emoji;
+}
+
+void rememberRecentEmoji(std::vector<std::string>& recentEmojis,
+                         const std::string& emoji)
+{
+    recentEmojis.erase(std::remove(recentEmojis.begin(), recentEmojis.end(), emoji),
+                       recentEmojis.end());
+    recentEmojis.insert(recentEmojis.begin(), emoji);
+    if (recentEmojis.size() > kMaxRecentEmojiCount) {
+        recentEmojis.resize(kMaxRecentEmojiCount);
+    }
+}
+
+std::vector<std::string> normalizeRecentEmojis(
+    const std::vector<std::string>& recentEmojis)
+{
+    std::vector<std::string> result;
+    result.reserve(std::min(recentEmojis.size(), kMaxRecentEmojiCount));
+    for (const auto& emoji : recentEmojis) {
+        if (emoji.empty()
+            || std::find(result.begin(), result.end(), emoji) != result.end()) {
+            continue;
+        }
+
+        result.push_back(emoji);
+        if (result.size() >= kMaxRecentEmojiCount) {
+            break;
+        }
+    }
+    return result;
+}
+
+std::vector<std::string> loadStoredRecentEmojis()
+{
+    try {
+        const auto paths = relaydesk::storage::createAppPaths();
+        return normalizeRecentEmojis(relaydesk::storage::loadRecentEmojis(paths));
+    } catch (const std::exception&) {
+        return {};
+    }
+}
+
+void saveStoredRecentEmojis(const std::vector<std::string>& recentEmojis)
+{
+    try {
+        const auto paths = relaydesk::storage::createAppPaths();
+        relaydesk::storage::saveRecentEmojis(paths,
+                                             normalizeRecentEmojis(recentEmojis));
+    } catch (const std::exception&) {
+    }
+}
+
+std::string filesystemPathToUtf8String(const std::filesystem::path& filePath)
+{
+    const auto value = filePath.u8string();
+    return std::string(value.begin(), value.end());
+}
+
+std::string filesystemPathToGenericUtf8String(const std::filesystem::path& filePath)
+{
+    const auto value = filePath.generic_u8string();
+    return std::string(value.begin(), value.end());
+}
+
+std::filesystem::path filesystemPathFromUtf8String(const std::string& pathText)
+{
+#if defined(_WIN32)
+    return std::filesystem::path(relaydesk::platform::utf8ToWide(pathText));
+#else
+    return std::filesystem::path(pathText);
+#endif
+}
+
+std::filesystem::path resolveWorkRelativePath(
+    const relaydesk::storage::AppPaths& appPaths,
+    const std::string& relativePath)
+{
+    std::filesystem::path filePath(relativePath);
+    if (filePath.is_relative()) {
+        filePath = appPaths.GetWorkDirectory() / filePath;
+    }
+    return filePath.lexically_normal();
+}
+
+bool isParentTraversalPath(const std::filesystem::path& filePath)
+{
+    const auto begin = filePath.begin();
+    return begin != filePath.end() && *begin == "..";
+}
+
+std::string makeAttachmentLocalPath(
+    const relaydesk::storage::AppPaths& appPaths,
+    const std::filesystem::path& filePath)
+{
+    std::error_code error;
+    std::filesystem::path relativePath =
+        std::filesystem::relative(filePath, appPaths.GetWorkDirectory(), error);
+    if (!error && !relativePath.empty() && !isParentTraversalPath(relativePath)) {
+        return filesystemPathToGenericUtf8String(relativePath);
+    }
+
+    return filesystemPathToUtf8String(filePath);
+}
+
+std::string lowerAscii(std::string value)
+{
+    std::transform(
+        value.begin(),
+        value.end(),
+        value.begin(),
+        [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+    return value;
+}
+
+bool isImageAttachmentPath(const std::filesystem::path& filePath)
+{
+    const std::string extension = lowerAscii(filePath.extension().string());
+    return extension == ".png"
+        || extension == ".jpg"
+        || extension == ".jpeg"
+        || extension == ".gif"
+        || extension == ".webp"
+        || extension == ".bmp";
+}
+
+std::filesystem::path makeAbsolutePath(const std::filesystem::path& filePath)
+{
+    std::error_code error;
+    std::filesystem::path absolutePath = std::filesystem::absolute(filePath, error);
+    if (error) {
+        return filePath.lexically_normal();
+    }
+    return absolutePath.lexically_normal();
+}
+
+std::uintmax_t fileSizeOrZero(const std::filesystem::path& filePath)
+{
+    std::error_code error;
+    const std::uintmax_t size = std::filesystem::file_size(filePath, error);
+    return error ? 0u : size;
+}
+
+std::filesystem::path stageAttachmentForSend(
+    const relaydesk::storage::AppPaths& appPaths,
+    const PendingAttachmentItem& attachment)
+{
+    const std::filesystem::path fileName = attachment.sourcePath.filename();
+    const std::filesystem::path targetDirectory =
+        appPaths.GetOutboxDirectory() / relaydesk::core::createUuidV4();
+    std::filesystem::create_directories(targetDirectory);
+    const std::filesystem::path targetPath = targetDirectory / fileName;
+    std::filesystem::copy_file(
+        attachment.sourcePath,
+        targetPath,
+        std::filesystem::copy_options::overwrite_existing);
+    return targetPath;
+}
+
+std::optional<PendingAttachmentItem> makePendingAttachmentFromPath(
+    const std::filesystem::path& filePath)
+{
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(filePath, error) || error) {
+        return std::nullopt;
+    }
+
+    const auto appPaths = relaydesk::storage::createAppPaths();
+    relaydesk::storage::ensureAppDirectories(appPaths);
+    const std::filesystem::path absolutePath = makeAbsolutePath(filePath);
+    PendingAttachmentItem attachment;
+    attachment.kind = isImageAttachmentPath(absolutePath)
+        ? PendingAttachmentKind::Image
+        : PendingAttachmentKind::File;
+    attachment.displayName = filesystemPathToUtf8String(absolutePath.filename());
+    attachment.localPath = makeAttachmentLocalPath(appPaths, absolutePath);
+    attachment.previewPath = filesystemPathToUtf8String(absolutePath);
+    attachment.sourcePath = absolutePath;
+    attachment.fileSize = fileSizeOrZero(absolutePath);
+    attachment.stageOnSend =
+        attachment.localPath == filesystemPathToUtf8String(absolutePath);
+    return attachment;
+}
+
+PendingAttachmentItem makePendingAttachmentFromSticker(
+    const StickerPickerItem& sticker)
+{
+    const std::filesystem::path imagePath(sticker.absolutePath);
+    PendingAttachmentItem attachment;
+    attachment.kind = PendingAttachmentKind::Image;
+    attachment.displayName =
+        sticker.displayName.empty() ? sticker.itemId : sticker.displayName;
+    attachment.localPath = sticker.relativePath;
+    attachment.previewPath = sticker.absolutePath;
+    attachment.sourcePath = imagePath;
+    attachment.fileSize = fileSizeOrZero(imagePath);
+    attachment.stageOnSend = false;
+    return attachment;
+}
+
+void appendPendingAttachmentPath(
+    std::vector<PendingAttachmentItem>& pendingAttachments,
+    const std::filesystem::path& filePath)
+{
+    if (pendingAttachments.size() >= kMaxPendingAttachmentCount) {
+        return;
+    }
+
+    try {
+        std::optional<PendingAttachmentItem> attachment =
+            makePendingAttachmentFromPath(filePath);
+        if (attachment.has_value()) {
+            pendingAttachments.push_back(std::move(attachment.value()));
+        }
+    } catch (const std::exception&) {
+    }
+}
+
+void appendPendingAttachmentPaths(
+    std::vector<PendingAttachmentItem>& pendingAttachments,
+    const std::vector<std::filesystem::path>& filePaths)
+{
+    for (const auto& filePath : filePaths) {
+        appendPendingAttachmentPath(pendingAttachments, filePath);
+    }
+}
+
+std::vector<std::filesystem::path> selectAttachmentFilesFromDialog()
+{
+    core::platform::FileDialogOptions options;
+    options.prompt = "选择文件";
+    options.allowMultiple = true;
+
+    std::vector<std::filesystem::path> filePaths;
+    const core::platform::FileDialogResult result =
+        core::platform::openFileDialog(options);
+    if (result.status != core::platform::FileDialogStatus::Selected) {
+        return filePaths;
+    }
+
+    filePaths.reserve(result.paths.size());
+    for (const auto& pathText : result.paths) {
+        filePaths.push_back(filesystemPathFromUtf8String(pathText));
+    }
+    return filePaths;
+}
+
+StickerPickerItem makeStickerPickerItem(
+    const relaydesk::storage::AppPaths& appPaths,
+    const relaydesk::storage::StickerPack& pack,
+    const relaydesk::storage::StickerItem& item)
+{
+    const std::filesystem::path absolutePath =
+        resolveWorkRelativePath(appPaths, item.GetRelativePath());
+    return StickerPickerItem{
+        pack.GetPackId(),
+        item.GetItemId(),
+        item.GetDisplayName(),
+        item.GetRelativePath(),
+        filesystemPathToUtf8String(absolutePath),
+    };
+}
+
+void appendStickerPickerItems(
+    const relaydesk::storage::AppPaths& appPaths,
+    const relaydesk::storage::StickerPack& pack,
+    std::vector<StickerPickerItem>& items)
+{
+    for (const auto& item : pack.GetItems()) {
+        const std::filesystem::path absolutePath =
+            resolveWorkRelativePath(appPaths, item.GetRelativePath());
+        if (!std::filesystem::is_regular_file(absolutePath)) {
+            continue;
+        }
+
+        StickerPickerItem pickerItem = makeStickerPickerItem(appPaths, pack, item);
+        items.push_back(std::move(pickerItem));
+    }
+}
+
+std::vector<StickerPickerItem> loadStoredStickerPickerItems()
+{
+    try {
+        const auto appPaths = relaydesk::storage::createAppPaths();
+        std::vector<StickerPickerItem> items;
+        appendStickerPickerItems(
+            appPaths,
+            relaydesk::storage::loadFavoriteStickerPack(appPaths),
+            items);
+        for (const auto& pack : relaydesk::storage::loadStickerPacks(appPaths)) {
+            appendStickerPickerItems(appPaths, pack, items);
+        }
+        return items;
+    } catch (const std::exception&) {
+        return {};
+    }
+}
+
+void loadStoredStickerPickerItemsOnce(eui::Ui& ui,
+                                      std::vector<StickerPickerItem>& items)
+{
+    bool& loaded = ui.state<bool>("composer.stickers.loaded");
+    if (loaded) {
+        return;
+    }
+
+    items = loadStoredStickerPickerItems();
+    loaded = true;
+}
+
+std::optional<std::string> importStickerPackFromFileDialog()
+{
+    core::platform::FileDialogOptions options;
+    options.prompt = "导入表情包";
+    options.filterName = "表情包";
+    options.allowedExtensions = {"json", "png", "jpg", "jpeg", "gif", "webp"};
+
+    const core::platform::FileDialogResult result =
+        core::platform::openFileDialog(options);
+    if (result.status == core::platform::FileDialogStatus::Cancelled) {
+        return std::nullopt;
+    }
+    if (result.status == core::platform::FileDialogStatus::Failed) {
+        return result.error.empty() ? std::string("导入失败") : result.error;
+    }
+    if (result.paths.empty()) {
+        return std::nullopt;
+    }
+
+    try {
+        const auto appPaths = relaydesk::storage::createAppPaths();
+        relaydesk::storage::ensureAppDirectories(appPaths);
+        const std::filesystem::path selectedPath(result.paths.front());
+        const std::filesystem::path sourceDirectory =
+            std::filesystem::is_directory(selectedPath)
+                ? selectedPath
+                : selectedPath.parent_path();
+        if (sourceDirectory.empty()) {
+            return std::string("导入来源无效");
+        }
+
+        const relaydesk::storage::StickerPack pack =
+            relaydesk::storage::importStickerPack(
+                appPaths,
+                sourceDirectory,
+                filesystemPathToUtf8String(sourceDirectory.filename()));
+        return "已导入 " + pack.GetDisplayName();
+    } catch (const std::exception& error) {
+        return std::string(error.what());
+    }
+}
+
+relaydesk::storage::ChatMessagePart makeComposerTextPart(std::string textValue)
+{
+    relaydesk::storage::ChatMessagePart part;
+    part.SetType(relaydesk::storage::MessagePartType::Text);
+    part.SetText(std::move(textValue));
+    return part;
+}
+
+std::optional<relaydesk::storage::ChatMessagePart> makeComposerAttachmentPart(
+    const PendingAttachmentItem& attachment)
+{
+    std::filesystem::path localPath = attachment.sourcePath;
+    std::string localPathText = attachment.localPath;
+    std::uintmax_t fileSize = attachment.fileSize;
+    try {
+        const auto appPaths = relaydesk::storage::createAppPaths();
+        relaydesk::storage::ensureAppDirectories(appPaths);
+        if (attachment.stageOnSend) {
+            localPath = stageAttachmentForSend(appPaths, attachment);
+            localPathText = makeAttachmentLocalPath(appPaths, localPath);
+        } else if (localPathText.empty()) {
+            localPathText = makeAttachmentLocalPath(appPaths, localPath);
+        }
+        fileSize = fileSizeOrZero(localPath);
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+
+    relaydesk::storage::ChatMessagePart part;
+    part.SetType(attachment.kind == PendingAttachmentKind::Image
+                     ? relaydesk::storage::MessagePartType::Image
+                     : relaydesk::storage::MessagePartType::File);
+    part.SetTransferId(relaydesk::core::createUuidV4());
+    part.SetTransferState(relaydesk::storage::TransferState::Pending);
+    part.SetFileName(attachment.displayName);
+    part.SetFileSize(fileSize);
+    part.SetLocalPath(localPathText);
+    return part;
+}
+
+std::vector<relaydesk::storage::ChatMessagePart> makeComposerMessageParts(
+    const std::string& textValue,
+    const std::vector<PendingAttachmentItem>& pendingAttachments)
+{
+    std::vector<relaydesk::storage::ChatMessagePart> parts;
+    if (hasComposerText(textValue)) {
+        parts.push_back(makeComposerTextPart(textValue));
+    }
+    for (const auto& attachment : pendingAttachments) {
+        std::optional<relaydesk::storage::ChatMessagePart> part =
+            makeComposerAttachmentPart(attachment);
+        if (part.has_value()) {
+            parts.push_back(std::move(part.value()));
+        }
+    }
+    return parts;
+}
+
+std::optional<StickerImageCandidate> findStickerImageCandidate(
+    const relaydesk::storage::ChatMessageRecord& message)
+{
+    for (const auto& part : message.GetParts()) {
+        if (part.GetType() != relaydesk::storage::MessagePartType::Image
+            || !part.GetLocalPath().has_value()
+            || part.GetLocalPath().value().empty()) {
+            continue;
+        }
+
+        std::string displayName = part.GetFileName().value_or("");
+        if (displayName.empty()) {
+            displayName = "sticker";
+        }
+        return StickerImageCandidate{part.GetLocalPath().value(), displayName};
+    }
+
+    return std::nullopt;
+}
+
+std::optional<std::filesystem::path> findRenderableImagePath(
+    const relaydesk::storage::ChatMessageRecord& message)
+{
+    if (message.GetParts().size() != 1u) {
+        return std::nullopt;
+    }
+
+    const auto& part = message.GetParts().front();
+    if (part.GetType() != relaydesk::storage::MessagePartType::Image
+        || !part.GetLocalPath().has_value()
+        || part.GetLocalPath().value().empty()) {
+        return std::nullopt;
+    }
+
+    try {
+        const auto appPaths = relaydesk::storage::createAppPaths();
+        const std::filesystem::path imagePath =
+            resolveWorkRelativePath(appPaths, part.GetLocalPath().value());
+        if (!std::filesystem::is_regular_file(imagePath)) {
+            return std::nullopt;
+        }
+
+        return imagePath;
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+std::optional<std::string> favoriteStickerImage(
+    const std::string& localPath,
+    const std::string& displayName)
+{
+    try {
+        const auto appPaths = relaydesk::storage::createAppPaths();
+        relaydesk::storage::ensureAppDirectories(appPaths);
+        std::filesystem::path imagePath(localPath);
+        if (imagePath.is_relative()) {
+            imagePath = appPaths.GetWorkDirectory() / imagePath;
+        }
+
+        relaydesk::storage::addFavoriteStickerFromImage(
+            appPaths,
+            imagePath,
+            displayName);
+        return std::nullopt;
+    } catch (const std::exception& error) {
+        return std::string(error.what());
+    }
+}
+
+void loadRecentEmojisOnce(eui::Ui& ui, std::vector<std::string>& recentEmojis)
+{
+    bool& loaded = ui.state<bool>("composer.emoji.recent.loaded");
+    if (loaded) {
+        return;
+    }
+
+    recentEmojis = loadStoredRecentEmojis();
+    loaded = true;
+}
+
+void drawEmojiCell(eui::Ui& ui,
+                   const std::string& id,
+                   float x,
+                   float y,
+                   float size,
+                   const std::string& emoji,
+                   const std::function<void(const std::string&)>& onSelect)
+{
+    text(ui,
+         id + ".glyph",
+         x,
+         y + 1.0f,
+         size,
+         size - 2.0f,
+         emoji,
+         23.0f,
+         kText,
+         eui::HorizontalAlign::Center);
+    ui.rect(id + ".hit")
+        .position(x, y)
+        .size(size, size)
+        .color({0.0f, 0.0f, 0.0f, 0.0f})
+        .onClick([onSelect, emoji] {
+            onSelect(emoji);
+        })
+        .build();
+}
+
+void drawEmojiPicker(eui::Ui& ui,
+                     float x,
+                     float y,
+                     float width,
+                     float height,
+                     float anchorCenterX,
+                     const std::vector<std::string>& recentEmojis,
+                     const std::function<void(const std::string&)>& onSelect)
+{
+    constexpr float padding = 18.0f;
+    constexpr float cellSize = 34.0f;
+    constexpr float gap = 6.0f;
+    const int columnCount = std::max(
+        6,
+        static_cast<int>((width - padding * 2.0f) / (cellSize + gap)));
+    rect(ui, "emoji.picker.bg", x, y, width, height, kPanelBackground, 8.0f, kBorder);
+    const float pointerX = std::clamp(anchorCenterX - 7.0f,
+                                      x + 18.0f,
+                                      x + width - 32.0f);
+    rect(ui,
+         "emoji.picker.anchor",
+         pointerX,
+         y + height - 1.0f,
+         14.0f,
+         10.0f,
+         kPanelBackground,
+         2.0f,
+         kBorder);
+    ui.rect("emoji.picker.panel.hit")
+        .position(x, y)
+        .size(width, height + 10.0f)
+        .color({0.0f, 0.0f, 0.0f, 0.0f})
+        .onClick([] {})
+        .build();
+    text(ui, "emoji.picker.recent.title", x + padding, y + 16.0f, width - padding * 2.0f,
+         22.0f, "最近使用", 13.0f, kMutedText);
+
+    float rowY = y + 45.0f;
+    if (recentEmojis.empty()) {
+        text(ui,
+             "emoji.picker.recent.empty",
+             x + padding,
+             rowY + 6.0f,
+             width - padding * 2.0f,
+             22.0f,
+             "暂无最近使用",
+             12.0f,
+             kSubtleText);
+    } else {
+        const std::size_t recentCount = std::min(
+            recentEmojis.size(),
+            static_cast<std::size_t>(columnCount));
+        for (std::size_t index = 0; index < recentCount; ++index) {
+            const float cellX = x + padding + static_cast<float>(index) * (cellSize + gap);
+            drawEmojiCell(ui,
+                          "emoji.picker.recent." + std::to_string(index),
+                          cellX,
+                          rowY,
+                          cellSize,
+                          emojiPreviewText(recentEmojis[index]),
+                          onSelect);
+        }
+    }
+
+    const float allTitleY = rowY + cellSize + 18.0f;
+    text(ui, "emoji.picker.all.title", x + padding, allTitleY, width - padding * 2.0f,
+         22.0f, "所有表情", 13.0f, kMutedText);
+
+    rowY = allTitleY + 31.0f;
+    const float availableHeight = std::max(0.0f, height - (rowY - y) - 14.0f);
+    const int maxRows = std::max(1, static_cast<int>(availableHeight / (cellSize + gap)));
+    const int maxCells = maxRows * columnCount;
+    const std::size_t visibleCount = std::min(
+        kEmojiEntries.size(),
+        static_cast<std::size_t>(maxCells));
+    for (std::size_t index = 0; index < visibleCount; ++index) {
+        const int column = static_cast<int>(index) % columnCount;
+        const int row = static_cast<int>(index) / columnCount;
+        const float cellX = x + padding + static_cast<float>(column) * (cellSize + gap);
+        const float cellY = rowY + static_cast<float>(row) * (cellSize + gap);
+        drawEmojiCell(ui,
+                      "emoji.picker.all." + std::to_string(index),
+                      cellX,
+                      cellY,
+                      cellSize,
+                      kEmojiEntries[index].glyph,
+                      onSelect);
+    }
+}
+
+void drawPickerTab(eui::Ui& ui,
+                   const std::string& id,
+                   float x,
+                   float y,
+                   float width,
+                   const std::string& label,
+                   bool active,
+                   const std::function<void()>& onClick)
+{
+    rect(ui,
+         id + ".bg",
+         x,
+         y,
+         width,
+         30.0f,
+         active ? kTealSoft : Color{0.0f, 0.0f, 0.0f, 0.0f},
+         6.0f,
+         active ? Color{0.640f, 0.880f, 0.870f, 1.0f}
+                : Color{0.0f, 0.0f, 0.0f, 0.0f});
+    text(ui,
+         id + ".label",
+         x,
+         y + 4.0f,
+         width,
+         20.0f,
+         label,
+         13.0f,
+         active ? kTeal : kMutedText,
+         eui::HorizontalAlign::Center);
+    ui.rect(id + ".hit")
+        .position(x, y)
+        .size(width, 30.0f)
+        .color({0.0f, 0.0f, 0.0f, 0.0f})
+        .onClick(onClick)
+        .build();
+}
+
+void drawStickerCell(eui::Ui& ui,
+                     const std::string& id,
+                     float x,
+                     float y,
+                     float size,
+                     const StickerPickerItem& sticker,
+                     const std::function<void(const StickerPickerItem&)>& onSelect)
+{
+    rect(ui,
+         id + ".bg",
+         x,
+         y,
+         size,
+         size,
+         {1.0f, 1.0f, 1.0f, 1.0f},
+         7.0f,
+         kBorder);
+    ui.image(id + ".image")
+        .position(x + 4.0f, y + 4.0f)
+        .size(size - 8.0f, size - 8.0f)
+        .path(sticker.absolutePath)
+        .contain()
+        .radius(5.0f)
+        .build();
+    ui.rect(id + ".hit")
+        .position(x, y)
+        .size(size, size)
+        .color({0.0f, 0.0f, 0.0f, 0.0f})
+        .onClick([onSelect, sticker] {
+            onSelect(sticker);
+        })
+        .build();
+}
+
+void drawStickerImportButton(eui::Ui& ui,
+                             float x,
+                             float y,
+                             const std::function<void()>& onImport)
+{
+    rect(ui, "emoji.picker.stickers.import.bg", x, y, 76.0f, 30.0f,
+         kPanelBackground, 6.0f, kBorder);
+    icon(ui, "emoji.picker.stickers.import.icon", x + 7.0f, y + 2.0f, 26.0f,
+         0xE8B7, kMutedText);
+    text(ui, "emoji.picker.stickers.import.text", x + 31.0f, y + 5.0f, 39.0f,
+         18.0f, "导入", 12.0f, kMutedText, eui::HorizontalAlign::Center);
+    ui.rect("emoji.picker.stickers.import.hit")
+        .position(x, y)
+        .size(76.0f, 30.0f)
+        .color({0.0f, 0.0f, 0.0f, 0.0f})
+        .onClick(onImport)
+        .build();
+}
+
+void drawUnicodeEmojiPickerContent(
+    eui::Ui& ui,
+    float x,
+    float y,
+    float width,
+    float height,
+    const std::vector<std::string>& recentEmojis,
+    const std::function<void(const std::string&)>& onSelect)
+{
+    constexpr float padding = 18.0f;
+    constexpr float cellSize = 34.0f;
+    constexpr float gap = 6.0f;
+    const int columnCount = std::max(
+        6,
+        static_cast<int>((width - padding * 2.0f) / (cellSize + gap)));
+
+    text(ui, "emoji.rich.recent.title", x + padding, y, width - padding * 2.0f,
+         22.0f, "最近使用", 13.0f, kMutedText);
+
+    float rowY = y + 29.0f;
+    if (recentEmojis.empty()) {
+        text(ui,
+             "emoji.rich.recent.empty",
+             x + padding,
+             rowY + 6.0f,
+             width - padding * 2.0f,
+             22.0f,
+             "暂无最近使用",
+             12.0f,
+             kSubtleText);
+    } else {
+        const std::size_t recentCount = std::min(
+            recentEmojis.size(),
+            static_cast<std::size_t>(columnCount));
+        for (std::size_t index = 0; index < recentCount; ++index) {
+            const float cellX = x + padding + static_cast<float>(index)
+                * (cellSize + gap);
+            drawEmojiCell(ui,
+                          "emoji.rich.recent." + std::to_string(index),
+                          cellX,
+                          rowY,
+                          cellSize,
+                          emojiPreviewText(recentEmojis[index]),
+                          onSelect);
+        }
+    }
+
+    const float allTitleY = rowY + cellSize + 18.0f;
+    text(ui, "emoji.rich.all.title", x + padding, allTitleY,
+         width - padding * 2.0f, 22.0f, "所有表情", 13.0f, kMutedText);
+
+    rowY = allTitleY + 31.0f;
+    const float availableHeight = std::max(0.0f, height - (rowY - y) - 14.0f);
+    const int maxRows = std::max(
+        1,
+        static_cast<int>(availableHeight / (cellSize + gap)));
+    const int maxCells = maxRows * columnCount;
+    const std::size_t visibleCount = std::min(
+        kEmojiEntries.size(),
+        static_cast<std::size_t>(maxCells));
+    for (std::size_t index = 0; index < visibleCount; ++index) {
+        const int column = static_cast<int>(index) % columnCount;
+        const int row = static_cast<int>(index) / columnCount;
+        const float cellX = x + padding + static_cast<float>(column)
+            * (cellSize + gap);
+        const float cellY = rowY + static_cast<float>(row) * (cellSize + gap);
+        drawEmojiCell(ui,
+                      "emoji.rich.all." + std::to_string(index),
+                      cellX,
+                      cellY,
+                      cellSize,
+                      kEmojiEntries[index].glyph,
+                      onSelect);
+    }
+}
+
+void drawStickerPickerContent(
+    eui::Ui& ui,
+    float x,
+    float y,
+    float width,
+    float height,
+    const std::vector<StickerPickerItem>& stickers,
+    const std::string& importStatus,
+    const std::function<void(const StickerPickerItem&)>& onSelect,
+    const std::function<void()>& onImport)
+{
+    constexpr float padding = 18.0f;
+    constexpr float cellSize = 48.0f;
+    constexpr float gap = 10.0f;
+    const int columnCount = std::max(
+        4,
+        static_cast<int>((width - padding * 2.0f) / (cellSize + gap)));
+
+    text(ui, "emoji.picker.stickers.title", x + padding, y + 4.0f,
+         width - padding * 2.0f - 90.0f, 22.0f, "收藏表情", 13.0f, kMutedText);
+    drawStickerImportButton(ui, x + width - padding - 76.0f, y, onImport);
+
+    const float gridY = y + 43.0f;
+    if (stickers.empty()) {
+        text(ui,
+             "emoji.picker.stickers.empty",
+             x + padding,
+             gridY + 12.0f,
+             width - padding * 2.0f,
+             22.0f,
+             "暂无自定义表情",
+             12.0f,
+             kSubtleText);
+    } else {
+        const float availableHeight = std::max(0.0f, height - (gridY - y) - 36.0f);
+        const int maxRows = std::max(
+            1,
+            static_cast<int>(availableHeight / (cellSize + gap)));
+        const int maxCells = maxRows * columnCount;
+        const std::size_t visibleCount =
+            std::min(stickers.size(), static_cast<std::size_t>(maxCells));
+        for (std::size_t index = 0; index < visibleCount; ++index) {
+            const int column = static_cast<int>(index) % columnCount;
+            const int row = static_cast<int>(index) / columnCount;
+            const float cellX = x + padding + static_cast<float>(column)
+                * (cellSize + gap);
+            const float cellY = gridY + static_cast<float>(row) * (cellSize + gap);
+            drawStickerCell(ui,
+                            "emoji.picker.sticker." + std::to_string(index),
+                            cellX,
+                            cellY,
+                            cellSize,
+                            stickers[index],
+                            onSelect);
+        }
+    }
+
+    if (!importStatus.empty()) {
+        text(ui, "emoji.picker.stickers.status", x + padding, y + height - 26.0f,
+             width - padding * 2.0f, 20.0f, importStatus, 12.0f, kSubtleText);
+    }
+}
+
+void drawRichEmojiPicker(eui::Ui& ui,
+                         float x,
+                         float y,
+                         float width,
+                         float height,
+                         float anchorCenterX,
+                         int selectedTab,
+                         const std::vector<std::string>& recentEmojis,
+                         const std::vector<StickerPickerItem>& stickers,
+                         const std::string& importStatus,
+                         const std::function<void(const std::string&)>& onSelectEmoji,
+                         const std::function<void(const StickerPickerItem&)>& onSelectSticker,
+                         const std::function<void()>& onImport,
+                         const std::function<void(int)>& onSelectTab)
+{
+    rect(ui, "emoji.rich.bg", x, y, width, height, kPanelBackground, 8.0f, kBorder);
+    const float pointerX = std::clamp(anchorCenterX - 7.0f,
+                                      x + 18.0f,
+                                      x + width - 32.0f);
+    rect(ui,
+         "emoji.rich.anchor",
+         pointerX,
+         y + height - 1.0f,
+         14.0f,
+         10.0f,
+         kPanelBackground,
+         2.0f,
+         kBorder);
+    ui.rect("emoji.rich.panel.hit")
+        .position(x, y)
+        .size(width, height + 10.0f)
+        .color({0.0f, 0.0f, 0.0f, 0.0f})
+        .onClick([] {})
+        .build();
+
+    const float tabY = y + 12.0f;
+    drawPickerTab(ui, "emoji.rich.tab.emoji", x + 18.0f, tabY, 68.0f,
+                  "表情", selectedTab == 0, [onSelectTab] {
+                      onSelectTab(0);
+                  });
+    drawPickerTab(ui, "emoji.rich.tab.stickers", x + 92.0f, tabY, 68.0f,
+                  "收藏", selectedTab == 1, [onSelectTab] {
+                      onSelectTab(1);
+                  });
+
+    const float contentY = y + 56.0f;
+    const float contentHeight = std::max(1.0f, height - 66.0f);
+    if (selectedTab == 1) {
+        drawStickerPickerContent(ui,
+                                 x,
+                                 contentY,
+                                 width,
+                                 contentHeight,
+                                 stickers,
+                                 importStatus,
+                                 onSelectSticker,
+                                 onImport);
+    } else {
+        drawUnicodeEmojiPickerContent(ui,
+                                      x,
+                                      contentY,
+                                      width,
+                                      contentHeight,
+                                      recentEmojis,
+                                      onSelectEmoji);
+    }
+}
+
+void drawPendingAttachmentStrip(
+    eui::Ui& ui,
+    float x,
+    float y,
+    float width,
+    std::vector<PendingAttachmentItem>& pendingAttachments)
+{
+    constexpr float cellSize = 36.0f;
+    constexpr float gap = 8.0f;
+    const int maxVisible = std::max(1, static_cast<int>((width - 12.0f)
+                                                        / (cellSize + gap)));
+    const std::size_t visibleCount = std::min(
+        pendingAttachments.size(),
+        static_cast<std::size_t>(maxVisible));
+    for (std::size_t index = 0; index < visibleCount; ++index) {
+        const PendingAttachmentItem& attachment = pendingAttachments[index];
+        const float cellX = x + 6.0f + static_cast<float>(index) * (cellSize + gap);
+        rect(ui,
+             "composer.pending.attachment." + std::to_string(index) + ".bg",
+             cellX,
+             y,
+             cellSize,
+             cellSize,
+             {1.0f, 1.0f, 1.0f, 1.0f},
+             6.0f,
+             kBorder);
+        if (attachment.kind == PendingAttachmentKind::Image) {
+            ui.image("composer.pending.attachment." + std::to_string(index)
+                         + ".image")
+                .position(cellX + 3.0f, y + 3.0f)
+                .size(cellSize - 6.0f, cellSize - 6.0f)
+                .path(attachment.previewPath)
+                .contain()
+                .radius(5.0f)
+                .build();
+        } else {
+            icon(ui,
+                 "composer.pending.attachment." + std::to_string(index)
+                     + ".file",
+                 cellX + 2.0f,
+                 y + 2.0f,
+                 cellSize - 4.0f,
+                 0xE7C3,
+                 kMutedText);
+        }
+        rect(ui,
+             "composer.pending.attachment." + std::to_string(index) + ".close.bg",
+             cellX + cellSize - 12.0f,
+             y - 3.0f,
+             15.0f,
+             15.0f,
+             kPanelBackground,
+             7.5f,
+             kBorder);
+        icon(ui,
+             "composer.pending.attachment." + std::to_string(index) + ".close.icon",
+             cellX + cellSize - 11.0f,
+             y - 2.0f,
+             13.0f,
+             0xE711,
+             kMutedText);
+        ui.rect("composer.pending.attachment." + std::to_string(index)
+                    + ".close.hit")
+            .position(cellX + cellSize - 14.0f, y - 5.0f)
+            .size(19.0f, 19.0f)
+            .color({0.0f, 0.0f, 0.0f, 0.0f})
+            .onClick([&pendingAttachments, index] {
+                if (index < pendingAttachments.size()) {
+                    pendingAttachments.erase(
+                        pendingAttachments.begin()
+                        + static_cast<std::ptrdiff_t>(index));
+                }
+            })
+            .build();
+    }
+}
+
 void drawLocalUserHeader(eui::Ui& ui, float x, float y, float width)
 {
     rect(ui, "local.avatar.bg", x + 22.0f, y + 16.0f, 44.0f, 44.0f, kAvatarGreen,
@@ -301,6 +1477,25 @@ void messageBubble(eui::Ui& ui,
     const Color fill = outgoing ? kTealSoft : Color{0.990f, 0.990f, 0.992f, 1.0f};
     rect(ui, id + ".bg", x, y, width, 42.0f, fill, 7.0f, kBorder);
     text(ui, id + ".text", x + 12.0f, y + 9.0f, width - 24.0f, 22.0f, value, 14.0f);
+}
+
+void imageBubble(eui::Ui& ui,
+                 const std::string& id,
+                 float x,
+                 float y,
+                 float size,
+                 const std::filesystem::path& imagePath,
+                 bool outgoing)
+{
+    const Color fill = outgoing ? kTealSoft : Color{0.990f, 0.990f, 0.992f, 1.0f};
+    rect(ui, id + ".bg", x, y, size, size, fill, 10.0f, kBorder);
+    ui.image(id + ".image")
+        .position(x + 8.0f, y + 8.0f)
+        .size(size - 16.0f, size - 16.0f)
+        .path(filesystemPathToUtf8String(imagePath))
+        .contain()
+        .radius(8.0f)
+        .build();
 }
 
 void transferCard(eui::Ui& ui,
@@ -688,21 +1883,257 @@ void drawChatTimeline(eui::Ui& ui, float x, float y, float width, float height)
         .build();
 }
 
+std::string messagePartPreviewText(
+    const relaydesk::storage::ChatMessagePart& part)
+{
+    switch (part.GetType()) {
+    case relaydesk::storage::MessagePartType::Text:
+        return part.GetText().value_or("");
+    case relaydesk::storage::MessagePartType::Emoji:
+        return part.GetEmoji().has_value()
+            ? emojiPreviewText(part.GetEmoji().value())
+            : ":emoji:";
+    case relaydesk::storage::MessagePartType::Image:
+        return "[图片] " + part.GetFileName().value_or("");
+    case relaydesk::storage::MessagePartType::File:
+        return "[文件] " + part.GetFileName().value_or("");
+    case relaydesk::storage::MessagePartType::Folder:
+        return "[文件夹] " + part.GetFileName().value_or("");
+    }
+
+    return "[消息]";
+}
+
+std::string messagePreviewText(
+    const relaydesk::storage::ChatMessageRecord& message)
+{
+    std::string result;
+    for (const auto& part : message.GetParts()) {
+        const std::string textValue = messagePartPreviewText(part);
+        if (textValue.empty()) {
+            continue;
+        }
+        if (!result.empty()) {
+            result += " ";
+        }
+        result += textValue;
+    }
+
+    return result.empty() ? "[暂不支持的消息]" : result;
+}
+
+std::string deliveryStateText(relaydesk::storage::DeliveryState state)
+{
+    switch (state) {
+    case relaydesk::storage::DeliveryState::Pending:
+        return "发送中";
+    case relaydesk::storage::DeliveryState::Sent:
+        return "已发送";
+    case relaydesk::storage::DeliveryState::Delivered:
+        return "已送达";
+    case relaydesk::storage::DeliveryState::Received:
+        return "已接收";
+    case relaydesk::storage::DeliveryState::Completed:
+        return "已完成";
+    case relaydesk::storage::DeliveryState::Failed:
+        return "发送失败";
+    case relaydesk::storage::DeliveryState::Cancelled:
+        return "已取消";
+    }
+
+    return "";
+}
+
+void drawRuntimeChatTimelineContent(
+    eui::Ui& ui,
+    float width,
+    const std::vector<relaydesk::storage::ChatMessageRecord>& messages)
+{
+    constexpr float avatarSize = 34.0f;
+    constexpr float sidePadding = 22.0f;
+    constexpr float avatarBubbleGap = 12.0f;
+    const float availableBubbleWidth =
+        std::max(160.0f, width - sidePadding * 2.0f - avatarSize - avatarBubbleGap);
+    const float incomingWidth = std::min(
+        420.0f,
+        std::max(210.0f, std::min(width * 0.54f, availableBubbleWidth)));
+    const float outgoingWidth = std::min(
+        420.0f,
+        std::max(210.0f, std::min(width * 0.54f, availableBubbleWidth)));
+    float y = 22.0f;
+    bool& stickerMenuOpen = ui.state<bool>("chat.sticker.context.open");
+    float& stickerMenuX = ui.state<float>("chat.sticker.context.x");
+    float& stickerMenuY = ui.state<float>("chat.sticker.context.y");
+    std::string& stickerMenuPath =
+        ui.state<std::string>("chat.sticker.context.path");
+    std::string& stickerMenuName =
+        ui.state<std::string>("chat.sticker.context.name");
+    std::string& stickerMenuStatus =
+        ui.state<std::string>("chat.sticker.context.status");
+
+    for (std::size_t index = 0; index < messages.size(); ++index) {
+        const auto& message = messages[index];
+        const bool outgoing =
+            message.GetDirection() == relaydesk::storage::MessageDirection::Outgoing;
+        const auto renderableImagePath = findRenderableImagePath(message);
+        const bool renderImage = renderableImagePath.has_value();
+        const float imageBubbleSize = 118.0f;
+        const float bubbleWidth = renderImage
+            ? imageBubbleSize
+            : (outgoing ? outgoingWidth : incomingWidth);
+        const float bubbleHeight = renderImage ? imageBubbleSize : 42.0f;
+        const float avatarX = outgoing
+            ? width - sidePadding - avatarSize
+            : sidePadding;
+        const float bubbleX = outgoing
+            ? avatarX - avatarBubbleGap - bubbleWidth
+            : avatarX + avatarSize + avatarBubbleGap;
+        const std::string id = "chat.runtime.message."
+            + std::to_string(index);
+        const std::string preview = messagePreviewText(message);
+        avatar(ui,
+               id + ".avatar",
+               avatarX,
+               y + 4.0f,
+               avatarSize,
+               message.GetSenderDisplayNameSnapshot());
+        if (renderImage) {
+            imageBubble(ui,
+                        id,
+                        bubbleX,
+                        y,
+                        imageBubbleSize,
+                        renderableImagePath.value(),
+                        outgoing);
+        } else {
+            messageBubble(ui,
+                          id,
+                          bubbleX,
+                          y,
+                          bubbleWidth,
+                          preview.c_str(),
+                          outgoing);
+        }
+        const auto stickerCandidate = findStickerImageCandidate(message);
+        if (stickerCandidate.has_value()) {
+            ui.rect(id + ".sticker.context.hit")
+                .position(bubbleX, y)
+                .size(bubbleWidth, bubbleHeight)
+                .color({0.0f, 0.0f, 0.0f, 0.0f})
+                .onContextMenu([&stickerMenuOpen,
+                                &stickerMenuX,
+                                &stickerMenuY,
+                                &stickerMenuPath,
+                                &stickerMenuName,
+                                candidate = stickerCandidate.value()](
+                                   const eui::PointerEvent& event,
+                                   const eui::Rect&) {
+                    stickerMenuOpen = true;
+                    stickerMenuX = static_cast<float>(event.x);
+                    stickerMenuY = static_cast<float>(event.y);
+                    stickerMenuPath = candidate.localPath;
+                    stickerMenuName = candidate.displayName;
+                })
+                .build();
+        }
+        if (outgoing) {
+            text(ui,
+                 id + ".state",
+                 bubbleX,
+                 y + bubbleHeight,
+                 bubbleWidth - 4.0f,
+                 18.0f,
+                 deliveryStateText(message.GetDeliveryState()),
+                 11.0f,
+                 message.GetDeliveryState()
+                         == relaydesk::storage::DeliveryState::Failed
+                     ? kAmber
+                     : kSubtleText,
+                 eui::HorizontalAlign::Right);
+        }
+        y += bubbleHeight + (outgoing ? 24.0f : 16.0f);
+    }
+
+    if (stickerMenuOpen) {
+        components::contextMenu(ui, "chat.sticker.context")
+            .screen(width, kChatTimelineContentHeight)
+            .position(stickerMenuX, stickerMenuY)
+            .size(150.0f, 34.0f)
+            .items({"收藏为表情", "取消"})
+            .style(stickerContextMenuStyle())
+            .open(stickerMenuOpen)
+            .onSelect([&stickerMenuOpen,
+                       &stickerMenuPath,
+                       &stickerMenuName,
+                       &stickerMenuStatus](int itemIndex) {
+                if (itemIndex == 0 && !stickerMenuPath.empty()) {
+                    const auto error =
+                        favoriteStickerImage(stickerMenuPath, stickerMenuName);
+                    stickerMenuStatus = error.value_or("已收藏为表情");
+                }
+                stickerMenuOpen = false;
+            })
+            .onDismiss([&stickerMenuOpen] {
+                stickerMenuOpen = false;
+            })
+            .build();
+    }
+}
+
 void drawRuntimeChatTimeline(
     eui::Ui& ui,
     float x,
     float y,
     float width,
     float height,
-    const std::optional<relaydesk::runtime::PeerListItem>& selectedPeer)
+    const std::optional<relaydesk::runtime::PeerListItem>& selectedPeer,
+    const std::vector<relaydesk::storage::ChatMessageRecord>& messages)
 {
     rect(ui, "chat.bg", x, y, width, height, {1.0f, 1.0f, 1.0f, 1.0f});
+
+    if (selectedPeer.has_value() && !messages.empty()) {
+        float& scrollOffset = ui.state<float>("chat.runtime.scroll.offset");
+        const float contentHeight = std::max(
+            height,
+            42.0f + static_cast<float>(messages.size()) * 142.0f);
+        ui.stack("chat.runtime.scroll.pos")
+            .position(x, y)
+            .size(width, height)
+            .content([&] {
+                components::scrollView(ui, "chat.runtime.scroll")
+                    .size(width, height)
+                    .offset(scrollOffset)
+                    .gap(0.0f)
+                    .step(56.0f)
+                    .scrollbarWidth(7.0f)
+                    .scrollbarGap(10.0f)
+                    .style(scrollStyle())
+                    .contentKey("relaydesk.chat.runtime."
+                                + std::to_string(messages.size()))
+                    .onChange([&scrollOffset](float value) {
+                        scrollOffset = value;
+                    })
+                    .content([&](eui::Ui& contentUi, float contentWidth, float) {
+                        contentUi.stack("chat.runtime.content")
+                            .size(contentWidth, contentHeight)
+                            .content([&] {
+                                drawRuntimeChatTimelineContent(contentUi,
+                                                               contentWidth,
+                                                               messages);
+                            })
+                            .build();
+                    })
+                    .build();
+            })
+            .build();
+        return;
+    }
 
     const std::string title = selectedPeer.has_value()
         ? "暂无本地消息"
         : "选择一个已发现设备";
     const std::string detail = selectedPeer.has_value()
-        ? "TCP 会话实现后会在这里显示聊天记录"
+        ? "发送或接收消息后会在这里显示"
         : "RelayDesk 正在监听发现端口";
     const float centerY = y + std::max(0.0f, height * 0.5f - 34.0f);
     text(ui, "chat.empty.title", x + 24.0f, centerY, width - 48.0f, 28.0f,
@@ -753,47 +2184,217 @@ void drawRuntimeComposer(
     float x,
     float y,
     float width,
+    relaydesk::runtime::RelayDeskRuntime& runtime,
     const std::optional<relaydesk::runtime::PeerListItem>& selectedPeer)
 {
     const float horizontalPadding = width < 560.0f ? 12.0f : 16.0f;
-    const float innerPadding = width < 560.0f ? 8.0f : 12.0f;
-    const float sendWidth = width < 560.0f ? 58.0f : 70.0f;
-    const float sendX = x + width - horizontalPadding - innerPadding - sendWidth;
-    const float iconSize = width < 560.0f ? 34.0f : 38.0f;
-    const float firstActionX = width < 560.0f ? sendX - 48.0f : x + width - 272.0f;
-    const float inputWidth = std::max(
-        140.0f,
-        firstActionX - (x + 28.0f) - innerPadding);
+    const float composerX = x + horizontalPadding;
+    const float composerWidth = width - horizontalPadding * 2.0f;
+    const float inputX = composerX + 16.0f;
+    const float inputY = y + 12.0f;
+    const float toolbarY = y + kComposerHeight - 48.0f;
+    const float sendWidth = width < 560.0f ? 60.0f : 72.0f;
+    const float sendHeight = 36.0f;
+    const float sendX = composerX + composerWidth - sendWidth - 16.0f;
+    const float iconSize = width < 560.0f ? 28.0f : 32.0f;
+    const float inputWidth = std::max(180.0f, composerWidth - 32.0f);
+    const float inputHeight = std::max(70.0f, kComposerHeight - 66.0f);
+    const float emojiButtonX = composerX + 16.0f;
+    const float emojiButtonCenterX = emojiButtonX + iconSize * 0.5f;
     const std::string placeholder = selectedPeer.has_value()
         ? std::string("发给 ") + getPeerDisplayName(selectedPeer.value())
         : "请先选择设备";
+    std::string& composerText = ui.state<std::string>("composer.input.value");
+    bool& emojiPickerOpen = ui.state<bool>("composer.emoji.open");
+    int& emojiPickerTab = ui.state<int>("composer.emoji.tab");
+    std::vector<std::string>& recentEmojis =
+        ui.state<std::vector<std::string>>("composer.emoji.recent");
+    std::vector<StickerPickerItem>& stickerItems =
+        ui.state<std::vector<StickerPickerItem>>("composer.stickers.items");
+    std::vector<PendingAttachmentItem>& pendingAttachments =
+        ui.state<std::vector<PendingAttachmentItem>>("composer.pending.attachments");
+    std::string& stickerImportStatus =
+        ui.state<std::string>("composer.stickers.import.status");
+    bool& pasteShortcutDown = ui.state<bool>("composer.clipboard.paste.down");
+    loadRecentEmojisOnce(ui, recentEmojis);
+    loadStoredStickerPickerItemsOnce(ui, stickerItems);
+    appendPendingAttachmentPaths(
+        pendingAttachments,
+        relaydesk::platform::consumeDroppedAttachmentPaths());
+    const bool pasteShortcutNow = relaydesk::platform::isPasteShortcutDown();
+    if (pasteShortcutNow && !pasteShortcutDown) {
+        appendPendingAttachmentPaths(
+            pendingAttachments,
+            relaydesk::platform::collectClipboardAttachmentPaths());
+    }
+    pasteShortcutDown = pasteShortcutNow;
+    const bool hasMessageContent =
+        hasComposerText(composerText) || !pendingAttachments.empty();
+    const bool sendEnabled = selectedPeer.has_value() && hasMessageContent;
+    const float pendingStripHeight = pendingAttachments.empty() ? 0.0f : 44.0f;
+    const float textInputY = inputY + pendingStripHeight;
+    const float textInputHeight = std::max(34.0f, inputHeight - pendingStripHeight);
+    auto submitMessage = [&runtime,
+                          &composerText,
+                          &emojiPickerOpen,
+                          &pendingAttachments,
+                          sendEnabled] {
+        if (!sendEnabled) {
+            return;
+        }
 
-    rect(ui, "composer.bg", x + horizontalPadding, y, width - horizontalPadding * 2.0f,
-         kComposerHeight, kPanelBackground, 8.0f, kBorder);
+        std::vector<relaydesk::storage::ChatMessagePart> parts =
+            makeComposerMessageParts(composerText, pendingAttachments);
+        if (parts.empty()) {
+            return;
+        }
+
+        runtime.sendMessagePartsToSelectedPeer(std::move(parts));
+        composerText.clear();
+        pendingAttachments.clear();
+        emojiPickerOpen = false;
+    };
+    auto toggleEmojiPicker = [&emojiPickerOpen] {
+        emojiPickerOpen = !emojiPickerOpen;
+    };
+    auto closeEmojiPicker = [&emojiPickerOpen] {
+        emojiPickerOpen = false;
+    };
+    auto selectEmoji = [&composerText, &emojiPickerOpen, &recentEmojis](
+                           const std::string& emoji) {
+        composerText += emoji;
+        rememberRecentEmoji(recentEmojis, emoji);
+        saveStoredRecentEmojis(recentEmojis);
+        emojiPickerOpen = false;
+    };
+    auto selectSticker = [&emojiPickerOpen, &pendingAttachments](
+                             const StickerPickerItem& sticker) {
+        if (pendingAttachments.size() >= kMaxPendingAttachmentCount) {
+            return;
+        }
+
+        pendingAttachments.push_back(makePendingAttachmentFromSticker(sticker));
+        emojiPickerOpen = false;
+    };
+    auto selectAttachmentFiles = [&emojiPickerOpen, &pendingAttachments] {
+        appendPendingAttachmentPaths(
+            pendingAttachments,
+            selectAttachmentFilesFromDialog());
+        emojiPickerOpen = false;
+    };
+    auto importStickers = [&emojiPickerTab,
+                           &stickerImportStatus,
+                           &stickerItems] {
+        const std::optional<std::string> status = importStickerPackFromFileDialog();
+        if (status.has_value()) {
+            stickerImportStatus = status.value();
+            stickerItems = loadStoredStickerPickerItems();
+        }
+        emojiPickerTab = 1;
+    };
+    auto selectEmojiPickerTab = [&emojiPickerTab](int tab) {
+        emojiPickerTab = tab;
+    };
+
+    rect(ui, "composer.bg", composerX, y, composerWidth, kComposerHeight,
+         kPanelBackground, 8.0f, kBorder);
+    if (!pendingAttachments.empty()) {
+        drawPendingAttachmentStrip(ui,
+                                   inputX,
+                                   inputY + 2.0f,
+                                   inputWidth,
+                                   pendingAttachments);
+    }
     ui.stack("composer.input.pos")
-        .position(x + 28.0f, y + 13.0f)
-        .size(inputWidth, 42.0f)
+        .position(inputX, textInputY)
+        .size(inputWidth, textInputHeight)
         .content([&] {
             components::input(ui, "composer.input")
-                .size(inputWidth, 42.0f)
+                .size(inputWidth, textInputHeight)
+                .value(composerText)
                 .placeholder(placeholder)
+                .multiline(true)
                 .fontSize(14.0f)
+                .inset(6.0f)
+                .style(composerInputStyle())
+                .onChange([&composerText](const std::string& value) {
+                    composerText = value;
+                })
+                .onEnter(submitMessage)
                 .build();
         })
         .build();
     if (width < 560.0f) {
-        icon(ui, "composer.file", firstActionX, y + 17.0f, iconSize, 0xE723, kText);
+        icon(ui, "composer.file", composerX + 16.0f, toolbarY, iconSize,
+             0xE723, kText);
+        ui.rect("composer.file.hit")
+            .position(composerX + 11.0f, toolbarY - 5.0f)
+            .size(iconSize + 10.0f, iconSize + 10.0f)
+            .color({0.0f, 0.0f, 0.0f, 0.0f})
+            .onClick(selectAttachmentFiles)
+            .build();
     } else {
-        icon(ui, "composer.smile", firstActionX, y + 15.0f, iconSize, 0xE899, kText);
-        icon(ui, "composer.file", x + width - 212.0f, y + 15.0f, iconSize, 0xE723,
+        const float firstIconX = emojiButtonX;
+        const float iconGap = 46.0f;
+        icon(ui, "composer.smile", firstIconX, toolbarY, iconSize, 0xE899,
              kText);
-        icon(ui, "composer.folder", x + width - 152.0f, y + 15.0f, iconSize, 0xE8B7,
-             kText);
+        ui.rect("composer.smile.hit")
+            .position(firstIconX - 5.0f, toolbarY - 5.0f)
+            .size(iconSize + 10.0f, iconSize + 10.0f)
+            .color({0.0f, 0.0f, 0.0f, 0.0f})
+            .onClick(toggleEmojiPicker)
+            .build();
+        icon(ui, "composer.file", firstIconX + iconGap, toolbarY, iconSize,
+             0xE723, kText);
+        ui.rect("composer.file.hit")
+            .position(firstIconX + iconGap - 5.0f, toolbarY - 5.0f)
+            .size(iconSize + 10.0f, iconSize + 10.0f)
+            .color({0.0f, 0.0f, 0.0f, 0.0f})
+            .onClick(selectAttachmentFiles)
+            .build();
+        icon(ui, "composer.folder", firstIconX + iconGap * 2.0f, toolbarY,
+             iconSize, 0xE8B7, kText);
     }
-    rect(ui, "composer.send.bg", sendX, y + 13.0f, sendWidth, 42.0f,
-         selectedPeer.has_value() ? kTeal : kOffline, 6.0f);
-    text(ui, "composer.send.text", sendX, y + 21.0f, sendWidth, 24.0f, "发送",
+    ui.rect("composer.send.bg")
+        .position(sendX, toolbarY + 1.0f)
+        .size(sendWidth, sendHeight)
+        .color(sendEnabled ? kTeal : kOffline)
+        .radius(6.0f)
+        .onClick(submitMessage)
+        .build();
+    text(ui, "composer.send.text", sendX, toolbarY + 7.0f, sendWidth, 22.0f, "发送",
          14.0f, {1.0f, 1.0f, 1.0f, 1.0f}, eui::HorizontalAlign::Center);
+    if (emojiPickerOpen) {
+        ui.rect("emoji.picker.dismiss")
+            .position(0.0f, 0.0f)
+            .size(10000.0f, 10000.0f)
+            .color({0.0f, 0.0f, 0.0f, 0.0f})
+            .onClick(closeEmojiPicker)
+            .build();
+        const float pickerWidth =
+            std::min(std::max(280.0f, composerWidth - 32.0f), 620.0f);
+        const float pickerHeight =
+            std::min(390.0f, std::max(240.0f, y - kContentTop - 12.0f));
+        const float pickerX = std::clamp(emojiButtonCenterX - pickerWidth * 0.5f,
+                                         x + 8.0f,
+                                         x + width - pickerWidth - 8.0f);
+        const float pickerY = std::max(kContentTop + 8.0f,
+                                       toolbarY - pickerHeight - 2.0f);
+        drawRichEmojiPicker(ui,
+                            pickerX,
+                            pickerY,
+                            pickerWidth,
+                            pickerHeight,
+                            emojiButtonCenterX,
+                            emojiPickerTab,
+                            recentEmojis,
+                            stickerItems,
+                            stickerImportStatus,
+                            selectEmoji,
+                            selectSticker,
+                            importStickers,
+                            selectEmojiPickerTab);
+    }
 }
 
 void transferSummary(eui::Ui& ui,
@@ -926,15 +2527,11 @@ void drawRuntimeDetails(
         "显示名",
         "主机名",
         "地址",
-        "最后发现",
-        "设备 ID",
     };
     const std::array values{
         selectedPeer.has_value() ? getPeerDisplayName(selectedPeer.value()) : "-",
         selectedPeer.has_value() ? selectedPeer->GetHostName() : "-",
         selectedPeer.has_value() ? selectedPeer->GetAddress() : "-",
-        selectedPeer.has_value() ? selectedPeer->GetLastSeenAt() : "-",
-        selectedPeer.has_value() ? selectedPeer->GetDeviceId() : "-",
     };
 
     for (int index = 0; index < static_cast<int>(labels.size()); ++index) {
@@ -947,10 +2544,10 @@ void drawRuntimeDetails(
              12.0f, kText, eui::HorizontalAlign::Right);
     }
 
-    rect(ui, "details.sep.2", x, kContentTop + 417.0f, width, 1.0f, kBorder);
-    text(ui, "details.transfers.title", x + 22.0f, kContentTop + 441.0f,
+    rect(ui, "details.sep.2", x, kContentTop + 365.0f, width, 1.0f, kBorder);
+    text(ui, "details.transfers.title", x + 22.0f, kContentTop + 389.0f,
          width - 44.0f, 26.0f, "传输", 15.0f);
-    text(ui, "details.transfers.empty", x + 22.0f, kContentTop + 485.0f,
+    text(ui, "details.transfers.empty", x + 22.0f, kContentTop + 433.0f,
          width - 44.0f, 24.0f, "暂无活动传输", 13.0f, kMutedText);
 }
 
@@ -958,6 +2555,7 @@ void drawRelayDesk(eui::Ui& ui,
                    const eui::Screen& screen,
                    relaydesk::runtime::RelayDeskRuntime& runtime)
 {
+    relaydesk::platform::initializeAttachmentDropTarget();
     runtime.refreshPeersIfNeeded();
 
     const AppLayout layout = makeLayout(screen);
@@ -982,8 +2580,14 @@ void drawRelayDesk(eui::Ui& ui,
                             timelineY,
                             layout.chatWidth,
                             timelineHeight,
-                            selectedPeer);
-    drawRuntimeComposer(ui, layout.chatX, composerY, layout.chatWidth, selectedPeer);
+                            selectedPeer,
+                            runtime.GetSelectedPeerMessages());
+    drawRuntimeComposer(ui,
+                        layout.chatX,
+                        composerY,
+                        layout.chatWidth,
+                        runtime,
+                        selectedPeer);
 
     if (layout.showDetails) {
         drawRuntimeDetails(ui,

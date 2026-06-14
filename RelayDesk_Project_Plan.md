@@ -216,6 +216,14 @@ relaydesk.exe --work-dir D:/RelayDeskWork
         profile.json
         messages.jsonl
         attachments/
+    stickers/
+      favorites/
+        manifest.json
+        items/
+      packs/
+        <pack_id>/
+          manifest.json
+          items/
     transfers/
       inbox/
         <peer_device_id>/
@@ -230,6 +238,8 @@ relaydesk.exe --work-dir D:/RelayDeskWork
 规则：
 
 - 聊天记录 JSONL 默认保存到 `<work_dir>/data/peers/<peer_device_id>/messages.jsonl`。
+- 收藏表情默认保存到 `<work_dir>/data/stickers/favorites/`。
+- 导入的表情包默认保存到 `<work_dir>/data/stickers/packs/<pack_id>/`。
 - 接收的文件和文件夹默认保存到 `<work_dir>/data/transfers/inbox/<peer_device_id>/<transfer_id>/`。
 - 发送的文件和文件夹默认先复制成发送快照，保存到 `<work_dir>/data/transfers/outbox/<peer_device_id>/<transfer_id>/`，再从该快照传输。
 - 文件传输临时数据默认保存到 `<work_dir>/data/transfers/temp/<transfer_id>/`。
@@ -413,6 +423,77 @@ JSONL 读写策略：
 - 为提高历史列表速度，可增加 `messages.index`，但 JSONL 是权威数据源。
 - 后续 schema 变更使用 `schema_version` 做兼容迁移。
 
+### 5.4 聊天内联预览
+
+聊天区应按资源能力决定展示方式，而不是只对图片做临时特例。
+只要内容块的资源类型已被客户端支持阅读或播放，就应在聊天消息内部直接预览。
+
+规则：
+
+- 图片内容块在传输完成且本地文件可读时，直接在消息气泡内显示缩略图。
+- 暂不支持预览的文件继续显示为文件卡片，提供打开、另存、重试、取消等操作。
+- 后续支持常见视频格式时，应在消息内部显示视频封面和播放控件，用户无需先打开外部播放器才能查看。
+- 视频预览不进入当前 MVP；当前实现只要求图片内联预览。
+- 内联预览必须仍然保留文件名、大小、传输状态和失败/重试状态，不允许因为预览成功而丢失文件传输语义。
+- 预览能力应由内容类型和本地文件可读性决定；历史记录中的 `type`、`local_path`、`file_name`、`file_size`、`sha256` 仍是权威元数据。
+
+当前已知缺口：
+
+- 当前已经可以发送图片和普通文件，但图片消息在聊天窗口中还不能稳定显示可读预览画面，需要补齐多 part 图片消息和接收完成后的内联预览渲染。
+- 图片拖入发送队列后目前只能看到缩略图，不能点击放大查看完整图片；待发附件队列需要增加图片查看器入口，点击缩略图后以弹窗或独立预览层显示原图。
+
+### 5.5 表情收藏与表情包导入
+
+收藏表情和导入表情包使用独立的表情资源目录，不直接引用聊天传输目录中的图片文件。
+这样用户清理 `data/transfers/` 时不会破坏已经收藏或导入的表情。
+
+收藏表情目录：
+
+```text
+<work_dir>/data/stickers/favorites/
+  manifest.json
+  items/
+    <sticker_id>.<ext>
+```
+
+导入表情包目录：
+
+```text
+<work_dir>/data/stickers/packs/<pack_id>/
+  manifest.json
+  items/
+    <sticker_id>.<ext>
+```
+
+`manifest.json` 使用 UTF-8 JSON，示例：
+
+```json
+{
+  "schema_version": 1,
+  "pack_id": "favorites",
+  "name": "收藏表情",
+  "import_format": "relaydesk_manifest",
+  "items": [
+    {
+      "id": "cat",
+      "name": "cat.png",
+      "path": "data/stickers/favorites/items/cat.png"
+    }
+  ]
+}
+```
+
+规则：
+
+- 用户在聊天图片消息上右键选择“收藏为表情”时，软件把该图片复制到收藏表情 `items/` 目录，并写入收藏表情 `manifest.json`。
+- 导入表情包时，软件把可用图片复制到 `data/stickers/packs/<pack_id>/items/`，导入完成后不再依赖原始导入目录。
+- 选择自定义表情时，软件在消息编辑区展示待发送缩略图；发送时把这些表情写成 `type = image` 的消息内容块。
+- `path` 必须是相对 `<work_dir>` 的路径，禁止绝对路径和 `..` 路径穿越。
+- 支持的图片扩展名为 `.png`、`.jpg`、`.jpeg`、`.gif`、`.webp`。
+- 表情包导入兼容 RelayDesk `manifest.json`、常见 `OwO.json` 本地图片结构，以及普通图片文件夹。
+- `OwO.json` 中的远程 URL 和 `data:` 图片不在 MVP 内自动下载；导入器只处理本地图片路径。
+- 同名表情复制时自动生成唯一文件名，不覆盖已经收藏或导入的表情文件。
+
 ## 6. 内网发现设计
 
 目标：扫描并展示内网中所有正在运行 RelayDesk 的用户。
@@ -484,6 +565,8 @@ body_len   8 bytes
 header     header_len bytes, UTF-8 JSON
 body       body_len bytes
 ```
+
+多字节整数统一使用网络字节序（big-endian）。
 
 消息类型：
 

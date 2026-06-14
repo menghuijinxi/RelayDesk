@@ -363,6 +363,49 @@ int skipsBrokenJsonLines()
                   "Broken history line prevented valid records from loading.");
 }
 
+int replacesExistingMessageRecord()
+{
+    const auto appPaths = makeAppPaths("replace-record");
+    relaydesk::storage::appendChatMessage(appPaths, "peer-device",
+                                          makeTextRecord("m1"));
+    relaydesk::storage::appendChatMessage(appPaths, "peer-device",
+                                          makeTextRecord("m2"));
+
+    auto replacement = makeTextRecord("m1");
+    replacement.SetDeliveryState(relaydesk::storage::DeliveryState::Completed);
+    replacement.SetParts({makeTextPart("p1", "updated")});
+
+    const bool replaced =
+        relaydesk::storage::replaceChatMessage(appPaths, "peer-device", replacement);
+    if (const int check = expect(replaced,
+                                 "Existing history record was not replaced.");
+        check != 0) {
+        return check;
+    }
+
+    const auto result = relaydesk::storage::loadChatHistory(appPaths, "peer-device");
+    if (const int check = expect(result.GetRecords().size() == 2,
+                                 "Replacing a history record changed record count.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(result.GetRecords()[0].GetDeliveryState()
+                                     == relaydesk::storage::DeliveryState::Completed,
+                                 "Replaced record delivery state was not saved.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(result.GetRecords()[0].GetParts()[0]
+                                     .GetText().value() == "updated",
+                                 "Replaced record content was not saved.");
+        check != 0) {
+        return check;
+    }
+
+    return expect(result.GetRecords()[1].GetMessageId() == "m2",
+                  "Replacing a history record reordered unrelated records.");
+}
+
 } // namespace
 
 int main()
@@ -382,6 +425,10 @@ int main()
     }
 
     if (const int result = skipsBrokenJsonLines(); result != 0) {
+        return result;
+    }
+
+    if (const int result = replacesExistingMessageRecord(); result != 0) {
         return result;
     }
 

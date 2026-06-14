@@ -5,6 +5,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <utility>
 
 #include <nlohmann/json.hpp>
@@ -529,6 +530,20 @@ std::filesystem::path getPeerMessagesFilePath(const AppPaths& appPaths,
     return appPaths.GetPeersDirectory() / peerDeviceId / "messages.jsonl";
 }
 
+std::string serializeChatMessageRecord(const ChatMessageRecord& record)
+{
+    return toJson(record).dump();
+}
+
+ChatMessageRecord parseChatMessageRecord(const std::string& payload)
+{
+    try {
+        return fromJson(nlohmann::json::parse(payload));
+    } catch (const nlohmann::json::exception&) {
+        throw std::runtime_error("Chat history payload is invalid JSON.");
+    }
+}
+
 void appendChatMessage(const AppPaths& appPaths,
                        const std::string& peerDeviceId,
                        const ChatMessageRecord& record)
@@ -542,10 +557,61 @@ void appendChatMessage(const AppPaths& appPaths,
         throw std::runtime_error("Failed to open chat history file for appending.");
     }
 
-    output << toJson(record).dump() << '\n';
+    output << serializeChatMessageRecord(record) << '\n';
     if (!output) {
         throw std::runtime_error("Failed to append chat history record.");
     }
+}
+
+bool replaceChatMessage(const AppPaths& appPaths,
+                        const std::string& peerDeviceId,
+                        const ChatMessageRecord& record)
+{
+    const std::filesystem::path messagesFilePath =
+        getPeerMessagesFilePath(appPaths, peerDeviceId);
+    if (!std::filesystem::exists(messagesFilePath)) {
+        return false;
+    }
+
+    const ChatHistoryLoadResult history = loadChatHistory(appPaths, peerDeviceId);
+    std::vector<ChatMessageRecord> records = history.GetRecords();
+    const auto message = std::find_if(
+        records.begin(),
+        records.end(),
+        [&record](const ChatMessageRecord& existing) {
+            return existing.GetMessageId() == record.GetMessageId();
+        });
+    if (message == records.end()) {
+        return false;
+    }
+
+    *message = record;
+    const std::filesystem::path temporaryFilePath =
+        messagesFilePath.string() + ".tmp";
+    {
+        std::ofstream output(temporaryFilePath, std::ios::binary | std::ios::trunc);
+        if (!output) {
+            throw std::runtime_error("Failed to open chat history file for rewriting.");
+        }
+
+        for (const auto& item : records) {
+            output << serializeChatMessageRecord(item) << '\n';
+            if (!output) {
+                throw std::runtime_error("Failed to rewrite chat history record.");
+            }
+        }
+    }
+
+    std::error_code error;
+    std::filesystem::remove(messagesFilePath, error);
+    error.clear();
+    std::filesystem::rename(temporaryFilePath, messagesFilePath, error);
+    if (error) {
+        std::filesystem::remove(temporaryFilePath);
+        throw std::runtime_error("Failed to replace chat history file.");
+    }
+
+    return true;
 }
 
 ChatHistoryLoadResult loadChatHistory(const AppPaths& appPaths,

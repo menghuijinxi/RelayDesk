@@ -31,8 +31,26 @@ int main()
         return fail("Data directory mismatch.");
     }
 
+    if (appPaths.GetConfigFilePath() != LR"(C:\RelayDesk\bin\data\config.json)") {
+        return fail("Config file path mismatch.");
+    }
+
     if (appPaths.GetIdentityFilePath() != LR"(C:\RelayDesk\bin\data\identity.json)") {
         return fail("Identity file path mismatch.");
+    }
+
+    if (appPaths.GetStickersDirectory() != LR"(C:\RelayDesk\bin\data\stickers)") {
+        return fail("Stickers directory mismatch.");
+    }
+
+    if (appPaths.GetFavoriteStickersDirectory()
+        != LR"(C:\RelayDesk\bin\data\stickers\favorites)") {
+        return fail("Favorite stickers directory mismatch.");
+    }
+
+    if (appPaths.GetStickerPacksDirectory()
+        != LR"(C:\RelayDesk\bin\data\stickers\packs)") {
+        return fail("Sticker packs directory mismatch.");
     }
 
     if (appPaths.GetInboxDirectory() != LR"(C:\RelayDesk\bin\data\transfers\inbox)") {

@@ -173,9 +173,14 @@ std::string makeDirectConversationId(const std::string& localDeviceId,
                                      const std::string& peerDeviceId);
 std::filesystem::path getPeerMessagesFilePath(const AppPaths& appPaths,
                                               const std::string& peerDeviceId);
+std::string serializeChatMessageRecord(const ChatMessageRecord& record);
+ChatMessageRecord parseChatMessageRecord(const std::string& payload);
 void appendChatMessage(const AppPaths& appPaths,
                        const std::string& peerDeviceId,
                        const ChatMessageRecord& record);
+bool replaceChatMessage(const AppPaths& appPaths,
+                        const std::string& peerDeviceId,
+                        const ChatMessageRecord& record);
 ChatHistoryLoadResult loadChatHistory(const AppPaths& appPaths,
                                       const std::string& peerDeviceId);
 
