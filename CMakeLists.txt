@@ -100,6 +100,12 @@ else()
     FetchContent_Declare(eui_neo
         GIT_REPOSITORY "${RELAYDESK_EUI_NEO_GIT_REPOSITORY}"
         GIT_TAG "${RELAYDESK_EUI_NEO_GIT_TAG}"
+        PATCH_COMMAND
+            ${CMAKE_COMMAND}
+             "-DRELAYDESK_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+             "-DRELAYDESK_BUILD_DIR=${CMAKE_BINARY_DIR}"
+             "-DEUI_NEO_SOURCE_DIR=<SOURCE_DIR>"
+             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/PatchEuiNeoAppShortcuts.cmake"
     )
     FetchContent_MakeAvailable(eui_neo)
     FetchContent_GetProperties(eui_neo)
@@ -161,7 +167,7 @@ if(RELAYDESK_HAS_EUI_NEO)
         target_sources(relaydesk PRIVATE
             ${CMAKE_SOURCE_DIR}/relaydesk.rc
         )
-        target_link_libraries(relaydesk PRIVATE shell32)
+        target_link_libraries(relaydesk PRIVATE shell32 windowscodecs ole32)
     else()
         message(FATAL_ERROR "RelayDesk currently targets Windows only.")
     endif()

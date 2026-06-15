@@ -6,6 +6,8 @@ if(NOT DEFINED EUI_NEO_SOURCE_DIR)
     message(FATAL_ERROR "EUI_NEO_SOURCE_DIR is required.")
 endif()
 
+include("${RELAYDESK_SOURCE_DIR}/cmake/PatchEuiNeoAppShortcuts.cmake")
+
 include("${RELAYDESK_SOURCE_DIR}/cmake/PatchEuiNeoSkiaTextMetrics.cmake")
 relaydesk_patch_eui_neo_skia_text_metrics("${EUI_NEO_SOURCE_DIR}")
 

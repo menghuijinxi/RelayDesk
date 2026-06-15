@@ -1,5 +1,6 @@
 #include "eui_neo.h"
 
+#include "core/render/text.h"
 #include "core/platform/platform.h"
 #include "core/uuid.h"
 #include "main/app_runtime.h"
@@ -12,12 +13,15 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstddef>
 #include <exception>
 #include <filesystem>
 #include <functional>
+#include <iomanip>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -43,7 +47,7 @@ constexpr Color kAvatarGreen{0.080f, 0.600f, 0.440f, 1.0f};
 constexpr float kContentTop = 0.0f;
 constexpr float kChatHeaderHeight = 118.0f;
 constexpr float kChatTimelineContentHeight = 650.0f;
-constexpr float kComposerHeight = 156.0f;
+constexpr float kComposerHeight = 196.0f;
 constexpr std::size_t kMaxRecentEmojiCount = 10;
 constexpr std::size_t kMaxPendingAttachmentCount = 8;
 
@@ -167,11 +171,6 @@ struct TransferPreview {
     Color accent;
 };
 
-struct StickerImageCandidate {
-    std::string localPath;
-    std::string displayName;
-};
-
 struct StickerPickerItem {
     std::string packId;
     std::string itemId;
@@ -192,8 +191,37 @@ struct PendingAttachmentItem {
     std::string previewPath;
     std::filesystem::path sourcePath;
     std::uintmax_t fileSize = 0;
+    unsigned int imagePixelWidth = 0;
+    unsigned int imagePixelHeight = 0;
     bool stageOnSend = false;
 };
+
+enum class ComposerDraftItemType {
+    Text,
+    Attachment,
+};
+
+struct ComposerDraftItem {
+    ComposerDraftItemType type = ComposerDraftItemType::Text;
+    std::string text;
+    PendingAttachmentItem attachment;
+};
+
+void drawFileDocumentCard(eui::Ui& ui,
+                          const std::string& id,
+                          float x,
+                          float y,
+                          float width,
+                          const std::string& title,
+                          const std::string& detail,
+                          bool folder,
+                          bool compact);
+void drawCompactImageDocumentCard(eui::Ui& ui,
+                                  const std::string& id,
+                                  float x,
+                                  float y,
+                                  float width,
+                                  const PendingAttachmentItem& attachment);
 
 struct AppLayout {
     float width;
@@ -304,6 +332,30 @@ void text(eui::Ui& ui,
         .color(color)
         .horizontalAlign(align)
         .verticalAlign(eui::VerticalAlign::Center)
+        .build();
+}
+
+void paragraphText(eui::Ui& ui,
+                   const std::string& id,
+                   float x,
+                   float y,
+                   float width,
+                   float height,
+                   const std::string& value,
+                   float fontSize,
+                   float lineHeight,
+                   Color color = kText,
+                   eui::HorizontalAlign align = eui::HorizontalAlign::Left)
+{
+    ui.text(id)
+        .position(x, y)
+        .size(width, height)
+        .text(value)
+        .fontSize(fontSize)
+        .lineHeight(lineHeight)
+        .color(color)
+        .horizontalAlign(align)
+        .verticalAlign(eui::VerticalAlign::Top)
         .build();
 }
 
@@ -574,6 +626,107 @@ bool isImageAttachmentPath(const std::filesystem::path& filePath)
         || extension == ".bmp";
 }
 
+std::string upperAscii(std::string value)
+{
+    std::transform(
+        value.begin(),
+        value.end(),
+        value.begin(),
+        [](unsigned char ch) {
+            return static_cast<char>(std::toupper(ch));
+        });
+    return value;
+}
+
+std::string formatFileSize(std::uintmax_t fileSize)
+{
+    constexpr std::array<const char*, 5> units{"B", "KB", "MB", "GB", "TB"};
+    double value = static_cast<double>(fileSize);
+    std::size_t unitIndex = 0;
+    while (value >= 1024.0 && unitIndex + 1u < units.size()) {
+        value /= 1024.0;
+        ++unitIndex;
+    }
+
+    std::ostringstream output;
+    if (unitIndex == 0u || value >= 100.0) {
+        output << static_cast<std::uintmax_t>(std::round(value));
+    } else {
+        output << std::fixed << std::setprecision(1) << value;
+    }
+    output << ' ' << units[unitIndex];
+    return output.str();
+}
+
+std::string fileTypeTag(const std::string& fileName)
+{
+    const std::filesystem::path filePath(fileName);
+    std::string extension = filePath.extension().string();
+    if (extension.empty()) {
+        return "FILE";
+    }
+
+    if (!extension.empty() && extension.front() == '.') {
+        extension.erase(extension.begin());
+    }
+    extension = upperAscii(extension);
+    if (extension == "JPEG") {
+        return "JPG";
+    }
+    if (extension.size() > 5u) {
+        extension.resize(5u);
+    }
+    return extension.empty() ? "FILE" : extension;
+}
+
+std::size_t utf8CodepointCount(const std::string& value)
+{
+    std::size_t count = 0;
+    for (std::size_t index = 0; index < value.size();) {
+        const auto leadByte = static_cast<unsigned char>(value[index]);
+        const std::size_t length = firstUtf8CodepointLength(leadByte);
+        index += std::max<std::size_t>(1u, length);
+        ++count;
+    }
+    return count;
+}
+
+std::size_t estimateWrappedLineCount(const std::string& value,
+                                     float width,
+                                     float fontSize)
+{
+    const float characterWidth = std::max(1.0f, fontSize * 0.92f);
+    const auto charactersPerLine =
+        static_cast<std::size_t>(std::max(1.0f, width / characterWidth));
+    std::size_t result = 0;
+    std::size_t lineStart = 0;
+    while (lineStart <= value.size()) {
+        const std::size_t lineEnd = value.find('\n', lineStart);
+        const std::size_t countEnd =
+            lineEnd == std::string::npos ? value.size() : lineEnd;
+        const std::string line = value.substr(lineStart, countEnd - lineStart);
+        const std::size_t codepointCount = utf8CodepointCount(line);
+        result += std::max<std::size_t>(
+            1u,
+            (codepointCount + charactersPerLine - 1u) / charactersPerLine);
+        if (lineEnd == std::string::npos) {
+            break;
+        }
+        lineStart = lineEnd + 1u;
+    }
+    return std::max<std::size_t>(1u, result);
+}
+
+float estimateParagraphHeight(const std::string& value,
+                              float width,
+                              float fontSize,
+                              float lineHeight)
+{
+    const std::size_t lineCount =
+        estimateWrappedLineCount(value, width, fontSize);
+    return std::max(lineHeight, static_cast<float>(lineCount) * lineHeight);
+}
+
 std::filesystem::path makeAbsolutePath(const std::filesystem::path& filePath)
 {
     std::error_code error;
@@ -589,6 +742,19 @@ std::uintmax_t fileSizeOrZero(const std::filesystem::path& filePath)
     std::error_code error;
     const std::uintmax_t size = std::filesystem::file_size(filePath, error);
     return error ? 0u : size;
+}
+
+void applyImageSizeMetadata(PendingAttachmentItem& attachment,
+                            const std::filesystem::path& imagePath)
+{
+    const std::optional<relaydesk::platform::ImageSize> imageSize =
+        relaydesk::platform::probeImageSize(imagePath);
+    if (!imageSize.has_value()) {
+        return;
+    }
+
+    attachment.imagePixelWidth = imageSize->width;
+    attachment.imagePixelHeight = imageSize->height;
 }
 
 std::filesystem::path stageAttachmentForSend(
@@ -607,6 +773,44 @@ std::filesystem::path stageAttachmentForSend(
     return targetPath;
 }
 
+struct ComposerImageStage {
+    std::filesystem::path sourcePath;
+    std::filesystem::path previewPath;
+};
+
+ComposerImageStage stageComposerImageFiles(
+    const relaydesk::storage::AppPaths& appPaths,
+    const std::filesystem::path& sourcePath)
+{
+    std::string extension = lowerAscii(sourcePath.extension().string());
+    if (extension.empty()) {
+        extension = ".img";
+    }
+
+    const std::filesystem::path targetDirectory =
+        appPaths.GetOutboxDirectory() / relaydesk::core::createUuidV4();
+    std::filesystem::create_directories(targetDirectory);
+    const std::filesystem::path targetPath = targetDirectory / ("source" + extension);
+    std::filesystem::copy_file(
+        sourcePath,
+        targetPath,
+        std::filesystem::copy_options::overwrite_existing);
+    ComposerImageStage stage;
+    stage.sourcePath = targetPath.lexically_normal();
+    stage.previewPath = stage.sourcePath;
+
+    const std::filesystem::path thumbnailPath = targetDirectory / "thumbnail.png";
+    const std::optional<std::filesystem::path> generatedThumbnail =
+        relaydesk::platform::createImageThumbnail(stage.sourcePath,
+                                                  thumbnailPath,
+                                                  512u);
+    if (generatedThumbnail.has_value()) {
+        stage.previewPath = generatedThumbnail.value();
+    }
+
+    return stage;
+}
+
 std::optional<PendingAttachmentItem> makePendingAttachmentFromPath(
     const std::filesystem::path& filePath)
 {
@@ -618,17 +822,36 @@ std::optional<PendingAttachmentItem> makePendingAttachmentFromPath(
     const auto appPaths = relaydesk::storage::createAppPaths();
     relaydesk::storage::ensureAppDirectories(appPaths);
     const std::filesystem::path absolutePath = makeAbsolutePath(filePath);
+    const bool imageAttachment = isImageAttachmentPath(absolutePath);
+    std::filesystem::path sourcePath = absolutePath;
+    std::filesystem::path previewPath = absolutePath;
+    std::string localPath = makeAttachmentLocalPath(appPaths, absolutePath);
+    bool stageOnSend = localPath == filesystemPathToUtf8String(absolutePath);
+    if (imageAttachment) {
+        try {
+            const ComposerImageStage imageStage =
+                stageComposerImageFiles(appPaths, absolutePath);
+            sourcePath = imageStage.sourcePath;
+            previewPath = imageStage.previewPath;
+            localPath = makeAttachmentLocalPath(appPaths, imageStage.sourcePath);
+            stageOnSend = false;
+        } catch (const std::exception&) {
+            previewPath = absolutePath;
+        }
+    }
+
     PendingAttachmentItem attachment;
-    attachment.kind = isImageAttachmentPath(absolutePath)
-        ? PendingAttachmentKind::Image
-        : PendingAttachmentKind::File;
+    attachment.kind =
+        imageAttachment ? PendingAttachmentKind::Image : PendingAttachmentKind::File;
     attachment.displayName = filesystemPathToUtf8String(absolutePath.filename());
-    attachment.localPath = makeAttachmentLocalPath(appPaths, absolutePath);
-    attachment.previewPath = filesystemPathToUtf8String(absolutePath);
-    attachment.sourcePath = absolutePath;
+    attachment.localPath = localPath;
+    attachment.previewPath = filesystemPathToGenericUtf8String(previewPath);
+    attachment.sourcePath = sourcePath;
     attachment.fileSize = fileSizeOrZero(absolutePath);
-    attachment.stageOnSend =
-        attachment.localPath == filesystemPathToUtf8String(absolutePath);
+    if (imageAttachment) {
+        applyImageSizeMetadata(attachment, sourcePath);
+    }
+    attachment.stageOnSend = stageOnSend;
     return attachment;
 }
 
@@ -641,18 +864,285 @@ PendingAttachmentItem makePendingAttachmentFromSticker(
     attachment.displayName =
         sticker.displayName.empty() ? sticker.itemId : sticker.displayName;
     attachment.localPath = sticker.relativePath;
-    attachment.previewPath = sticker.absolutePath;
+    attachment.previewPath =
+        filesystemPathToGenericUtf8String(std::filesystem::path(sticker.absolutePath));
     attachment.sourcePath = imagePath;
     attachment.fileSize = fileSizeOrZero(imagePath);
+    applyImageSizeMetadata(attachment, imagePath);
     attachment.stageOnSend = false;
     return attachment;
 }
 
-void appendPendingAttachmentPath(
-    std::vector<PendingAttachmentItem>& pendingAttachments,
+std::size_t composerDraftAttachmentCount(
+    const std::vector<ComposerDraftItem>& draftItems)
+{
+    return static_cast<std::size_t>(
+        std::count_if(draftItems.begin(),
+                      draftItems.end(),
+                      [](const ComposerDraftItem& item) {
+            return item.type == ComposerDraftItemType::Attachment;
+        }));
+}
+
+struct ComposerCaretState {
+    std::size_t position = 0;
+    float preferredX = 0.0f;
+    bool hasPreferredX = false;
+};
+
+bool hasComposerDraftContent(const std::vector<ComposerDraftItem>& draftItems)
+{
+    return std::any_of(draftItems.begin(),
+                       draftItems.end(),
+                       [](const ComposerDraftItem& item) {
+        if (item.type == ComposerDraftItemType::Attachment) {
+            return true;
+        }
+        return hasComposerText(item.text);
+    });
+}
+
+std::size_t composerDraftItemAtomLength(const ComposerDraftItem& item)
+{
+    if (item.type == ComposerDraftItemType::Attachment) {
+        return 1u;
+    }
+    return utf8CodepointCount(item.text);
+}
+
+std::size_t composerDraftDocumentLength(
+    const std::vector<ComposerDraftItem>& draftItems)
+{
+    std::size_t length = 0;
+    for (const ComposerDraftItem& item : draftItems) {
+        length += composerDraftItemAtomLength(item);
+    }
+    return length;
+}
+
+std::size_t utf8ByteOffsetForCodepointIndex(const std::string& value,
+                                            std::size_t codepointIndex)
+{
+    std::size_t byteOffset = 0;
+    std::size_t codepointOffset = 0;
+    while (byteOffset < value.size() && codepointOffset < codepointIndex) {
+        const auto leadByte = static_cast<unsigned char>(value[byteOffset]);
+        const std::size_t length = std::min(
+            firstUtf8CodepointLength(leadByte),
+            value.size() - byteOffset);
+        byteOffset += std::max<std::size_t>(1u, length);
+        ++codepointOffset;
+    }
+    return byteOffset;
+}
+
+std::vector<std::string> splitUtf8Codepoints(const std::string& value)
+{
+    std::vector<std::string> codepoints;
+    for (std::size_t byteOffset = 0; byteOffset < value.size();) {
+        const auto leadByte = static_cast<unsigned char>(value[byteOffset]);
+        const std::size_t length = std::min(
+            firstUtf8CodepointLength(leadByte),
+            value.size() - byteOffset);
+        const std::size_t safeLength = std::max<std::size_t>(1u, length);
+        codepoints.push_back(value.substr(byteOffset, safeLength));
+        byteOffset += safeLength;
+    }
+    return codepoints;
+}
+
+ComposerDraftItem makeComposerDraftTextItem(std::string text)
+{
+    ComposerDraftItem item;
+    item.type = ComposerDraftItemType::Text;
+    item.text = std::move(text);
+    return item;
+}
+
+ComposerDraftItem makeComposerDraftAttachmentItem(PendingAttachmentItem attachment)
+{
+    ComposerDraftItem item;
+    item.type = ComposerDraftItemType::Attachment;
+    item.attachment = std::move(attachment);
+    return item;
+}
+
+void normalizeComposerDraftItems(std::vector<ComposerDraftItem>& draftItems)
+{
+    for (std::size_t index = 0; index < draftItems.size();) {
+        if (draftItems[index].type == ComposerDraftItemType::Text
+            && draftItems[index].text.empty()) {
+            draftItems.erase(draftItems.begin()
+                             + static_cast<std::ptrdiff_t>(index));
+            continue;
+        }
+        ++index;
+    }
+
+    for (std::size_t index = 1; index < draftItems.size();) {
+        ComposerDraftItem& previousItem = draftItems[index - 1u];
+        ComposerDraftItem& currentItem = draftItems[index];
+        if (previousItem.type == ComposerDraftItemType::Text
+            && currentItem.type == ComposerDraftItemType::Text) {
+            previousItem.text += currentItem.text;
+            draftItems.erase(draftItems.begin()
+                             + static_cast<std::ptrdiff_t>(index));
+            continue;
+        }
+
+        ++index;
+    }
+}
+
+void clampComposerCaret(const std::vector<ComposerDraftItem>& draftItems,
+                        ComposerCaretState& caret)
+{
+    caret.position =
+        std::min(caret.position, composerDraftDocumentLength(draftItems));
+}
+
+void insertComposerDraftTextItemAt(std::vector<ComposerDraftItem>& draftItems,
+                                   std::size_t itemIndex,
+                                   std::string text)
+{
+    if (text.empty()) {
+        return;
+    }
+
+    itemIndex = std::min(itemIndex, draftItems.size());
+    draftItems.insert(
+        draftItems.begin() + static_cast<std::ptrdiff_t>(itemIndex),
+        makeComposerDraftTextItem(std::move(text)));
+}
+
+void insertComposerDraftTextAtCaret(std::vector<ComposerDraftItem>& draftItems,
+                                    ComposerCaretState& caret,
+                                    std::string text)
+{
+    text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());
+    if (text.empty()) {
+        return;
+    }
+
+    clampComposerCaret(draftItems, caret);
+    const std::size_t insertedLength = utf8CodepointCount(text);
+    std::size_t consumedLength = 0;
+    for (std::size_t index = 0; index < draftItems.size(); ++index) {
+        ComposerDraftItem& item = draftItems[index];
+        if (item.type == ComposerDraftItemType::Text) {
+            const std::size_t itemLength = utf8CodepointCount(item.text);
+            if (caret.position <= consumedLength + itemLength) {
+                const std::size_t offset = caret.position - consumedLength;
+                const std::size_t byteOffset =
+                    utf8ByteOffsetForCodepointIndex(item.text, offset);
+                item.text.insert(byteOffset, text);
+                caret.position += insertedLength;
+                caret.hasPreferredX = false;
+                normalizeComposerDraftItems(draftItems);
+                return;
+            }
+            consumedLength += itemLength;
+            continue;
+        }
+
+        if (caret.position <= consumedLength) {
+            insertComposerDraftTextItemAt(draftItems, index, std::move(text));
+            caret.position += insertedLength;
+            caret.hasPreferredX = false;
+            normalizeComposerDraftItems(draftItems);
+            return;
+        }
+        ++consumedLength;
+        if (caret.position <= consumedLength) {
+            insertComposerDraftTextItemAt(draftItems, index + 1u, std::move(text));
+            caret.position += insertedLength;
+            caret.hasPreferredX = false;
+            normalizeComposerDraftItems(draftItems);
+            return;
+        }
+    }
+
+    draftItems.push_back(makeComposerDraftTextItem(std::move(text)));
+    caret.position += insertedLength;
+    caret.hasPreferredX = false;
+    normalizeComposerDraftItems(draftItems);
+}
+
+void insertComposerDraftAttachmentAtCaret(
+    std::vector<ComposerDraftItem>& draftItems,
+    ComposerCaretState& caret,
+    PendingAttachmentItem attachment)
+{
+    if (composerDraftAttachmentCount(draftItems) >= kMaxPendingAttachmentCount) {
+        return;
+    }
+
+    clampComposerCaret(draftItems, caret);
+    std::size_t consumedLength = 0;
+    for (std::size_t index = 0; index < draftItems.size(); ++index) {
+        ComposerDraftItem& item = draftItems[index];
+        if (item.type == ComposerDraftItemType::Text) {
+            const std::size_t itemLength = utf8CodepointCount(item.text);
+            if (caret.position <= consumedLength + itemLength) {
+                const std::size_t offset = caret.position - consumedLength;
+                const std::size_t byteOffset =
+                    utf8ByteOffsetForCodepointIndex(item.text, offset);
+                std::vector<ComposerDraftItem> replacement;
+                if (byteOffset > 0u) {
+                    replacement.push_back(
+                        makeComposerDraftTextItem(item.text.substr(0u, byteOffset)));
+                }
+                replacement.push_back(
+                    makeComposerDraftAttachmentItem(std::move(attachment)));
+                if (byteOffset < item.text.size()) {
+                    replacement.push_back(
+                        makeComposerDraftTextItem(item.text.substr(byteOffset)));
+                }
+                draftItems.erase(draftItems.begin()
+                                 + static_cast<std::ptrdiff_t>(index));
+                draftItems.insert(
+                    draftItems.begin() + static_cast<std::ptrdiff_t>(index),
+                    replacement.begin(),
+                    replacement.end());
+                ++caret.position;
+                caret.hasPreferredX = false;
+                normalizeComposerDraftItems(draftItems);
+                return;
+            }
+            consumedLength += itemLength;
+            continue;
+        }
+
+        if (caret.position <= consumedLength) {
+            draftItems.insert(
+                draftItems.begin() + static_cast<std::ptrdiff_t>(index),
+                makeComposerDraftAttachmentItem(std::move(attachment)));
+            ++caret.position;
+            caret.hasPreferredX = false;
+            return;
+        }
+        ++consumedLength;
+        if (caret.position <= consumedLength) {
+            draftItems.insert(
+                draftItems.begin() + static_cast<std::ptrdiff_t>(index + 1u),
+                makeComposerDraftAttachmentItem(std::move(attachment)));
+            ++caret.position;
+            caret.hasPreferredX = false;
+            return;
+        }
+    }
+
+    draftItems.push_back(makeComposerDraftAttachmentItem(std::move(attachment)));
+    ++caret.position;
+    caret.hasPreferredX = false;
+}
+
+void insertComposerDraftAttachmentPathAtCaret(
+    std::vector<ComposerDraftItem>& draftItems,
+    ComposerCaretState& caret,
     const std::filesystem::path& filePath)
 {
-    if (pendingAttachments.size() >= kMaxPendingAttachmentCount) {
+    if (composerDraftAttachmentCount(draftItems) >= kMaxPendingAttachmentCount) {
         return;
     }
 
@@ -660,19 +1150,102 @@ void appendPendingAttachmentPath(
         std::optional<PendingAttachmentItem> attachment =
             makePendingAttachmentFromPath(filePath);
         if (attachment.has_value()) {
-            pendingAttachments.push_back(std::move(attachment.value()));
+            insertComposerDraftAttachmentAtCaret(draftItems,
+                                                 caret,
+                                                 std::move(attachment.value()));
         }
     } catch (const std::exception&) {
     }
 }
 
-void appendPendingAttachmentPaths(
-    std::vector<PendingAttachmentItem>& pendingAttachments,
+void insertComposerDraftAttachmentPathsAtCaret(
+    std::vector<ComposerDraftItem>& draftItems,
+    ComposerCaretState& caret,
     const std::vector<std::filesystem::path>& filePaths)
 {
     for (const auto& filePath : filePaths) {
-        appendPendingAttachmentPath(pendingAttachments, filePath);
+        insertComposerDraftAttachmentPathAtCaret(draftItems, caret, filePath);
     }
+}
+
+bool removeComposerDraftAtomAt(std::vector<ComposerDraftItem>& draftItems,
+                               std::size_t atomIndex)
+{
+    std::size_t consumedLength = 0;
+    for (std::size_t index = 0; index < draftItems.size(); ++index) {
+        ComposerDraftItem& item = draftItems[index];
+        if (item.type == ComposerDraftItemType::Text) {
+            const std::size_t itemLength = utf8CodepointCount(item.text);
+            if (atomIndex < consumedLength + itemLength) {
+                const std::size_t offset = atomIndex - consumedLength;
+                const std::size_t byteBegin =
+                    utf8ByteOffsetForCodepointIndex(item.text, offset);
+                const std::size_t byteEnd =
+                    utf8ByteOffsetForCodepointIndex(item.text, offset + 1u);
+                item.text.erase(byteBegin, byteEnd - byteBegin);
+                normalizeComposerDraftItems(draftItems);
+                return true;
+            }
+            consumedLength += itemLength;
+            continue;
+        }
+
+        if (atomIndex == consumedLength) {
+            draftItems.erase(draftItems.begin()
+                             + static_cast<std::ptrdiff_t>(index));
+            normalizeComposerDraftItems(draftItems);
+            return true;
+        }
+        ++consumedLength;
+    }
+
+    return false;
+}
+
+void removeComposerDraftAtomBeforeCaret(std::vector<ComposerDraftItem>& draftItems,
+                                        ComposerCaretState& caret)
+{
+    clampComposerCaret(draftItems, caret);
+    if (caret.position == 0u) {
+        return;
+    }
+
+    if (removeComposerDraftAtomAt(draftItems, caret.position - 1u)) {
+        --caret.position;
+        caret.hasPreferredX = false;
+    }
+}
+
+void removeComposerDraftAtomAfterCaret(std::vector<ComposerDraftItem>& draftItems,
+                                       ComposerCaretState& caret)
+{
+    clampComposerCaret(draftItems, caret);
+    if (removeComposerDraftAtomAt(draftItems, caret.position)) {
+        caret.hasPreferredX = false;
+    }
+}
+
+void removeComposerDraftItemAt(std::vector<ComposerDraftItem>& draftItems,
+                               ComposerCaretState& caret,
+                               std::size_t index)
+{
+    if (index >= draftItems.size()) {
+        return;
+    }
+
+    std::size_t itemStart = 0;
+    for (std::size_t itemIndex = 0; itemIndex < index; ++itemIndex) {
+        itemStart += composerDraftItemAtomLength(draftItems[itemIndex]);
+    }
+    const std::size_t itemLength = composerDraftItemAtomLength(draftItems[index]);
+    draftItems.erase(draftItems.begin() + static_cast<std::ptrdiff_t>(index));
+
+    if (caret.position > itemStart) {
+        caret.position -= std::min(caret.position - itemStart, itemLength);
+    }
+    caret.hasPreferredX = false;
+    normalizeComposerDraftItems(draftItems);
+    clampComposerCaret(draftItems, caret);
 }
 
 std::vector<std::filesystem::path> selectAttachmentFilesFromDialog()
@@ -841,51 +1414,29 @@ std::optional<relaydesk::storage::ChatMessagePart> makeComposerAttachmentPart(
 }
 
 std::vector<relaydesk::storage::ChatMessagePart> makeComposerMessageParts(
-    const std::string& textValue,
-    const std::vector<PendingAttachmentItem>& pendingAttachments)
+    const std::vector<ComposerDraftItem>& draftItems)
 {
     std::vector<relaydesk::storage::ChatMessagePart> parts;
-    if (hasComposerText(textValue)) {
-        parts.push_back(makeComposerTextPart(textValue));
-    }
-    for (const auto& attachment : pendingAttachments) {
-        std::optional<relaydesk::storage::ChatMessagePart> part =
-            makeComposerAttachmentPart(attachment);
-        if (part.has_value()) {
-            parts.push_back(std::move(part.value()));
+    for (const auto& item : draftItems) {
+        if (item.type == ComposerDraftItemType::Text) {
+            if (hasComposerText(item.text)) {
+                parts.push_back(makeComposerTextPart(item.text));
+            }
+            continue;
+        }
+
+        std::optional<relaydesk::storage::ChatMessagePart> attachmentPart =
+            makeComposerAttachmentPart(item.attachment);
+        if (attachmentPart.has_value()) {
+            parts.push_back(std::move(attachmentPart.value()));
         }
     }
     return parts;
 }
 
-std::optional<StickerImageCandidate> findStickerImageCandidate(
-    const relaydesk::storage::ChatMessageRecord& message)
+std::optional<std::filesystem::path> resolveRenderableImagePath(
+    const relaydesk::storage::ChatMessagePart& part)
 {
-    for (const auto& part : message.GetParts()) {
-        if (part.GetType() != relaydesk::storage::MessagePartType::Image
-            || !part.GetLocalPath().has_value()
-            || part.GetLocalPath().value().empty()) {
-            continue;
-        }
-
-        std::string displayName = part.GetFileName().value_or("");
-        if (displayName.empty()) {
-            displayName = "sticker";
-        }
-        return StickerImageCandidate{part.GetLocalPath().value(), displayName};
-    }
-
-    return std::nullopt;
-}
-
-std::optional<std::filesystem::path> findRenderableImagePath(
-    const relaydesk::storage::ChatMessageRecord& message)
-{
-    if (message.GetParts().size() != 1u) {
-        return std::nullopt;
-    }
-
-    const auto& part = message.GetParts().front();
     if (part.GetType() != relaydesk::storage::MessagePartType::Image
         || !part.GetLocalPath().has_value()
         || part.GetLocalPath().value().empty()) {
@@ -904,6 +1455,68 @@ std::optional<std::filesystem::path> findRenderableImagePath(
     } catch (const std::exception&) {
         return std::nullopt;
     }
+}
+
+std::string transferStateText(relaydesk::storage::TransferState state)
+{
+    switch (state) {
+    case relaydesk::storage::TransferState::Pending:
+        return "待发送";
+    case relaydesk::storage::TransferState::Offered:
+        return "待接收";
+    case relaydesk::storage::TransferState::Transferring:
+        return "传输中";
+    case relaydesk::storage::TransferState::Completed:
+        return "已完成";
+    case relaydesk::storage::TransferState::Failed:
+        return "传输失败";
+    case relaydesk::storage::TransferState::Cancelled:
+        return "已取消";
+    }
+
+    return "";
+}
+
+std::string messagePartTitle(const relaydesk::storage::ChatMessagePart& part)
+{
+    if (part.GetFileName().has_value() && !part.GetFileName().value().empty()) {
+        return part.GetFileName().value();
+    }
+    switch (part.GetType()) {
+    case relaydesk::storage::MessagePartType::Image:
+        return "图片";
+    case relaydesk::storage::MessagePartType::File:
+        return "文件";
+    case relaydesk::storage::MessagePartType::Folder:
+        return "文件夹";
+    case relaydesk::storage::MessagePartType::Text:
+    case relaydesk::storage::MessagePartType::Emoji:
+        return "";
+    }
+
+    return "";
+}
+
+std::string messagePartDetail(const relaydesk::storage::ChatMessagePart& part)
+{
+    std::string detail;
+    if (part.GetType() == relaydesk::storage::MessagePartType::Folder) {
+        detail = "文件夹";
+    } else if (part.GetFileSize().has_value()) {
+        detail = formatFileSize(part.GetFileSize().value());
+    }
+
+    if (part.GetTransferState().has_value()) {
+        const std::string stateText =
+            transferStateText(part.GetTransferState().value());
+        if (!stateText.empty()) {
+            if (!detail.empty()) {
+                detail += " · ";
+            }
+            detail += stateText;
+        }
+    }
+    return detail;
 }
 
 std::optional<std::string> favoriteStickerImage(
@@ -1354,81 +1967,751 @@ void drawRichEmojiPicker(eui::Ui& ui,
     }
 }
 
-void drawPendingAttachmentStrip(
-    eui::Ui& ui,
-    float x,
-    float y,
-    float width,
-    std::vector<PendingAttachmentItem>& pendingAttachments)
+struct ComposerFlowCursor {
+    float x;
+    float y;
+    float lineHeight;
+};
+
+float composerDraftFileNodeWidth(float flowWidth)
 {
-    constexpr float cellSize = 36.0f;
-    constexpr float gap = 8.0f;
-    const int maxVisible = std::max(1, static_cast<int>((width - 12.0f)
-                                                        / (cellSize + gap)));
-    const std::size_t visibleCount = std::min(
-        pendingAttachments.size(),
-        static_cast<std::size_t>(maxVisible));
-    for (std::size_t index = 0; index < visibleCount; ++index) {
-        const PendingAttachmentItem& attachment = pendingAttachments[index];
-        const float cellX = x + 6.0f + static_cast<float>(index) * (cellSize + gap);
-        rect(ui,
-             "composer.pending.attachment." + std::to_string(index) + ".bg",
-             cellX,
-             y,
-             cellSize,
-             cellSize,
-             {1.0f, 1.0f, 1.0f, 1.0f},
-             6.0f,
-             kBorder);
-        if (attachment.kind == PendingAttachmentKind::Image) {
-            ui.image("composer.pending.attachment." + std::to_string(index)
-                         + ".image")
-                .position(cellX + 3.0f, y + 3.0f)
-                .size(cellSize - 6.0f, cellSize - 6.0f)
-                .path(attachment.previewPath)
-                .contain()
-                .radius(5.0f)
-                .build();
-        } else {
-            icon(ui,
-                 "composer.pending.attachment." + std::to_string(index)
-                     + ".file",
-                 cellX + 2.0f,
-                 y + 2.0f,
-                 cellSize - 4.0f,
-                 0xE7C3,
-                 kMutedText);
-        }
-        rect(ui,
-             "composer.pending.attachment." + std::to_string(index) + ".close.bg",
-             cellX + cellSize - 12.0f,
-             y - 3.0f,
-             15.0f,
-             15.0f,
-             kPanelBackground,
-             7.5f,
-             kBorder);
-        icon(ui,
-             "composer.pending.attachment." + std::to_string(index) + ".close.icon",
-             cellX + cellSize - 11.0f,
-             y - 2.0f,
-             13.0f,
-             0xE711,
-             kMutedText);
-        ui.rect("composer.pending.attachment." + std::to_string(index)
-                    + ".close.hit")
-            .position(cellX + cellSize - 14.0f, y - 5.0f)
-            .size(19.0f, 19.0f)
-            .color({0.0f, 0.0f, 0.0f, 0.0f})
-            .onClick([&pendingAttachments, index] {
-                if (index < pendingAttachments.size()) {
-                    pendingAttachments.erase(
-                        pendingAttachments.begin()
-                        + static_cast<std::ptrdiff_t>(index));
-                }
-            })
-            .build();
+    if (flowWidth < 420.0f) {
+        return flowWidth;
     }
+    return std::clamp(flowWidth * 0.42f, 220.0f, 340.0f);
+}
+
+struct ComposerAttachmentNodeSize {
+    float width = 0.0f;
+    float height = 0.0f;
+};
+
+struct ComposerEditorCaretLocation {
+    std::size_t position = 0;
+    float x = 0.0f;
+    float y = 0.0f;
+    float height = 20.0f;
+};
+
+struct ComposerEditorTextAtom {
+    std::size_t position = 0;
+    std::string text;
+    float x = 0.0f;
+    float y = 0.0f;
+    float width = 0.0f;
+};
+
+struct ComposerEditorAttachmentAtom {
+    std::size_t position = 0;
+    std::size_t itemIndex = 0;
+    float x = 0.0f;
+    float y = 0.0f;
+    float width = 0.0f;
+    float height = 0.0f;
+};
+
+struct ComposerEditorLayout {
+    std::vector<ComposerEditorTextAtom> textAtoms;
+    std::vector<ComposerEditorAttachmentAtom> attachmentAtoms;
+    std::vector<ComposerEditorCaretLocation> caretLocations;
+    float contentHeight = 0.0f;
+};
+
+constexpr float kComposerEditorFontSize = 14.0f;
+constexpr float kComposerEditorLineHeight = 22.0f;
+constexpr float kComposerEditorScrollbarWidth = 7.0f;
+constexpr float kComposerEditorScrollbarGap = 6.0f;
+constexpr float kComposerEditorImageMaxWidth = 260.0f;
+constexpr float kComposerEditorImageMaxHeight = 104.0f;
+constexpr float kComposerEditorImageFallbackWidth = 156.0f;
+constexpr float kComposerEditorImageFallbackHeight = 88.0f;
+
+float composerEditorTextAtomWidth(const std::string& value)
+{
+    if (value.empty() || value == "\n") {
+        return 0.0f;
+    }
+
+    const float measuredWidth =
+        core::TextPrimitive::measureTextWidth(value, "", kComposerEditorFontSize);
+    if (std::isfinite(measuredWidth) && measuredWidth > 0.0f) {
+        return measuredWidth;
+    }
+    return std::max(4.0f,
+                    static_cast<float>(utf8CodepointCount(value)) * 8.5f);
+}
+
+float composerAttachmentAspectRatio(const PendingAttachmentItem& attachment)
+{
+    if (attachment.imagePixelWidth == 0u || attachment.imagePixelHeight == 0u) {
+        return 0.0f;
+    }
+
+    return static_cast<float>(attachment.imagePixelWidth)
+        / static_cast<float>(attachment.imagePixelHeight);
+}
+
+ComposerAttachmentNodeSize composerDraftImageNodeSize(
+    const PendingAttachmentItem& attachment,
+    float flowWidth)
+{
+    if (flowWidth <= 0.0f) {
+        return {};
+    }
+
+    const float minimumSide = std::min(44.0f, flowWidth);
+    const float aspectRatio = composerAttachmentAspectRatio(attachment);
+    if (!std::isfinite(aspectRatio) || aspectRatio <= 0.0f) {
+        return {
+            std::min(flowWidth, kComposerEditorImageFallbackWidth),
+            kComposerEditorImageFallbackHeight
+        };
+    }
+
+    const float maxWidth = std::min(flowWidth, kComposerEditorImageMaxWidth);
+    float nodeWidth = maxWidth;
+    float nodeHeight = nodeWidth / aspectRatio;
+    if (nodeHeight > kComposerEditorImageMaxHeight) {
+        nodeHeight = kComposerEditorImageMaxHeight;
+        nodeWidth = nodeHeight * aspectRatio;
+    }
+
+    if (nodeWidth > flowWidth) {
+        nodeWidth = flowWidth;
+        nodeHeight = nodeWidth / aspectRatio;
+    }
+
+    nodeWidth = std::clamp(nodeWidth, minimumSide, flowWidth);
+    nodeHeight = std::clamp(nodeHeight, minimumSide, kComposerEditorImageMaxHeight);
+    return {nodeWidth, nodeHeight};
+}
+
+void setComposerEditorCaretLocation(ComposerEditorLayout& layout,
+                                    std::size_t position,
+                                    float x,
+                                    float y,
+                                    float height)
+{
+    if (position >= layout.caretLocations.size()) {
+        return;
+    }
+
+    layout.caretLocations[position] = {position, x, y, height};
+}
+
+void advanceComposerEditorLine(ComposerFlowCursor& cursor,
+                               float lineStartX,
+                               float rowGap)
+{
+    const float lineHeight = std::max(cursor.lineHeight, kComposerEditorLineHeight);
+    cursor.x = lineStartX;
+    cursor.y += lineHeight + rowGap;
+    cursor.lineHeight = kComposerEditorLineHeight;
+}
+
+ComposerEditorLayout makeComposerEditorLayout(
+    const std::vector<ComposerDraftItem>& draftItems,
+    float width)
+{
+    constexpr float rowGap = 8.0f;
+    constexpr float attachmentGap = 8.0f;
+    ComposerEditorLayout layout;
+    const std::size_t documentLength = composerDraftDocumentLength(draftItems);
+    layout.caretLocations.resize(documentLength + 1u);
+
+    ComposerFlowCursor cursor{0.0f, 0.0f, kComposerEditorLineHeight};
+    setComposerEditorCaretLocation(layout,
+                                   0u,
+                                   cursor.x,
+                                   cursor.y,
+                                   kComposerEditorLineHeight);
+
+    std::size_t documentPosition = 0;
+    for (std::size_t itemIndex = 0; itemIndex < draftItems.size(); ++itemIndex) {
+        const ComposerDraftItem& item = draftItems[itemIndex];
+        if (item.type == ComposerDraftItemType::Text) {
+            for (const std::string& codepoint : splitUtf8Codepoints(item.text)) {
+                if (codepoint == "\n") {
+                    setComposerEditorCaretLocation(layout,
+                                                   documentPosition,
+                                                   cursor.x,
+                                                   cursor.y,
+                                                   kComposerEditorLineHeight);
+                    ++documentPosition;
+                    advanceComposerEditorLine(cursor, 0.0f, rowGap);
+                    setComposerEditorCaretLocation(layout,
+                                                   documentPosition,
+                                                   cursor.x,
+                                                   cursor.y,
+                                                   kComposerEditorLineHeight);
+                    continue;
+                }
+
+                const float atomWidth = composerEditorTextAtomWidth(codepoint);
+                if (cursor.x > 0.0f && cursor.x + atomWidth > width) {
+                    advanceComposerEditorLine(cursor, 0.0f, rowGap);
+                }
+
+                setComposerEditorCaretLocation(layout,
+                                               documentPosition,
+                                               cursor.x,
+                                               cursor.y,
+                                               kComposerEditorLineHeight);
+                layout.textAtoms.push_back(
+                    {documentPosition, codepoint, cursor.x, cursor.y, atomWidth});
+                cursor.x += atomWidth;
+                cursor.lineHeight =
+                    std::max(cursor.lineHeight, kComposerEditorLineHeight);
+                ++documentPosition;
+                setComposerEditorCaretLocation(layout,
+                                               documentPosition,
+                                               cursor.x,
+                                               cursor.y,
+                                               kComposerEditorLineHeight);
+            }
+            continue;
+        }
+
+        const PendingAttachmentItem& attachment = item.attachment;
+        const ComposerAttachmentNodeSize nodeSize =
+            attachment.kind == PendingAttachmentKind::Image
+                ? composerDraftImageNodeSize(attachment, width)
+                : ComposerAttachmentNodeSize{composerDraftFileNodeWidth(width),
+                                             58.0f};
+        const float nodeWidth = nodeSize.width;
+        const float nodeHeight = nodeSize.height;
+        const float leadingGap = cursor.x > 0.0f ? attachmentGap : 0.0f;
+        if (cursor.x > 0.0f && cursor.x + leadingGap + nodeWidth > width) {
+            advanceComposerEditorLine(cursor, 0.0f, rowGap);
+        } else {
+            cursor.x += leadingGap;
+        }
+
+        setComposerEditorCaretLocation(layout,
+                                       documentPosition,
+                                       cursor.x,
+                                       cursor.y,
+                                       kComposerEditorLineHeight);
+        layout.attachmentAtoms.push_back(
+            {documentPosition, itemIndex, cursor.x, cursor.y, nodeWidth, nodeHeight});
+        cursor.x += nodeWidth + attachmentGap;
+        cursor.lineHeight = std::max(cursor.lineHeight, nodeHeight);
+        ++documentPosition;
+        setComposerEditorCaretLocation(layout,
+                                       documentPosition,
+                                       cursor.x,
+                                       cursor.y,
+                                       kComposerEditorLineHeight);
+    }
+
+    layout.contentHeight =
+        cursor.y + std::max(cursor.lineHeight, kComposerEditorLineHeight);
+    return layout;
+}
+
+std::size_t composerCaretFromPoint(const ComposerEditorLayout& layout,
+                                   float x,
+                                   float y)
+{
+    if (layout.caretLocations.empty()) {
+        return 0u;
+    }
+
+    std::size_t bestPosition = layout.caretLocations.front().position;
+    float bestScore = 0.0f;
+    bool hasBestScore = false;
+    for (const ComposerEditorCaretLocation& location : layout.caretLocations) {
+        const float top = location.y;
+        const float bottom = location.y + location.height;
+        const float verticalDistance = y < top
+            ? top - y
+            : (y > bottom ? y - bottom : 0.0f);
+        const float score = verticalDistance * 100.0f + std::fabs(x - location.x);
+        if (!hasBestScore || score < bestScore) {
+            bestScore = score;
+            bestPosition = location.position;
+            hasBestScore = true;
+        }
+    }
+    return bestPosition;
+}
+
+std::size_t composerCaretLineEdge(const ComposerEditorLayout& layout,
+                                  std::size_t position,
+                                  bool endOfLine)
+{
+    if (layout.caretLocations.empty()) {
+        return 0u;
+    }
+
+    position = std::min(position, layout.caretLocations.size() - 1u);
+    const float y = layout.caretLocations[position].y;
+    std::size_t bestPosition = position;
+    float bestX = layout.caretLocations[position].x;
+    for (const ComposerEditorCaretLocation& location : layout.caretLocations) {
+        if (std::fabs(location.y - y) > 0.5f) {
+            continue;
+        }
+        if ((endOfLine && location.x >= bestX)
+            || (!endOfLine && location.x <= bestX)) {
+            bestX = location.x;
+            bestPosition = location.position;
+        }
+    }
+    return bestPosition;
+}
+
+void moveComposerCaretVertically(ComposerCaretState& caret,
+                                 const ComposerEditorLayout& layout,
+                                 int direction)
+{
+    if (layout.caretLocations.empty()) {
+        caret.position = 0u;
+        return;
+    }
+
+    caret.position = std::min(caret.position, layout.caretLocations.size() - 1u);
+    const ComposerEditorCaretLocation& current =
+        layout.caretLocations[caret.position];
+    if (!caret.hasPreferredX) {
+        caret.preferredX = current.x;
+        caret.hasPreferredX = true;
+    }
+
+    std::optional<float> targetY;
+    for (const ComposerEditorCaretLocation& location : layout.caretLocations) {
+        if (direction < 0 && location.y < current.y - 0.5f) {
+            if (!targetY.has_value() || location.y > targetY.value()) {
+                targetY = location.y;
+            }
+        } else if (direction > 0 && location.y > current.y + 0.5f) {
+            if (!targetY.has_value() || location.y < targetY.value()) {
+                targetY = location.y;
+            }
+        }
+    }
+    if (!targetY.has_value()) {
+        return;
+    }
+
+    std::size_t bestPosition = caret.position;
+    float bestDistance = 0.0f;
+    bool hasBestDistance = false;
+    for (const ComposerEditorCaretLocation& location : layout.caretLocations) {
+        if (std::fabs(location.y - targetY.value()) > 0.5f) {
+            continue;
+        }
+        const float distance = std::fabs(location.x - caret.preferredX);
+        if (!hasBestDistance || distance < bestDistance) {
+            bestDistance = distance;
+            bestPosition = location.position;
+            hasBestDistance = true;
+        }
+    }
+    caret.position = bestPosition;
+}
+
+void handleComposerEditorKeyboardEvent(
+    std::vector<ComposerDraftItem>& draftItems,
+    ComposerCaretState& caret,
+    const ComposerEditorLayout& layout,
+    const core::KeyboardEvent& event)
+{
+    clampComposerCaret(draftItems, caret);
+    const std::size_t documentLength = composerDraftDocumentLength(draftItems);
+    if (event.left && caret.position > 0u) {
+        --caret.position;
+        caret.hasPreferredX = false;
+    }
+    if (event.right && caret.position < documentLength) {
+        ++caret.position;
+        caret.hasPreferredX = false;
+    }
+    if (event.up) {
+        moveComposerCaretVertically(caret, layout, -1);
+    }
+    if (event.down) {
+        moveComposerCaretVertically(caret, layout, 1);
+    }
+    if (event.home) {
+        caret.position = composerCaretLineEdge(layout, caret.position, false);
+        caret.hasPreferredX = false;
+    }
+    if (event.end) {
+        caret.position = composerCaretLineEdge(layout, caret.position, true);
+        caret.hasPreferredX = false;
+    }
+    if (event.backspace) {
+        removeComposerDraftAtomBeforeCaret(draftItems, caret);
+    }
+    if (event.del) {
+        removeComposerDraftAtomAfterCaret(draftItems, caret);
+    }
+    if (!event.pasteText.empty()) {
+        insertComposerDraftTextAtCaret(draftItems, caret, event.pasteText);
+    }
+    if (!event.text.empty()) {
+        insertComposerDraftTextAtCaret(draftItems, caret, event.text);
+    }
+    if (event.enter) {
+        insertComposerDraftTextAtCaret(draftItems, caret, "\n");
+    }
+}
+
+float composerEditorContentWidth(const std::vector<ComposerDraftItem>& draftItems,
+                                 float width,
+                                 float height)
+{
+    const ComposerEditorLayout fullWidthLayout =
+        makeComposerEditorLayout(draftItems, width);
+    if (fullWidthLayout.contentHeight <= height) {
+        return width;
+    }
+
+    return std::max(
+        0.0f,
+        width - kComposerEditorScrollbarWidth - kComposerEditorScrollbarGap);
+}
+
+float composerEditorMaxScrollOffset(const ComposerEditorLayout& layout,
+                                    float viewportHeight)
+{
+    return std::max(0.0f, layout.contentHeight - viewportHeight);
+}
+
+float composerEditorScrollOffsetForCaret(const ComposerEditorLayout& layout,
+                                         std::size_t caretPosition,
+                                         float viewportHeight,
+                                         float currentOffset)
+{
+    if (layout.caretLocations.empty()) {
+        return 0.0f;
+    }
+
+    constexpr float visibleMargin = 10.0f;
+    const float maxOffset = composerEditorMaxScrollOffset(layout, viewportHeight);
+    const std::size_t caretIndex =
+        std::min(caretPosition, layout.caretLocations.size() - 1u);
+    const ComposerEditorCaretLocation& location =
+        layout.caretLocations[caretIndex];
+    float nextOffset = std::clamp(currentOffset, 0.0f, maxOffset);
+    if (location.y < nextOffset + visibleMargin) {
+        nextOffset = location.y - visibleMargin;
+    } else if (location.y + location.height
+               > nextOffset + viewportHeight - visibleMargin) {
+        nextOffset =
+            location.y + location.height + visibleMargin - viewportHeight;
+    }
+
+    return std::clamp(nextOffset, 0.0f, maxOffset);
+}
+
+void drawComposerEditorCloseButton(eui::Ui& ui,
+                                   const std::string& id,
+                                   float x,
+                                   float y,
+                                   std::vector<ComposerDraftItem>& draftItems,
+                                   ComposerCaretState& caret,
+                                   std::size_t index)
+{
+    rect(ui, id + ".close.bg", x, y, 18.0f, 18.0f,
+         kPanelBackground, 9.0f, kBorder);
+    icon(ui, id + ".close.icon", x + 1.5f, y + 1.5f, 15.0f, 0xE711, kMutedText);
+    ui.rect(id + ".close.hit")
+        .position(x - 3.0f, y - 3.0f)
+        .size(24.0f, 24.0f)
+        .color({0.0f, 0.0f, 0.0f, 0.0f})
+        .onClick([&draftItems, &caret, index] {
+            removeComposerDraftItemAt(draftItems, caret, index);
+        })
+        .build();
+}
+
+void drawComposerEditorImageNode(eui::Ui& ui,
+                                 const std::string& id,
+                                 float x,
+                                 float y,
+                                 float width,
+                                 float height,
+                                 const PendingAttachmentItem& attachment,
+                                 std::vector<ComposerDraftItem>& draftItems,
+                                 ComposerCaretState& caret,
+                                 std::size_t index)
+{
+    bool& previewOpen = ui.state<bool>("chat.image.preview.open");
+    std::string& previewPath = ui.state<std::string>("chat.image.preview.path");
+    std::string& previewName = ui.state<std::string>("chat.image.preview.name");
+    const std::string originalPath =
+        filesystemPathToGenericUtf8String(attachment.sourcePath);
+
+    rect(ui, id + ".frame", x, y, width, height,
+         {1.0f, 1.0f, 1.0f, 0.82f}, 8.0f, kBorder);
+    ui.image(id + ".image")
+        .position(x + 5.0f, y + 5.0f)
+        .size(width - 10.0f, height - 10.0f)
+        .path(attachment.previewPath)
+        .contain()
+        .radius(6.0f)
+        .build();
+    ui.rect(id + ".preview.hit")
+        .position(x, y)
+        .size(width, height)
+        .color({0.0f, 0.0f, 0.0f, 0.0f})
+        .onClick([&previewOpen,
+                  &previewPath,
+                  &previewName,
+                  path = originalPath.empty() ? attachment.previewPath : originalPath,
+                  name = attachment.displayName] {
+            previewPath = path;
+            previewName = name;
+            previewOpen = true;
+        })
+        .build();
+    drawComposerEditorCloseButton(ui,
+                                  id,
+                                  x + width - 14.0f,
+                                  y + 4.0f,
+                                  draftItems,
+                                  caret,
+                                  index);
+}
+
+void drawComposerEditorTextAtoms(eui::Ui& ui,
+                                 const std::string& id,
+                                 const ComposerEditorLayout& layout)
+{
+    std::string fragmentText;
+    float fragmentX = 0.0f;
+    float fragmentY = 0.0f;
+    float fragmentWidth = 0.0f;
+    std::size_t fragmentIndex = 0;
+    auto flushFragment = [&] {
+        if (fragmentText.empty()) {
+            return;
+        }
+        paragraphText(ui,
+                      id + ".text." + std::to_string(fragmentIndex),
+                      fragmentX,
+                      fragmentY,
+                      fragmentWidth + 6.0f,
+                      kComposerEditorLineHeight,
+                      fragmentText,
+                      kComposerEditorFontSize,
+                      kComposerEditorLineHeight);
+        fragmentText.clear();
+        fragmentWidth = 0.0f;
+        ++fragmentIndex;
+    };
+
+    for (const ComposerEditorTextAtom& atom : layout.textAtoms) {
+        const bool sameLine = !fragmentText.empty()
+            && std::fabs(atom.y - fragmentY) < 0.5f
+            && std::fabs(atom.x - (fragmentX + fragmentWidth)) < 1.5f;
+        if (!sameLine) {
+            flushFragment();
+            fragmentX = atom.x;
+            fragmentY = atom.y;
+        }
+        fragmentText += atom.text;
+        fragmentWidth = (atom.x + atom.width) - fragmentX;
+    }
+    flushFragment();
+}
+
+void drawComposerEditorAttachmentNode(eui::Ui& ui,
+                                      const std::string& id,
+                                      const ComposerEditorAttachmentAtom& node,
+                                      std::vector<ComposerDraftItem>& draftItems,
+                                      ComposerCaretState& caret)
+{
+    if (node.itemIndex >= draftItems.size()) {
+        return;
+    }
+
+    const PendingAttachmentItem& attachment = draftItems[node.itemIndex].attachment;
+    if (attachment.kind == PendingAttachmentKind::Image) {
+        drawComposerEditorImageNode(ui,
+                                    id,
+                                    node.x,
+                                    node.y,
+                                    node.width,
+                                    node.height,
+                                    attachment,
+                                    draftItems,
+                                    caret,
+                                    node.itemIndex);
+        return;
+    }
+
+    drawFileDocumentCard(ui,
+                         id,
+                         node.x,
+                         node.y,
+                         node.width,
+                         attachment.displayName,
+                         formatFileSize(attachment.fileSize),
+                         false,
+                         false);
+    drawComposerEditorCloseButton(ui,
+                                  id,
+                                  node.x + node.width - 14.0f,
+                                  node.y + 4.0f,
+                                  draftItems,
+                                  caret,
+                                  node.itemIndex);
+}
+
+void drawComposerEditor(eui::Ui& ui,
+                        float x,
+                        float y,
+                        float width,
+                        float height,
+                        std::vector<ComposerDraftItem>& draftItems,
+                        ComposerCaretState& caret,
+                        const std::string& placeholder)
+{
+    normalizeComposerDraftItems(draftItems);
+    clampComposerCaret(draftItems, caret);
+    float& scrollOffset = ui.state<float>("composer.editor.scroll.offset");
+    std::size_t& lastVisibleCaretPosition =
+        ui.state<std::size_t>("composer.editor.scroll.caret");
+    float& lastVisibleContentHeight =
+        ui.state<float>("composer.editor.scroll.content.height");
+    const float contentWidth =
+        composerEditorContentWidth(draftItems, width, height);
+    const ComposerEditorLayout layout =
+        makeComposerEditorLayout(draftItems, contentWidth);
+    const std::size_t caretIndex =
+        std::min(caret.position, layout.caretLocations.size() - 1u);
+    const ComposerEditorCaretLocation caretLocation =
+        layout.caretLocations.empty()
+            ? ComposerEditorCaretLocation{}
+            : layout.caretLocations[caretIndex];
+    const bool contentHeightChanged =
+        std::fabs(layout.contentHeight - lastVisibleContentHeight) > 0.5f;
+    if (caret.position != lastVisibleCaretPosition || contentHeightChanged) {
+        scrollOffset = composerEditorScrollOffsetForCaret(
+            layout,
+            caret.position,
+            height,
+            scrollOffset);
+        lastVisibleCaretPosition = caret.position;
+        lastVisibleContentHeight = layout.contentHeight;
+    }
+    scrollOffset = std::clamp(
+        scrollOffset,
+        0.0f,
+        composerEditorMaxScrollOffset(layout, height));
+
+    ui.stack("composer.editor.pos")
+        .position(x, y)
+        .size(width, height)
+        .content([&] {
+            components::scrollView(ui, "composer.editor.scroll")
+                .size(width, height)
+                .offset(scrollOffset)
+                .gap(0.0f)
+                .step(42.0f)
+                .scrollbarWidth(kComposerEditorScrollbarWidth)
+                .scrollbarGap(kComposerEditorScrollbarGap)
+                .style(scrollStyle())
+                .onChange([&scrollOffset](float value) {
+                    scrollOffset = value;
+                })
+                .content([&](eui::Ui& contentUi, float, float) {
+                    const float documentHeight =
+                        std::max(height, layout.contentHeight);
+                    const bool focused =
+                        contentUi.isFocused("composer.editor.hit");
+                    contentUi.stack("composer.editor.content")
+                        .size(contentWidth, documentHeight)
+                        .content([&] {
+                            contentUi.rect("composer.editor.hit")
+                                .size(contentWidth, documentHeight)
+                                .color({0.0f, 0.0f, 0.0f, 0.0f})
+                                .focusable()
+                                .imeRect(caretLocation.x,
+                                         caretLocation.y - scrollOffset,
+                                         1.5f,
+                                         caretLocation.height)
+                                .onPress([&caret,
+                                          &scrollOffset,
+                                          layout,
+                                          contentWidth](
+                                              const eui::PointerEvent& event,
+                                              const eui::Rect& bounds) {
+                                    const float scale = contentWidth > 0.0f
+                                        ? bounds.width / contentWidth
+                                        : 1.0f;
+                                    const float localX = static_cast<float>(
+                                        (event.x - bounds.x)
+                                        / std::max(0.001f, scale));
+                                    const float localY = static_cast<float>(
+                                        (event.y - bounds.y)
+                                        / std::max(0.001f, scale))
+                                        + scrollOffset;
+                                    caret.position =
+                                        composerCaretFromPoint(layout,
+                                                               localX,
+                                                               localY);
+                                    caret.hasPreferredX = false;
+                                })
+                                .onTextInput([&draftItems,
+                                              &caret,
+                                              layout](
+                                                  const core::KeyboardEvent& event) {
+                                    handleComposerEditorKeyboardEvent(draftItems,
+                                                                      caret,
+                                                                      layout,
+                                                                      event);
+                                })
+                                .build();
+
+                            if (draftItems.empty()) {
+                                paragraphText(
+                                    contentUi,
+                                    "composer.editor.placeholder",
+                                    6.0f,
+                                    3.0f,
+                                    std::max(0.0f, contentWidth - 12.0f),
+                                    kComposerEditorLineHeight,
+                                    placeholder,
+                                    kComposerEditorFontSize,
+                                    kComposerEditorLineHeight,
+                                    kSubtleText);
+                            } else {
+                                drawComposerEditorTextAtoms(contentUi,
+                                                            "composer.editor",
+                                                            layout);
+                                for (const ComposerEditorAttachmentAtom& node
+                                     : layout.attachmentAtoms) {
+                                    drawComposerEditorAttachmentNode(
+                                        contentUi,
+                                        "composer.editor.attachment."
+                                            + std::to_string(node.position),
+                                        node,
+                                        draftItems,
+                                        caret);
+                                }
+                            }
+
+                            if (focused) {
+                                rect(contentUi,
+                                     "composer.editor.cursor",
+                                     caretLocation.x,
+                                     caretLocation.y + 2.0f,
+                                     1.5f,
+                                     std::max(16.0f,
+                                              caretLocation.height - 4.0f),
+                                     kTeal,
+                                     1.0f);
+                            }
+                        })
+                        .build();
+                })
+                .build();
+        })
+        .build();
 }
 
 void drawLocalUserHeader(eui::Ui& ui, float x, float y, float width)
@@ -1479,23 +2762,340 @@ void messageBubble(eui::Ui& ui,
     text(ui, id + ".text", x + 12.0f, y + 9.0f, width - 24.0f, 22.0f, value, 14.0f);
 }
 
-void imageBubble(eui::Ui& ui,
-                 const std::string& id,
-                 float x,
-                 float y,
-                 float size,
-                 const std::filesystem::path& imagePath,
-                 bool outgoing)
+void drawFileDocumentCard(eui::Ui& ui,
+                          const std::string& id,
+                          float x,
+                          float y,
+                          float width,
+                          const std::string& title,
+                          const std::string& detail,
+                          bool folder,
+                          bool compact)
 {
-    const Color fill = outgoing ? kTealSoft : Color{0.990f, 0.990f, 0.992f, 1.0f};
-    rect(ui, id + ".bg", x, y, size, size, fill, 10.0f, kBorder);
+    const float height = compact ? 48.0f : 58.0f;
+    const float iconSize = compact ? 34.0f : 40.0f;
+    const float iconX = x + 9.0f;
+    const float iconY = y + (height - iconSize) * 0.5f;
+    const Color iconFill = folder
+        ? Color{0.890f, 0.950f, 0.990f, 1.0f}
+        : Color{0.925f, 0.935f, 0.950f, 1.0f};
+    const Color iconColor = folder ? kTeal : kMutedText;
+    const unsigned int iconCodepoint = folder ? 0xE8B7 : 0xE7C3;
+
+    rect(ui, id + ".bg", x, y, width, height,
+         {0.972f, 0.976f, 0.982f, 1.0f}, 8.0f, kBorder);
+    rect(ui, id + ".icon.bg", iconX, iconY, iconSize, iconSize, iconFill, 7.0f);
+    icon(ui, id + ".icon", iconX + 2.0f, iconY + 2.0f, iconSize - 4.0f,
+         iconCodepoint, iconColor);
+
+    const float textX = iconX + iconSize + 10.0f;
+    const float tagWidth = compact ? 42.0f : 50.0f;
+    const float titleWidth = std::max(40.0f, width - (textX - x) - tagWidth - 20.0f);
+    text(ui, id + ".title", textX, y + (compact ? 5.0f : 7.0f), titleWidth,
+         22.0f, title, compact ? 13.0f : 14.0f);
+    if (!detail.empty()) {
+        text(ui,
+             id + ".detail",
+             textX,
+             y + (compact ? 26.0f : 31.0f),
+             titleWidth,
+             18.0f,
+             detail,
+             compact ? 11.0f : 12.0f,
+             kMutedText);
+    }
+
+    const std::string tag = folder ? "DIR" : fileTypeTag(title);
+    rect(ui, id + ".tag.bg", x + width - tagWidth - 10.0f,
+         y + (height - 22.0f) * 0.5f, tagWidth, 22.0f,
+         {1.0f, 1.0f, 1.0f, 0.82f}, 5.0f, kBorder);
+    text(ui,
+         id + ".tag",
+         x + width - tagWidth - 10.0f,
+         y + (height - 20.0f) * 0.5f,
+         tagWidth,
+         18.0f,
+         tag,
+         compact ? 10.0f : 11.0f,
+         kSubtleText,
+         eui::HorizontalAlign::Center);
+}
+
+void drawCompactImageDocumentCard(eui::Ui& ui,
+                                  const std::string& id,
+                                  float x,
+                                  float y,
+                                  float width,
+                                  const PendingAttachmentItem& attachment)
+{
+    constexpr float height = 48.0f;
+    constexpr float thumbSize = 38.0f;
+    bool& previewOpen = ui.state<bool>("chat.image.preview.open");
+    std::string& previewPath = ui.state<std::string>("chat.image.preview.path");
+    std::string& previewName = ui.state<std::string>("chat.image.preview.name");
+    rect(ui, id + ".bg", x, y, width, height,
+         {0.972f, 0.976f, 0.982f, 1.0f}, 8.0f, kBorder);
     ui.image(id + ".image")
-        .position(x + 8.0f, y + 8.0f)
-        .size(size - 16.0f, size - 16.0f)
-        .path(filesystemPathToUtf8String(imagePath))
+        .position(x + 7.0f, y + 5.0f)
+        .size(thumbSize, thumbSize)
+        .path(attachment.previewPath)
         .contain()
-        .radius(8.0f)
+        .radius(6.0f)
         .build();
+
+    const float textX = x + 54.0f;
+    text(ui, id + ".title", textX, y + 5.0f, width - 92.0f, 22.0f,
+         attachment.displayName, 13.0f);
+    text(ui, id + ".detail", textX, y + 26.0f, width - 92.0f, 18.0f,
+         formatFileSize(attachment.fileSize), 11.0f, kMutedText);
+    ui.rect(id + ".preview.hit")
+        .position(x + 7.0f, y + 5.0f)
+        .size(thumbSize, thumbSize)
+        .color({0.0f, 0.0f, 0.0f, 0.0f})
+        .onClick([&previewOpen,
+                  &previewPath,
+                  &previewName,
+                  path = attachment.previewPath,
+                  name = attachment.displayName] {
+            previewPath = path;
+            previewName = name;
+            previewOpen = true;
+        })
+        .build();
+}
+
+float messageTextPartHeight(const relaydesk::storage::ChatMessagePart& part,
+                            float width)
+{
+    const std::string value = part.GetType() == relaydesk::storage::MessagePartType::Emoji
+        ? emojiPreviewText(part.GetEmoji().value_or(""))
+        : part.GetText().value_or("");
+    const float fontSize =
+        part.GetType() == relaydesk::storage::MessagePartType::Emoji ? 24.0f : 14.0f;
+    const float lineHeight =
+        part.GetType() == relaydesk::storage::MessagePartType::Emoji ? 32.0f : 20.0f;
+    return estimateParagraphHeight(value, width, fontSize, lineHeight);
+}
+
+float messagePartHeight(const relaydesk::storage::ChatMessagePart& part,
+                        float width)
+{
+    switch (part.GetType()) {
+    case relaydesk::storage::MessagePartType::Text:
+    case relaydesk::storage::MessagePartType::Emoji:
+        return messageTextPartHeight(part, width);
+    case relaydesk::storage::MessagePartType::Image:
+        return resolveRenderableImagePath(part).has_value()
+            ? std::min(172.0f, std::max(118.0f, width * 0.62f))
+            : 58.0f;
+    case relaydesk::storage::MessagePartType::File:
+    case relaydesk::storage::MessagePartType::Folder:
+        return 58.0f;
+    }
+
+    return 0.0f;
+}
+
+float messageDocumentContentHeight(
+    const relaydesk::storage::ChatMessageRecord& message,
+    float width)
+{
+    float height = 0.0f;
+    bool hasVisiblePart = false;
+    for (const auto& part : message.GetParts()) {
+        const float partHeight = messagePartHeight(part, width);
+        if (partHeight <= 0.0f) {
+            continue;
+        }
+        if (hasVisiblePart) {
+            height += 10.0f;
+        }
+        height += partHeight;
+        hasVisiblePart = true;
+    }
+    return hasVisiblePart ? height : 20.0f;
+}
+
+void drawMessageImagePart(eui::Ui& ui,
+                          const std::string& id,
+                          float x,
+                          float y,
+                          float width,
+                          float height,
+                          const relaydesk::storage::ChatMessagePart& part,
+                          bool& stickerMenuOpen,
+                          float& stickerMenuX,
+                          float& stickerMenuY,
+                          std::string& stickerMenuPath,
+                          std::string& stickerMenuName)
+{
+    bool& previewOpen = ui.state<bool>("chat.image.preview.open");
+    std::string& previewPath = ui.state<std::string>("chat.image.preview.path");
+    std::string& previewName = ui.state<std::string>("chat.image.preview.name");
+    const std::optional<std::filesystem::path> imagePath =
+        resolveRenderableImagePath(part);
+    if (!imagePath.has_value()) {
+        drawFileDocumentCard(ui,
+                             id,
+                             x,
+                             y,
+                             width,
+                             messagePartTitle(part),
+                             messagePartDetail(part),
+                             false,
+                             false);
+        return;
+    }
+
+    const std::string imagePathText =
+        filesystemPathToGenericUtf8String(imagePath.value());
+    const std::string imageName = messagePartTitle(part);
+    const float imageWidth = std::min(width, 260.0f);
+    rect(ui, id + ".frame", x, y, imageWidth, height,
+         {1.0f, 1.0f, 1.0f, 0.72f}, 8.0f, kBorder);
+    ui.image(id + ".image")
+        .position(x + 6.0f, y + 6.0f)
+        .size(imageWidth - 12.0f, height - 12.0f)
+        .path(imagePathText)
+        .contain()
+        .radius(6.0f)
+        .build();
+    ui.rect(id + ".hit")
+        .position(x, y)
+        .size(imageWidth, height)
+        .color({0.0f, 0.0f, 0.0f, 0.0f})
+        .onClick([&previewOpen, &previewPath, &previewName, imagePathText, imageName] {
+            previewPath = imagePathText;
+            previewName = imageName;
+            previewOpen = true;
+        })
+        .onContextMenu([&stickerMenuOpen,
+                        &stickerMenuX,
+                        &stickerMenuY,
+                        &stickerMenuPath,
+                        &stickerMenuName,
+                        imagePathText,
+                        imageName](const eui::PointerEvent& event,
+                                   const eui::Rect&) {
+            stickerMenuOpen = true;
+            stickerMenuX = static_cast<float>(event.x);
+            stickerMenuY = static_cast<float>(event.y);
+            stickerMenuPath = imagePathText;
+            stickerMenuName = imageName;
+        })
+        .build();
+}
+
+void drawMessagePart(eui::Ui& ui,
+                     const std::string& id,
+                     float x,
+                     float y,
+                     float width,
+                     const relaydesk::storage::ChatMessagePart& part,
+                     bool& stickerMenuOpen,
+                     float& stickerMenuX,
+                     float& stickerMenuY,
+                     std::string& stickerMenuPath,
+                     std::string& stickerMenuName)
+{
+    switch (part.GetType()) {
+    case relaydesk::storage::MessagePartType::Text: {
+        const float height = messageTextPartHeight(part, width);
+        paragraphText(ui, id + ".text", x, y, width, height,
+                      part.GetText().value_or(""), 14.0f, 20.0f);
+        return;
+    }
+    case relaydesk::storage::MessagePartType::Emoji: {
+        const float height = messageTextPartHeight(part, width);
+        paragraphText(ui, id + ".emoji", x, y, width, height,
+                      emojiPreviewText(part.GetEmoji().value_or("")),
+                      24.0f, 32.0f);
+        return;
+    }
+    case relaydesk::storage::MessagePartType::Image:
+        drawMessageImagePart(ui,
+                             id,
+                             x,
+                             y,
+                             width,
+                             messagePartHeight(part, width),
+                             part,
+                             stickerMenuOpen,
+                             stickerMenuX,
+                             stickerMenuY,
+                             stickerMenuPath,
+                             stickerMenuName);
+        return;
+    case relaydesk::storage::MessagePartType::File:
+        drawFileDocumentCard(ui,
+                             id,
+                             x,
+                             y,
+                             width,
+                             messagePartTitle(part),
+                             messagePartDetail(part),
+                             false,
+                             false);
+        return;
+    case relaydesk::storage::MessagePartType::Folder:
+        drawFileDocumentCard(ui,
+                             id,
+                             x,
+                             y,
+                             width,
+                             messagePartTitle(part),
+                             messagePartDetail(part),
+                             true,
+                             false);
+        return;
+    }
+}
+
+float drawMessageDocumentBubble(
+    eui::Ui& ui,
+    const std::string& id,
+    float x,
+    float y,
+    float width,
+    const relaydesk::storage::ChatMessageRecord& message,
+    bool outgoing,
+    bool& stickerMenuOpen,
+    float& stickerMenuX,
+    float& stickerMenuY,
+    std::string& stickerMenuPath,
+    std::string& stickerMenuName)
+{
+    constexpr float padding = 12.0f;
+    constexpr float gap = 10.0f;
+    const float innerWidth = std::max(80.0f, width - padding * 2.0f);
+    const float contentHeight = messageDocumentContentHeight(message, innerWidth);
+    const float bubbleHeight = contentHeight + padding * 2.0f;
+    const Color fill = outgoing ? kTealSoft : Color{0.990f, 0.990f, 0.992f, 1.0f};
+
+    rect(ui, id + ".bg", x, y, width, bubbleHeight, fill, 9.0f, kBorder);
+
+    float partY = y + padding;
+    for (std::size_t partIndex = 0; partIndex < message.GetParts().size(); ++partIndex) {
+        const auto& part = message.GetParts()[partIndex];
+        const float height = messagePartHeight(part, innerWidth);
+        if (height <= 0.0f) {
+            continue;
+        }
+        drawMessagePart(ui,
+                        id + ".part." + std::to_string(partIndex),
+                        x + padding,
+                        partY,
+                        innerWidth,
+                        part,
+                        stickerMenuOpen,
+                        stickerMenuX,
+                        stickerMenuY,
+                        stickerMenuPath,
+                        stickerMenuName);
+        partY += height + gap;
+    }
+
+    return bubbleHeight;
 }
 
 void transferCard(eui::Ui& ui,
@@ -1883,45 +3483,6 @@ void drawChatTimeline(eui::Ui& ui, float x, float y, float width, float height)
         .build();
 }
 
-std::string messagePartPreviewText(
-    const relaydesk::storage::ChatMessagePart& part)
-{
-    switch (part.GetType()) {
-    case relaydesk::storage::MessagePartType::Text:
-        return part.GetText().value_or("");
-    case relaydesk::storage::MessagePartType::Emoji:
-        return part.GetEmoji().has_value()
-            ? emojiPreviewText(part.GetEmoji().value())
-            : ":emoji:";
-    case relaydesk::storage::MessagePartType::Image:
-        return "[图片] " + part.GetFileName().value_or("");
-    case relaydesk::storage::MessagePartType::File:
-        return "[文件] " + part.GetFileName().value_or("");
-    case relaydesk::storage::MessagePartType::Folder:
-        return "[文件夹] " + part.GetFileName().value_or("");
-    }
-
-    return "[消息]";
-}
-
-std::string messagePreviewText(
-    const relaydesk::storage::ChatMessageRecord& message)
-{
-    std::string result;
-    for (const auto& part : message.GetParts()) {
-        const std::string textValue = messagePartPreviewText(part);
-        if (textValue.empty()) {
-            continue;
-        }
-        if (!result.empty()) {
-            result += " ";
-        }
-        result += textValue;
-    }
-
-    return result.empty() ? "[暂不支持的消息]" : result;
-}
-
 std::string deliveryStateText(relaydesk::storage::DeliveryState state)
 {
     switch (state) {
@@ -1975,13 +3536,7 @@ void drawRuntimeChatTimelineContent(
         const auto& message = messages[index];
         const bool outgoing =
             message.GetDirection() == relaydesk::storage::MessageDirection::Outgoing;
-        const auto renderableImagePath = findRenderableImagePath(message);
-        const bool renderImage = renderableImagePath.has_value();
-        const float imageBubbleSize = 118.0f;
-        const float bubbleWidth = renderImage
-            ? imageBubbleSize
-            : (outgoing ? outgoingWidth : incomingWidth);
-        const float bubbleHeight = renderImage ? imageBubbleSize : 42.0f;
+        const float bubbleWidth = outgoing ? outgoingWidth : incomingWidth;
         const float avatarX = outgoing
             ? width - sidePadding - avatarSize
             : sidePadding;
@@ -1990,52 +3545,24 @@ void drawRuntimeChatTimelineContent(
             : avatarX + avatarSize + avatarBubbleGap;
         const std::string id = "chat.runtime.message."
             + std::to_string(index);
-        const std::string preview = messagePreviewText(message);
         avatar(ui,
                id + ".avatar",
                avatarX,
                y + 4.0f,
                avatarSize,
                message.GetSenderDisplayNameSnapshot());
-        if (renderImage) {
-            imageBubble(ui,
-                        id,
-                        bubbleX,
-                        y,
-                        imageBubbleSize,
-                        renderableImagePath.value(),
-                        outgoing);
-        } else {
-            messageBubble(ui,
-                          id,
-                          bubbleX,
-                          y,
-                          bubbleWidth,
-                          preview.c_str(),
-                          outgoing);
-        }
-        const auto stickerCandidate = findStickerImageCandidate(message);
-        if (stickerCandidate.has_value()) {
-            ui.rect(id + ".sticker.context.hit")
-                .position(bubbleX, y)
-                .size(bubbleWidth, bubbleHeight)
-                .color({0.0f, 0.0f, 0.0f, 0.0f})
-                .onContextMenu([&stickerMenuOpen,
-                                &stickerMenuX,
-                                &stickerMenuY,
-                                &stickerMenuPath,
-                                &stickerMenuName,
-                                candidate = stickerCandidate.value()](
-                                   const eui::PointerEvent& event,
-                                   const eui::Rect&) {
-                    stickerMenuOpen = true;
-                    stickerMenuX = static_cast<float>(event.x);
-                    stickerMenuY = static_cast<float>(event.y);
-                    stickerMenuPath = candidate.localPath;
-                    stickerMenuName = candidate.displayName;
-                })
-                .build();
-        }
+        const float bubbleHeight = drawMessageDocumentBubble(ui,
+                                                             id,
+                                                             bubbleX,
+                                                             y,
+                                                             bubbleWidth,
+                                                             message,
+                                                             outgoing,
+                                                             stickerMenuOpen,
+                                                             stickerMenuX,
+                                                             stickerMenuY,
+                                                             stickerMenuPath,
+                                                             stickerMenuName);
         if (outgoing) {
             text(ui,
                  id + ".state",
@@ -2093,9 +3620,61 @@ void drawRuntimeChatTimeline(
 
     if (selectedPeer.has_value() && !messages.empty()) {
         float& scrollOffset = ui.state<float>("chat.runtime.scroll.offset");
-        const float contentHeight = std::max(
-            height,
-            42.0f + static_cast<float>(messages.size()) * 142.0f);
+        constexpr float avatarSize = 34.0f;
+        constexpr float sidePadding = 22.0f;
+        constexpr float avatarBubbleGap = 12.0f;
+        const float availableBubbleWidth =
+            std::max(160.0f,
+                     width - sidePadding * 2.0f - avatarSize - avatarBubbleGap);
+        const float incomingWidth = std::min(
+            420.0f,
+            std::max(210.0f, std::min(width * 0.54f, availableBubbleWidth)));
+        const float outgoingWidth = std::min(
+            420.0f,
+            std::max(210.0f, std::min(width * 0.54f, availableBubbleWidth)));
+        float measuredContentHeight = 42.0f;
+        for (const auto& message : messages) {
+            const bool outgoing =
+                message.GetDirection()
+                == relaydesk::storage::MessageDirection::Outgoing;
+            const float bubbleWidth = outgoing ? outgoingWidth : incomingWidth;
+            const float innerWidth = std::max(80.0f, bubbleWidth - 24.0f);
+            measuredContentHeight += messageDocumentContentHeight(message, innerWidth)
+                + 24.0f
+                + (outgoing ? 24.0f : 16.0f);
+        }
+        const float contentHeight = std::max(height, measuredContentHeight);
+        const float maxScrollOffset = std::max(0.0f, contentHeight - height);
+        std::string& scrollPeerDeviceId =
+            ui.state<std::string>("chat.runtime.scroll.peer.device_id");
+        std::string& scrollTailMessageId =
+            ui.state<std::string>("chat.runtime.scroll.tail.message_id");
+        std::size_t& scrollMessageCount =
+            ui.state<std::size_t>("chat.runtime.scroll.message_count");
+        float& previousMaxScrollOffset =
+            ui.state<float>("chat.runtime.scroll.previous_max_offset");
+        const std::string& peerDeviceId = selectedPeer->GetDeviceId();
+        const std::string& tailMessageId = messages.back().GetMessageId();
+        const bool peerChanged = scrollPeerDeviceId != peerDeviceId;
+        const bool tailChanged = scrollTailMessageId != tailMessageId
+            || scrollMessageCount != messages.size();
+        const bool wasAtBottom = previousMaxScrollOffset <= 0.5f
+            || scrollOffset >= previousMaxScrollOffset - 8.0f;
+        if (peerChanged || (tailChanged && wasAtBottom)) {
+            scrollOffset = maxScrollOffset;
+        } else {
+            scrollOffset = std::clamp(scrollOffset, 0.0f, maxScrollOffset);
+        }
+        scrollPeerDeviceId = peerDeviceId;
+        scrollTailMessageId = tailMessageId;
+        scrollMessageCount = messages.size();
+        previousMaxScrollOffset = maxScrollOffset;
+        const std::string timelineContentKey = "relaydesk.chat.runtime."
+            + peerDeviceId
+            + "."
+            + std::to_string(messages.size())
+            + "."
+            + tailMessageId;
         ui.stack("chat.runtime.scroll.pos")
             .position(x, y)
             .size(width, height)
@@ -2108,8 +3687,7 @@ void drawRuntimeChatTimeline(
                     .scrollbarWidth(7.0f)
                     .scrollbarGap(10.0f)
                     .style(scrollStyle())
-                    .contentKey("relaydesk.chat.runtime."
-                                + std::to_string(messages.size()))
+                    .contentKey(timelineContentKey)
                     .onChange([&scrollOffset](float value) {
                         scrollOffset = value;
                     })
@@ -2205,53 +3783,58 @@ void drawRuntimeComposer(
         ? std::string("发给 ") + getPeerDisplayName(selectedPeer.value())
         : "请先选择设备";
     std::string& composerText = ui.state<std::string>("composer.input.value");
+    ComposerCaretState& composerCaret =
+        ui.state<ComposerCaretState>("composer.editor.caret");
     bool& emojiPickerOpen = ui.state<bool>("composer.emoji.open");
     int& emojiPickerTab = ui.state<int>("composer.emoji.tab");
     std::vector<std::string>& recentEmojis =
         ui.state<std::vector<std::string>>("composer.emoji.recent");
     std::vector<StickerPickerItem>& stickerItems =
         ui.state<std::vector<StickerPickerItem>>("composer.stickers.items");
-    std::vector<PendingAttachmentItem>& pendingAttachments =
-        ui.state<std::vector<PendingAttachmentItem>>("composer.pending.attachments");
+    std::vector<ComposerDraftItem>& draftItems =
+        ui.state<std::vector<ComposerDraftItem>>("composer.draft.items");
     std::string& stickerImportStatus =
         ui.state<std::string>("composer.stickers.import.status");
     bool& pasteShortcutDown = ui.state<bool>("composer.clipboard.paste.down");
     loadRecentEmojisOnce(ui, recentEmojis);
     loadStoredStickerPickerItemsOnce(ui, stickerItems);
-    appendPendingAttachmentPaths(
-        pendingAttachments,
+    if (!composerText.empty()) {
+        insertComposerDraftTextAtCaret(draftItems, composerCaret, composerText);
+        composerText.clear();
+    }
+    insertComposerDraftAttachmentPathsAtCaret(
+        draftItems,
+        composerCaret,
         relaydesk::platform::consumeDroppedAttachmentPaths());
     const bool pasteShortcutNow = relaydesk::platform::isPasteShortcutDown();
     if (pasteShortcutNow && !pasteShortcutDown) {
-        appendPendingAttachmentPaths(
-            pendingAttachments,
+        insertComposerDraftAttachmentPathsAtCaret(
+            draftItems,
+            composerCaret,
             relaydesk::platform::collectClipboardAttachmentPaths());
     }
     pasteShortcutDown = pasteShortcutNow;
-    const bool hasMessageContent =
-        hasComposerText(composerText) || !pendingAttachments.empty();
+    clampComposerCaret(draftItems, composerCaret);
+    const bool hasMessageContent = hasComposerDraftContent(draftItems);
     const bool sendEnabled = selectedPeer.has_value() && hasMessageContent;
-    const float pendingStripHeight = pendingAttachments.empty() ? 0.0f : 44.0f;
-    const float textInputY = inputY + pendingStripHeight;
-    const float textInputHeight = std::max(34.0f, inputHeight - pendingStripHeight);
     auto submitMessage = [&runtime,
-                          &composerText,
+                          &composerCaret,
                           &emojiPickerOpen,
-                          &pendingAttachments,
+                          &draftItems,
                           sendEnabled] {
         if (!sendEnabled) {
             return;
         }
 
         std::vector<relaydesk::storage::ChatMessagePart> parts =
-            makeComposerMessageParts(composerText, pendingAttachments);
+            makeComposerMessageParts(draftItems);
         if (parts.empty()) {
             return;
         }
 
         runtime.sendMessagePartsToSelectedPeer(std::move(parts));
-        composerText.clear();
-        pendingAttachments.clear();
+        draftItems.clear();
+        composerCaret = {};
         emojiPickerOpen = false;
     };
     auto toggleEmojiPicker = [&emojiPickerOpen] {
@@ -2260,25 +3843,32 @@ void drawRuntimeComposer(
     auto closeEmojiPicker = [&emojiPickerOpen] {
         emojiPickerOpen = false;
     };
-    auto selectEmoji = [&composerText, &emojiPickerOpen, &recentEmojis](
+    auto selectEmoji = [&composerCaret,
+                        &draftItems,
+                        &emojiPickerOpen,
+                        &recentEmojis](
                            const std::string& emoji) {
-        composerText += emoji;
+        insertComposerDraftTextAtCaret(draftItems, composerCaret, emoji);
         rememberRecentEmoji(recentEmojis, emoji);
         saveStoredRecentEmojis(recentEmojis);
         emojiPickerOpen = false;
     };
-    auto selectSticker = [&emojiPickerOpen, &pendingAttachments](
+    auto selectSticker = [&composerCaret, &draftItems, &emojiPickerOpen](
                              const StickerPickerItem& sticker) {
-        if (pendingAttachments.size() >= kMaxPendingAttachmentCount) {
+        if (composerDraftAttachmentCount(draftItems) >= kMaxPendingAttachmentCount) {
             return;
         }
 
-        pendingAttachments.push_back(makePendingAttachmentFromSticker(sticker));
+        insertComposerDraftAttachmentAtCaret(
+            draftItems,
+            composerCaret,
+            makePendingAttachmentFromSticker(sticker));
         emojiPickerOpen = false;
     };
-    auto selectAttachmentFiles = [&emojiPickerOpen, &pendingAttachments] {
-        appendPendingAttachmentPaths(
-            pendingAttachments,
+    auto selectAttachmentFiles = [&composerCaret, &draftItems, &emojiPickerOpen] {
+        insertComposerDraftAttachmentPathsAtCaret(
+            draftItems,
+            composerCaret,
             selectAttachmentFilesFromDialog());
         emojiPickerOpen = false;
     };
@@ -2298,32 +3888,14 @@ void drawRuntimeComposer(
 
     rect(ui, "composer.bg", composerX, y, composerWidth, kComposerHeight,
          kPanelBackground, 8.0f, kBorder);
-    if (!pendingAttachments.empty()) {
-        drawPendingAttachmentStrip(ui,
-                                   inputX,
-                                   inputY + 2.0f,
-                                   inputWidth,
-                                   pendingAttachments);
-    }
-    ui.stack("composer.input.pos")
-        .position(inputX, textInputY)
-        .size(inputWidth, textInputHeight)
-        .content([&] {
-            components::input(ui, "composer.input")
-                .size(inputWidth, textInputHeight)
-                .value(composerText)
-                .placeholder(placeholder)
-                .multiline(true)
-                .fontSize(14.0f)
-                .inset(6.0f)
-                .style(composerInputStyle())
-                .onChange([&composerText](const std::string& value) {
-                    composerText = value;
-                })
-                .onEnter(submitMessage)
-                .build();
-        })
-        .build();
+    drawComposerEditor(ui,
+                       inputX,
+                       inputY,
+                       inputWidth,
+                       inputHeight,
+                       draftItems,
+                       composerCaret,
+                       placeholder);
     if (width < 560.0f) {
         icon(ui, "composer.file", composerX + 16.0f, toolbarY, iconSize,
              0xE723, kText);
@@ -2551,6 +4123,84 @@ void drawRuntimeDetails(
          width - 44.0f, 24.0f, "暂无活动传输", 13.0f, kMutedText);
 }
 
+void drawImagePreviewOverlay(eui::Ui& ui, float width, float height)
+{
+    bool& previewOpen = ui.state<bool>("chat.image.preview.open");
+    std::string& previewPath = ui.state<std::string>("chat.image.preview.path");
+    std::string& previewName = ui.state<std::string>("chat.image.preview.name");
+    if (!previewOpen) {
+        return;
+    }
+
+    ui.rect("chat.image.preview.backdrop")
+        .position(0.0f, 0.0f)
+        .size(width, height)
+        .color({0.0f, 0.0f, 0.0f, 0.48f})
+        .onClick([&previewOpen] {
+            previewOpen = false;
+        })
+        .build();
+
+    const float panelWidth = std::min(width - 48.0f, 960.0f);
+    const float panelHeight = std::min(height - 56.0f, 760.0f);
+    const float panelX = (width - panelWidth) * 0.5f;
+    const float panelY = (height - panelHeight) * 0.5f;
+    rect(ui, "chat.image.preview.panel", panelX, panelY, panelWidth, panelHeight,
+         kPanelBackground, 8.0f, kBorder);
+    ui.rect("chat.image.preview.panel.hit")
+        .position(panelX, panelY)
+        .size(panelWidth, panelHeight)
+        .color({0.0f, 0.0f, 0.0f, 0.0f})
+        .onClick([] {})
+        .build();
+
+    text(ui,
+         "chat.image.preview.title",
+         panelX + 18.0f,
+         panelY + 12.0f,
+         panelWidth - 72.0f,
+         24.0f,
+         previewName.empty() ? "图片预览" : previewName,
+         14.0f);
+    icon(ui,
+         "chat.image.preview.close.icon",
+         panelX + panelWidth - 44.0f,
+         panelY + 8.0f,
+         32.0f,
+         0xE711,
+         kText);
+    ui.rect("chat.image.preview.close.hit")
+        .position(panelX + panelWidth - 48.0f, panelY + 4.0f)
+        .size(40.0f, 40.0f)
+        .color({0.0f, 0.0f, 0.0f, 0.0f})
+        .onClick([&previewOpen] {
+            previewOpen = false;
+        })
+        .build();
+
+    if (previewPath.empty()) {
+        text(ui,
+             "chat.image.preview.empty",
+             panelX + 18.0f,
+             panelY + 70.0f,
+             panelWidth - 36.0f,
+             24.0f,
+             "图片路径不可用",
+             14.0f,
+             kMutedText,
+             eui::HorizontalAlign::Center);
+        return;
+    }
+
+    ui.image("chat.image.preview.image")
+        .position(panelX + 18.0f, panelY + 52.0f)
+        .size(panelWidth - 36.0f, panelHeight - 70.0f)
+        .path(previewPath)
+        .contain()
+        .radius(6.0f)
+        .build();
+}
+
 void drawRelayDesk(eui::Ui& ui,
                    const eui::Screen& screen,
                    relaydesk::runtime::RelayDeskRuntime& runtime)
@@ -2596,6 +4246,8 @@ void drawRelayDesk(eui::Ui& ui,
                            layout.contentHeight,
                            selectedPeer);
     }
+
+    drawImagePreviewOverlay(ui, layout.width, layout.height);
 }
 
 } // namespace

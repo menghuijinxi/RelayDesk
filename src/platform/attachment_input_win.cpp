@@ -3,7 +3,9 @@
 #include "core/uuid.h"
 #include "storage/app_paths.h"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <limits>
@@ -19,6 +21,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <wincodec.h>
+#include <wrl/client.h>
 #include <shellapi.h>
 
 namespace relaydesk::platform {
@@ -27,11 +31,13 @@ namespace {
 constexpr UINT kAllDroppedFiles = 0xFFFFFFFFu;
 constexpr WORD kBitmapFileSignature = 0x4D42u;
 constexpr DWORD kBitmapAlphaBitfieldsCompression = 6u;
+constexpr unsigned int kMinimumThumbnailSide = 1u;
 
 std::mutex gDroppedAttachmentPathsMutex;
 std::vector<std::filesystem::path> gDroppedAttachmentPaths;
 HWND gDropWindow = nullptr;
 WNDPROC gOriginalDropWndProc = nullptr;
+bool gBackspaceWasDown = false;
 
 class ClipboardScope {
 public:
@@ -74,6 +80,31 @@ public:
 protected:
     HANDLE handle_ = nullptr;
     void* data_ = nullptr;
+};
+
+class ComApartment {
+public:
+    ComApartment()
+        : result_(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)),
+          shouldUninitialize_(result_ == S_OK || result_ == S_FALSE)
+    {
+    }
+
+    ~ComApartment()
+    {
+        if (shouldUninitialize_) {
+            CoUninitialize();
+        }
+    }
+
+    bool GetAvailable() const
+    {
+        return SUCCEEDED(result_) || result_ == RPC_E_CHANGED_MODE;
+    }
+
+protected:
+    HRESULT result_ = E_FAIL;
+    bool shouldUninitialize_ = false;
 };
 
 std::vector<std::filesystem::path> extractDroppedPaths(HDROP dropHandle)
@@ -312,12 +343,216 @@ std::vector<std::filesystem::path> collectClipboardAttachmentPaths()
     return paths;
 }
 
+std::optional<ImageSize> probeImageSize(const std::filesystem::path& sourcePath)
+{
+    ComApartment apartment;
+    if (!apartment.GetAvailable()) {
+        return std::nullopt;
+    }
+
+    using Microsoft::WRL::ComPtr;
+    ComPtr<IWICImagingFactory> factory;
+    HRESULT result = CoCreateInstance(CLSID_WICImagingFactory,
+                                      nullptr,
+                                      CLSCTX_INPROC_SERVER,
+                                      IID_PPV_ARGS(&factory));
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    ComPtr<IWICBitmapDecoder> decoder;
+    result = factory->CreateDecoderFromFilename(
+        sourcePath.c_str(),
+        nullptr,
+        GENERIC_READ,
+        WICDecodeMetadataCacheOnDemand,
+        &decoder);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    ComPtr<IWICBitmapFrameDecode> frame;
+    result = decoder->GetFrame(0, &frame);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    UINT width = 0;
+    UINT height = 0;
+    result = frame->GetSize(&width, &height);
+    if (FAILED(result) || width == 0 || height == 0) {
+        return std::nullopt;
+    }
+
+    return ImageSize{width, height};
+}
+
+std::optional<std::filesystem::path> createImageThumbnail(
+    const std::filesystem::path& sourcePath,
+    const std::filesystem::path& targetPath,
+    unsigned int maxSide)
+{
+    if (maxSide < kMinimumThumbnailSide) {
+        return std::nullopt;
+    }
+
+    ComApartment apartment;
+    if (!apartment.GetAvailable()) {
+        return std::nullopt;
+    }
+
+    using Microsoft::WRL::ComPtr;
+    ComPtr<IWICImagingFactory> factory;
+    HRESULT result = CoCreateInstance(CLSID_WICImagingFactory,
+                                      nullptr,
+                                      CLSCTX_INPROC_SERVER,
+                                      IID_PPV_ARGS(&factory));
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    ComPtr<IWICBitmapDecoder> decoder;
+    result = factory->CreateDecoderFromFilename(
+        sourcePath.c_str(),
+        nullptr,
+        GENERIC_READ,
+        WICDecodeMetadataCacheOnDemand,
+        &decoder);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    ComPtr<IWICBitmapFrameDecode> frame;
+    result = decoder->GetFrame(0, &frame);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    UINT sourceWidth = 0;
+    UINT sourceHeight = 0;
+    result = frame->GetSize(&sourceWidth, &sourceHeight);
+    if (FAILED(result) || sourceWidth == 0 || sourceHeight == 0) {
+        return std::nullopt;
+    }
+
+    const double scale = std::min(
+        1.0,
+        std::min(static_cast<double>(maxSide) / static_cast<double>(sourceWidth),
+                 static_cast<double>(maxSide) / static_cast<double>(sourceHeight)));
+    const UINT thumbWidth = std::max(kMinimumThumbnailSide,
+                                     static_cast<UINT>(std::lround(sourceWidth * scale)));
+    const UINT thumbHeight = std::max(kMinimumThumbnailSide,
+                                      static_cast<UINT>(std::lround(sourceHeight * scale)));
+
+    ComPtr<IWICBitmapScaler> scaler;
+    result = factory->CreateBitmapScaler(&scaler);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+    result = scaler->Initialize(frame.Get(),
+                                thumbWidth,
+                                thumbHeight,
+                                WICBitmapInterpolationModeFant);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    ComPtr<IWICFormatConverter> converter;
+    result = factory->CreateFormatConverter(&converter);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+    result = converter->Initialize(scaler.Get(),
+                                   GUID_WICPixelFormat32bppPBGRA,
+                                   WICBitmapDitherTypeNone,
+                                   nullptr,
+                                   0.0,
+                                   WICBitmapPaletteTypeCustom);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    std::error_code error;
+    std::filesystem::create_directories(targetPath.parent_path(), error);
+    if (error) {
+        return std::nullopt;
+    }
+    std::filesystem::remove(targetPath, error);
+    error.clear();
+
+    ComPtr<IWICStream> stream;
+    result = factory->CreateStream(&stream);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+    result = stream->InitializeFromFilename(targetPath.c_str(), GENERIC_WRITE);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    ComPtr<IWICBitmapEncoder> encoder;
+    result = factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+    result = encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    ComPtr<IWICBitmapFrameEncode> frameEncode;
+    ComPtr<IPropertyBag2> propertyBag;
+    result = encoder->CreateNewFrame(&frameEncode, &propertyBag);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    result = frameEncode->Initialize(propertyBag.Get());
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+    result = frameEncode->SetSize(thumbWidth, thumbHeight);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    WICPixelFormatGUID pixelFormat = GUID_WICPixelFormat32bppPBGRA;
+    result = frameEncode->SetPixelFormat(&pixelFormat);
+    if (FAILED(result)
+        || !IsEqualGUID(pixelFormat, GUID_WICPixelFormat32bppPBGRA)) {
+        return std::nullopt;
+    }
+
+    result = frameEncode->WriteSource(converter.Get(), nullptr);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+    result = frameEncode->Commit();
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+    result = encoder->Commit();
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    return targetPath.lexically_normal();
+}
+
 bool isPasteShortcutDown()
 {
     const bool controlDown = (GetKeyState(VK_CONTROL) & 0x8000) != 0
         || (GetKeyState(VK_LCONTROL) & 0x8000) != 0
         || (GetKeyState(VK_RCONTROL) & 0x8000) != 0;
     return controlDown && (GetKeyState('V') & 0x8000) != 0;
+}
+
+bool consumeBackspacePressed()
+{
+    const bool down = (GetKeyState(VK_BACK) & 0x8000) != 0;
+    const bool pressed = down && !gBackspaceWasDown;
+    gBackspaceWasDown = down;
+    return pressed;
 }
 
 }
