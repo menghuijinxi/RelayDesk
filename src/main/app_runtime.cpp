@@ -243,6 +243,15 @@ relaydesk::storage::ChatMessageRecord makeOutgoingMessageRecord(
     return record;
 }
 
+relaydesk::storage::ChatMessageRecord makeRetryMessageRecord(
+    relaydesk::storage::ChatMessageRecord record)
+{
+    record.SetDeliveryState(relaydesk::storage::DeliveryState::Pending);
+    return recordWithTransferState(
+        std::move(record),
+        relaydesk::storage::TransferState::Pending);
+}
+
 relaydesk::storage::ChatMessageRecord makeIncomingRecordForLocalDevice(
     relaydesk::storage::ChatMessageRecord record)
 {
@@ -671,12 +680,56 @@ void RelayDeskRuntime::sendMessagePartsToSelectedPeer(
     selectedPeerMessages_.push_back(record);
     requestUiRefresh();
 
-    const std::string messageId = record.GetMessageId();
-    const std::string peerDeviceId = selectedPeer->GetDeviceId();
+    sendOutgoingMessageRecordToPeer(std::move(record), selectedPeer.value(), false);
+}
+
+void RelayDeskRuntime::resendSelectedPeerMessage(const std::string& messageId)
+{
+    const std::optional<PeerListItem> selectedPeer = GetSelectedPeer();
+    if (!selectedPeer.has_value()) {
+        return;
+    }
+
+    const auto message = std::find_if(
+        selectedPeerMessages_.begin(),
+        selectedPeerMessages_.end(),
+        [&messageId](const relaydesk::storage::ChatMessageRecord& record) {
+            return record.GetMessageId() == messageId;
+        });
+    if (message == selectedPeerMessages_.end()
+        || message->GetDirection()
+            != relaydesk::storage::MessageDirection::Outgoing
+        || message->GetDeliveryState()
+            != relaydesk::storage::DeliveryState::Failed) {
+        return;
+    }
+
+    relaydesk::storage::ChatMessageRecord record =
+        makeRetryMessageRecord(*message);
+    *message = record;
+    try {
+        persistChatMessageRecord(
+            selectedPeer->GetDeviceId(),
+            record,
+            true);
+    } catch (const std::exception& error) {
+        setStartupError(error.what());
+    }
+    requestUiRefresh();
+
+    sendOutgoingMessageRecordToPeer(std::move(record), selectedPeer.value(), true);
+}
+
+void RelayDeskRuntime::sendOutgoingMessageRecordToPeer(
+    relaydesk::storage::ChatMessageRecord record,
+    const PeerListItem& peer,
+    bool replaceExistingRecord)
+{
+    const std::string peerDeviceId = peer.GetDeviceId();
 #if defined(RELAYDESK_HAS_BOOST_ASIO)
+    const std::string messageId = record.GetMessageId();
     const relaydesk::net::PeerFrame frame =
         relaydesk::net::makeChatMessageFrame(record);
-    const PeerListItem peer = selectedPeer.value();
     const bool accepted = ::core::async::runOnce(
         "relaydesk.chat.send." + messageId,
         [this, peer, frame, record] {
@@ -700,7 +753,7 @@ void RelayDeskRuntime::sendMessagePartsToSelectedPeer(
         },
         [this,
          peerDeviceId,
-         messageId,
+         replaceExistingRecord,
          record](
             const ::core::async::Result<void>& result) mutable {
             record.SetDeliveryState(result.ok
@@ -715,14 +768,13 @@ void RelayDeskRuntime::sendMessagePartsToSelectedPeer(
                 logDiagnostic("runtime.chat.send_failed message=" + result.error);
             }
             try {
-                const auto appPaths = relaydesk::storage::createAppPaths();
-                relaydesk::storage::appendChatMessage(appPaths,
-                                                      peerDeviceId,
-                                                      record);
+                persistChatMessageRecord(peerDeviceId,
+                                         record,
+                                         replaceExistingRecord);
             } catch (const std::exception& error) {
                 setStartupError(error.what());
             }
-            updateSelectedPeerMessageState(messageId, record.GetDeliveryState());
+            updateSelectedPeerMessageRecord(record);
             requestUiRefresh();
         });
     if (accepted) {
@@ -732,14 +784,18 @@ void RelayDeskRuntime::sendMessagePartsToSelectedPeer(
 #endif
 
     record.SetDeliveryState(relaydesk::storage::DeliveryState::Failed);
+    record = recordWithTransferState(
+        std::move(record),
+        relaydesk::storage::TransferState::Failed);
     try {
-        const auto appPaths = relaydesk::storage::createAppPaths();
-        relaydesk::storage::appendChatMessage(appPaths, peerDeviceId, record);
-        updateSelectedPeerMessageState(messageId, record.GetDeliveryState());
-        requestUiRefresh();
+        persistChatMessageRecord(peerDeviceId,
+                                 record,
+                                 replaceExistingRecord);
     } catch (const std::exception& error) {
         setStartupError(error.what());
     }
+    updateSelectedPeerMessageRecord(record);
+    requestUiRefresh();
 }
 
 void RelayDeskRuntime::sendTextMessageToSelectedPeer(std::string text)
@@ -1100,6 +1156,20 @@ void RelayDeskRuntime::appendSelectedPeerMessage(
     }
 }
 
+void RelayDeskRuntime::persistChatMessageRecord(
+    const std::string& peerDeviceId,
+    const relaydesk::storage::ChatMessageRecord& record,
+    bool replaceExistingRecord)
+{
+    const auto appPaths = relaydesk::storage::createAppPaths();
+    if (replaceExistingRecord
+        && relaydesk::storage::replaceChatMessage(appPaths, peerDeviceId, record)) {
+        return;
+    }
+
+    relaydesk::storage::appendChatMessage(appPaths, peerDeviceId, record);
+}
+
 bool RelayDeskRuntime::updateChatMessageTransferPart(
     const PendingTransferUpdate& update)
 {
@@ -1171,10 +1241,10 @@ bool RelayDeskRuntime::updateChatMessageTransferPart(
     return applied;
 }
 
-void RelayDeskRuntime::updateSelectedPeerMessageState(
-    const std::string& messageId,
-    relaydesk::storage::DeliveryState deliveryState)
+void RelayDeskRuntime::updateSelectedPeerMessageRecord(
+    const relaydesk::storage::ChatMessageRecord& record)
 {
+    const std::string& messageId = record.GetMessageId();
     const auto message = std::find_if(
         selectedPeerMessages_.begin(),
         selectedPeerMessages_.end(),
@@ -1185,7 +1255,7 @@ void RelayDeskRuntime::updateSelectedPeerMessageState(
         return;
     }
 
-    message->SetDeliveryState(deliveryState);
+    *message = record;
 }
 
 void RelayDeskRuntime::enqueuePeerProfile(

@@ -41,13 +41,20 @@ constexpr Color kTeal{0.000f, 0.590f, 0.590f, 1.0f};
 constexpr Color kTealSoft{0.860f, 0.965f, 0.960f, 1.0f};
 constexpr Color kAmber{0.890f, 0.560f, 0.000f, 1.0f};
 constexpr Color kAmberSoft{1.000f, 0.970f, 0.900f, 1.0f};
+constexpr Color kDanger{0.820f, 0.190f, 0.120f, 1.0f};
+constexpr Color kDangerSoft{1.000f, 0.925f, 0.900f, 1.0f};
 constexpr Color kGreen{0.250f, 0.660f, 0.160f, 1.0f};
 constexpr Color kOffline{0.630f, 0.650f, 0.670f, 1.0f};
 constexpr Color kAvatarGreen{0.080f, 0.600f, 0.440f, 1.0f};
+constexpr unsigned int kRefreshIconCodePoint = 0xE72C;
 constexpr float kContentTop = 0.0f;
 constexpr float kChatHeaderHeight = 118.0f;
 constexpr float kChatTimelineContentHeight = 650.0f;
 constexpr float kComposerHeight = 196.0f;
+constexpr float kMessageBubblePadding = 12.0f;
+constexpr float kMessagePartGap = 10.0f;
+constexpr float kFailedDeliveryStateHeight = 20.0f;
+constexpr float kFailedDeliveryStateGap = 8.0f;
 constexpr std::size_t kMaxRecentEmojiCount = 10;
 constexpr std::size_t kMaxPendingAttachmentCount = 8;
 
@@ -2908,12 +2915,38 @@ float messageDocumentContentHeight(
             continue;
         }
         if (hasVisiblePart) {
-            height += 10.0f;
+            height += kMessagePartGap;
         }
         height += partHeight;
         hasVisiblePart = true;
     }
     return hasVisiblePart ? height : 20.0f;
+}
+
+bool shouldDrawFailedDeliveryStateInsideBubble(
+    const relaydesk::storage::ChatMessageRecord& message,
+    bool outgoing)
+{
+    return outgoing
+        && message.GetDeliveryState() == relaydesk::storage::DeliveryState::Failed;
+}
+
+float messageDeliveryStateFooterHeight(
+    const relaydesk::storage::ChatMessageRecord& message,
+    bool outgoing)
+{
+    return shouldDrawFailedDeliveryStateInsideBubble(message, outgoing)
+        ? kFailedDeliveryStateGap + kFailedDeliveryStateHeight
+        : 0.0f;
+}
+
+float messageDocumentBubbleHeight(const relaydesk::storage::ChatMessageRecord& message,
+                                  float innerWidth,
+                                  bool outgoing)
+{
+    return messageDocumentContentHeight(message, innerWidth)
+        + kMessageBubblePadding * 2.0f
+        + messageDeliveryStateFooterHeight(message, outgoing);
 }
 
 void drawMessageImagePart(eui::Ui& ui,
@@ -3065,16 +3098,15 @@ float drawMessageDocumentBubble(
     std::string& stickerMenuPath,
     std::string& stickerMenuName)
 {
-    constexpr float padding = 12.0f;
-    constexpr float gap = 10.0f;
-    const float innerWidth = std::max(80.0f, width - padding * 2.0f);
-    const float contentHeight = messageDocumentContentHeight(message, innerWidth);
-    const float bubbleHeight = contentHeight + padding * 2.0f;
+    const float innerWidth =
+        std::max(80.0f, width - kMessageBubblePadding * 2.0f);
+    const float bubbleHeight =
+        messageDocumentBubbleHeight(message, innerWidth, outgoing);
     const Color fill = outgoing ? kTealSoft : Color{0.990f, 0.990f, 0.992f, 1.0f};
 
     rect(ui, id + ".bg", x, y, width, bubbleHeight, fill, 9.0f, kBorder);
 
-    float partY = y + padding;
+    float partY = y + kMessageBubblePadding;
     for (std::size_t partIndex = 0; partIndex < message.GetParts().size(); ++partIndex) {
         const auto& part = message.GetParts()[partIndex];
         const float height = messagePartHeight(part, innerWidth);
@@ -3083,7 +3115,7 @@ float drawMessageDocumentBubble(
         }
         drawMessagePart(ui,
                         id + ".part." + std::to_string(partIndex),
-                        x + padding,
+                        x + kMessageBubblePadding,
                         partY,
                         innerWidth,
                         part,
@@ -3092,7 +3124,7 @@ float drawMessageDocumentBubble(
                         stickerMenuY,
                         stickerMenuPath,
                         stickerMenuName);
-        partY += height + gap;
+        partY += height + kMessagePartGap;
     }
 
     return bubbleHeight;
@@ -3505,10 +3537,87 @@ std::string deliveryStateText(relaydesk::storage::DeliveryState state)
     return "";
 }
 
+void drawRuntimeMessageDeliveryState(
+    eui::Ui& ui,
+    const std::string& id,
+    float bubbleX,
+    float statusY,
+    float bubbleWidth,
+    const relaydesk::storage::ChatMessageRecord& message,
+    relaydesk::runtime::RelayDeskRuntime& runtime)
+{
+    const bool failed =
+        message.GetDeliveryState() == relaydesk::storage::DeliveryState::Failed;
+    if (!failed) {
+        text(ui,
+             id + ".state",
+             bubbleX,
+             statusY,
+             bubbleWidth - 4.0f,
+             18.0f,
+             deliveryStateText(message.GetDeliveryState()),
+             11.0f,
+             kSubtleText,
+             eui::HorizontalAlign::Right);
+        return;
+    }
+
+    constexpr float stateTextWidth = 72.0f;
+    constexpr float retryGap = 6.0f;
+    constexpr float retryButtonSize = 20.0f;
+    const float rowWidth = stateTextWidth + retryGap + retryButtonSize;
+    const float rowX = bubbleX + bubbleWidth - rowWidth - 4.0f;
+    const float retryButtonX = rowX + stateTextWidth + retryGap;
+    rect(ui,
+         id + ".state.bg",
+         rowX,
+         statusY + 1.0f,
+         stateTextWidth,
+         18.0f,
+         kDangerSoft,
+         6.0f,
+         kDanger);
+    text(ui,
+         id + ".state",
+         rowX,
+         statusY + 1.0f,
+         stateTextWidth,
+         18.0f,
+         deliveryStateText(message.GetDeliveryState()),
+         11.0f,
+         kDanger,
+         eui::HorizontalAlign::Center);
+    rect(ui,
+         id + ".retry.bg",
+         retryButtonX,
+         statusY,
+         retryButtonSize,
+         retryButtonSize,
+         Color{1.0f, 1.0f, 1.0f, 0.82f},
+         10.0f,
+         kBorder);
+    icon(ui,
+         id + ".retry.icon",
+         retryButtonX + 2.0f,
+         statusY + 2.0f,
+         16.0f,
+         kRefreshIconCodePoint,
+         kTeal);
+    ui.rect(id + ".retry.hit")
+        .position(retryButtonX, statusY)
+        .size(retryButtonSize, retryButtonSize)
+        .color({0.0f, 0.0f, 0.0f, 0.0f})
+        .onClick([&runtime, messageId = message.GetMessageId()] {
+            runtime.resendSelectedPeerMessage(messageId);
+        })
+        .build();
+}
+
 void drawRuntimeChatTimelineContent(
     eui::Ui& ui,
     float width,
-    const std::vector<relaydesk::storage::ChatMessageRecord>& messages)
+    const std::vector<relaydesk::storage::ChatMessageRecord>& messages,
+    relaydesk::runtime::RelayDeskRuntime& runtime)
 {
     constexpr float avatarSize = 34.0f;
     constexpr float sidePadding = 22.0f;
@@ -3564,21 +3673,30 @@ void drawRuntimeChatTimelineContent(
                                                              stickerMenuPath,
                                                              stickerMenuName);
         if (outgoing) {
-            text(ui,
-                 id + ".state",
-                 bubbleX,
-                 y + bubbleHeight,
-                 bubbleWidth - 4.0f,
-                 18.0f,
-                 deliveryStateText(message.GetDeliveryState()),
-                 11.0f,
-                 message.GetDeliveryState()
-                         == relaydesk::storage::DeliveryState::Failed
-                     ? kAmber
-                     : kSubtleText,
-                 eui::HorizontalAlign::Right);
+            const bool failedStateInside =
+                shouldDrawFailedDeliveryStateInsideBubble(message, outgoing);
+            const float stateX = failedStateInside
+                ? bubbleX + kMessageBubblePadding
+                : bubbleX;
+            const float stateY = failedStateInside
+                ? y + bubbleHeight
+                    - kMessageBubblePadding
+                    - kFailedDeliveryStateHeight
+                : y + bubbleHeight;
+            const float stateWidth = failedStateInside
+                ? bubbleWidth - kMessageBubblePadding * 2.0f
+                : bubbleWidth;
+            drawRuntimeMessageDeliveryState(ui,
+                                           id,
+                                           stateX,
+                                           stateY,
+                                           stateWidth,
+                                           message,
+                                           runtime);
         }
-        y += bubbleHeight + (outgoing ? 24.0f : 16.0f);
+        const bool failedStateInside =
+            shouldDrawFailedDeliveryStateInsideBubble(message, outgoing);
+        y += bubbleHeight + (outgoing && !failedStateInside ? 24.0f : 16.0f);
     }
 
     if (stickerMenuOpen) {
@@ -3614,7 +3732,8 @@ void drawRuntimeChatTimeline(
     float width,
     float height,
     const std::optional<relaydesk::runtime::PeerListItem>& selectedPeer,
-    const std::vector<relaydesk::storage::ChatMessageRecord>& messages)
+    const std::vector<relaydesk::storage::ChatMessageRecord>& messages,
+    relaydesk::runtime::RelayDeskRuntime& runtime)
 {
     rect(ui, "chat.bg", x, y, width, height, {1.0f, 1.0f, 1.0f, 1.0f});
 
@@ -3638,10 +3757,14 @@ void drawRuntimeChatTimeline(
                 message.GetDirection()
                 == relaydesk::storage::MessageDirection::Outgoing;
             const float bubbleWidth = outgoing ? outgoingWidth : incomingWidth;
-            const float innerWidth = std::max(80.0f, bubbleWidth - 24.0f);
-            measuredContentHeight += messageDocumentContentHeight(message, innerWidth)
-                + 24.0f
-                + (outgoing ? 24.0f : 16.0f);
+            const float innerWidth =
+                std::max(80.0f, bubbleWidth - kMessageBubblePadding * 2.0f);
+            const bool failedStateInside =
+                shouldDrawFailedDeliveryStateInsideBubble(message, outgoing);
+            measuredContentHeight += messageDocumentBubbleHeight(message,
+                                                                 innerWidth,
+                                                                 outgoing)
+                + (outgoing && !failedStateInside ? 24.0f : 16.0f);
         }
         const float contentHeight = std::max(height, measuredContentHeight);
         const float maxScrollOffset = std::max(0.0f, contentHeight - height);
@@ -3653,14 +3776,18 @@ void drawRuntimeChatTimeline(
             ui.state<std::size_t>("chat.runtime.scroll.message_count");
         float& previousMaxScrollOffset =
             ui.state<float>("chat.runtime.scroll.previous_max_offset");
+        float& previousContentHeight =
+            ui.state<float>("chat.runtime.scroll.previous_content_height");
         const std::string& peerDeviceId = selectedPeer->GetDeviceId();
         const std::string& tailMessageId = messages.back().GetMessageId();
         const bool peerChanged = scrollPeerDeviceId != peerDeviceId;
         const bool tailChanged = scrollTailMessageId != tailMessageId
             || scrollMessageCount != messages.size();
+        const bool contentHeightChanged =
+            std::abs(previousContentHeight - contentHeight) > 0.5f;
         const bool wasAtBottom = previousMaxScrollOffset <= 0.5f
             || scrollOffset >= previousMaxScrollOffset - 8.0f;
-        if (peerChanged || (tailChanged && wasAtBottom)) {
+        if (peerChanged || ((tailChanged || contentHeightChanged) && wasAtBottom)) {
             scrollOffset = maxScrollOffset;
         } else {
             scrollOffset = std::clamp(scrollOffset, 0.0f, maxScrollOffset);
@@ -3669,12 +3796,17 @@ void drawRuntimeChatTimeline(
         scrollTailMessageId = tailMessageId;
         scrollMessageCount = messages.size();
         previousMaxScrollOffset = maxScrollOffset;
+        previousContentHeight = contentHeight;
+        const int contentHeightKey =
+            static_cast<int>(std::ceil(contentHeight));
         const std::string timelineContentKey = "relaydesk.chat.runtime."
             + peerDeviceId
             + "."
             + std::to_string(messages.size())
             + "."
-            + tailMessageId;
+            + tailMessageId
+            + "."
+            + std::to_string(contentHeightKey);
         ui.stack("chat.runtime.scroll.pos")
             .position(x, y)
             .size(width, height)
@@ -3697,7 +3829,8 @@ void drawRuntimeChatTimeline(
                             .content([&] {
                                 drawRuntimeChatTimelineContent(contentUi,
                                                                contentWidth,
-                                                               messages);
+                                                               messages,
+                                                               runtime);
                             })
                             .build();
                     })
@@ -4231,7 +4364,8 @@ void drawRelayDesk(eui::Ui& ui,
                             layout.chatWidth,
                             timelineHeight,
                             selectedPeer,
-                            runtime.GetSelectedPeerMessages());
+                            runtime.GetSelectedPeerMessages(),
+                            runtime);
     drawRuntimeComposer(ui,
                         layout.chatX,
                         composerY,

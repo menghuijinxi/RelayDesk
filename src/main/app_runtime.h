@@ -196,6 +196,7 @@ public:
     void selectPeer(std::string deviceId);
     void sendMessagePartsToSelectedPeer(
         std::vector<relaydesk::storage::ChatMessagePart> parts);
+    void resendSelectedPeerMessage(const std::string& messageId);
     void sendTextMessageToSelectedPeer(std::string text);
 
 protected:
@@ -222,9 +223,16 @@ protected:
     void appendSelectedPeerMessage(
         const std::string& peerDeviceId,
         const relaydesk::storage::ChatMessageRecord& record);
-    void updateSelectedPeerMessageState(
-        const std::string& messageId,
-        relaydesk::storage::DeliveryState deliveryState);
+    void sendOutgoingMessageRecordToPeer(
+        relaydesk::storage::ChatMessageRecord record,
+        const PeerListItem& peer,
+        bool replaceExistingRecord);
+    void persistChatMessageRecord(
+        const std::string& peerDeviceId,
+        const relaydesk::storage::ChatMessageRecord& record,
+        bool replaceExistingRecord);
+    void updateSelectedPeerMessageRecord(
+        const relaydesk::storage::ChatMessageRecord& record);
     void setStartupError(std::string errorMessage);
     void requestUiRefresh();
     void requestPeerStatusRefresh();

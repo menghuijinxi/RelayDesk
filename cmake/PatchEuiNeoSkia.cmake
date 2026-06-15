@@ -8,6 +8,9 @@ endif()
 
 include("${RELAYDESK_SOURCE_DIR}/cmake/PatchEuiNeoAppShortcuts.cmake")
 
+include("${RELAYDESK_SOURCE_DIR}/cmake/PatchEuiNeoWindowsImagePaths.cmake")
+relaydesk_patch_eui_neo_windows_image_paths("${EUI_NEO_SOURCE_DIR}")
+
 include("${RELAYDESK_SOURCE_DIR}/cmake/PatchEuiNeoSkiaTextMetrics.cmake")
 relaydesk_patch_eui_neo_skia_text_metrics("${EUI_NEO_SOURCE_DIR}")
 
