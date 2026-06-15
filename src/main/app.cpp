@@ -52,7 +52,6 @@ constexpr float kChatHeaderHeight = 118.0f;
 constexpr float kChatTimelineContentHeight = 650.0f;
 constexpr float kComposerHeight = 196.0f;
 constexpr float kMessageBubblePadding = 12.0f;
-constexpr float kMessagePartGap = 10.0f;
 constexpr float kFailedDeliveryStateHeight = 20.0f;
 constexpr float kFailedDeliveryStateGap = 8.0f;
 constexpr std::size_t kMaxRecentEmojiCount = 10;
@@ -401,6 +400,48 @@ std::size_t firstUtf8CodepointLength(unsigned char leadByte)
         return 4u;
     }
     return 1u;
+}
+
+unsigned int utf8CodepointValue(const std::string& value)
+{
+    if (value.empty()) {
+        return 0u;
+    }
+
+    std::size_t index = 0;
+    const unsigned char first = static_cast<unsigned char>(value[index++]);
+    if ((first & 0x80u) == 0u) {
+        return first;
+    }
+    if ((first & 0xE0u) == 0xC0u && index < value.size()) {
+        return ((first & 0x1Fu) << 6u)
+            | (static_cast<unsigned char>(value[index]) & 0x3Fu);
+    }
+    if ((first & 0xF0u) == 0xE0u && index + 1u < value.size()) {
+        unsigned int codepoint = (first & 0x0Fu) << 12u;
+        codepoint |= (static_cast<unsigned char>(value[index++]) & 0x3Fu) << 6u;
+        codepoint |= static_cast<unsigned char>(value[index]) & 0x3Fu;
+        return codepoint;
+    }
+    if ((first & 0xF8u) == 0xF0u && index + 2u < value.size()) {
+        unsigned int codepoint = (first & 0x07u) << 18u;
+        codepoint |= (static_cast<unsigned char>(value[index++]) & 0x3Fu) << 12u;
+        codepoint |= (static_cast<unsigned char>(value[index++]) & 0x3Fu) << 6u;
+        codepoint |= static_cast<unsigned char>(value[index]) & 0x3Fu;
+        return codepoint;
+    }
+
+    return 0u;
+}
+
+bool isEmojiCodepointText(const std::string& value)
+{
+    const unsigned int codepoint = utf8CodepointValue(value);
+    return (codepoint >= 0x1F000u && codepoint <= 0x1FAFFu)
+        || (codepoint >= 0x2600u && codepoint <= 0x27BFu)
+        || (codepoint >= 0xFE00u && codepoint <= 0xFE0Fu)
+        || codepoint == 0x200Du
+        || codepoint == 0x20E3u;
 }
 
 std::string makeAvatarText(const std::string& displayName)
@@ -2871,56 +2912,272 @@ void drawCompactImageDocumentCard(eui::Ui& ui,
         .build();
 }
 
-float messageTextPartHeight(const relaydesk::storage::ChatMessagePart& part,
-                            float width)
-{
-    const std::string value = part.GetType() == relaydesk::storage::MessagePartType::Emoji
-        ? emojiPreviewText(part.GetEmoji().value_or(""))
-        : part.GetText().value_or("");
-    const float fontSize =
-        part.GetType() == relaydesk::storage::MessagePartType::Emoji ? 24.0f : 14.0f;
-    const float lineHeight =
-        part.GetType() == relaydesk::storage::MessagePartType::Emoji ? 32.0f : 20.0f;
-    return estimateParagraphHeight(value, width, fontSize, lineHeight);
-}
+struct MessageFlowTextAtom {
+    std::size_t partIndex = 0;
+    std::string text;
+    float x = 0.0f;
+    float y = 0.0f;
+    float width = 0.0f;
+    float fontSize = kComposerEditorFontSize;
+    float lineHeight = kComposerEditorLineHeight;
+    bool emoji = false;
+};
 
-float messagePartHeight(const relaydesk::storage::ChatMessagePart& part,
-                        float width)
+struct MessageFlowPartNode {
+    std::size_t partIndex = 0;
+    float x = 0.0f;
+    float y = 0.0f;
+    float width = 0.0f;
+    float height = 0.0f;
+};
+
+struct MessageFlowLayout {
+    std::vector<MessageFlowTextAtom> textAtoms;
+    std::vector<MessageFlowPartNode> partNodes;
+    float contentHeight = kComposerEditorLineHeight;
+};
+
+constexpr float kMessageFlowAttachmentGap = 8.0f;
+constexpr float kMessageFlowRowGap = 8.0f;
+constexpr float kMessageImageMaxHeight = 360.0f;
+constexpr float kMessageImageFallbackWidth = 156.0f;
+constexpr float kMessageImageFallbackHeight = 88.0f;
+
+float messageTextAtomWidth(const std::string& value, float fontSize)
 {
-    switch (part.GetType()) {
-    case relaydesk::storage::MessagePartType::Text:
-    case relaydesk::storage::MessagePartType::Emoji:
-        return messageTextPartHeight(part, width);
-    case relaydesk::storage::MessagePartType::Image:
-        return resolveRenderableImagePath(part).has_value()
-            ? std::min(172.0f, std::max(118.0f, width * 0.62f))
-            : 58.0f;
-    case relaydesk::storage::MessagePartType::File:
-    case relaydesk::storage::MessagePartType::Folder:
-        return 58.0f;
+    if (std::fabs(fontSize - kComposerEditorFontSize) < 0.5f) {
+        return composerEditorTextAtomWidth(value);
     }
 
-    return 0.0f;
+    const float measuredWidth =
+        core::TextPrimitive::measureTextWidth(value, "", fontSize);
+    if (std::isfinite(measuredWidth) && measuredWidth > 0.0f) {
+        return measuredWidth;
+    }
+    return std::max(4.0f,
+                    static_cast<float>(utf8CodepointCount(value)) * fontSize * 0.62f);
+}
+
+std::string messageTextPartValue(
+    const relaydesk::storage::ChatMessagePart& part)
+{
+    return part.GetType() == relaydesk::storage::MessagePartType::Emoji
+        ? emojiPreviewText(part.GetEmoji().value_or(""))
+        : part.GetText().value_or("");
+}
+
+float messageTextPartFontSize(
+    const relaydesk::storage::ChatMessagePart& part)
+{
+    return part.GetType() == relaydesk::storage::MessagePartType::Emoji
+        ? 24.0f
+        : kComposerEditorFontSize;
+}
+
+float messageTextPartLineHeight(
+    const relaydesk::storage::ChatMessagePart& part)
+{
+    return part.GetType() == relaydesk::storage::MessagePartType::Emoji
+        ? 32.0f
+        : kComposerEditorLineHeight;
+}
+
+float messageImageAspectRatio(const std::filesystem::path& imagePath)
+{
+    const std::optional<relaydesk::platform::ImageSize> imageSize =
+        relaydesk::platform::probeImageSize(imagePath);
+    if (!imageSize.has_value()
+        || imageSize->width == 0u
+        || imageSize->height == 0u) {
+        return 0.0f;
+    }
+
+    return static_cast<float>(imageSize->width)
+        / static_cast<float>(imageSize->height);
+}
+
+float messageImageMaxWidth(float flowWidth)
+{
+    if (flowWidth < 520.0f) {
+        return std::min(flowWidth, 320.0f);
+    }
+
+    return std::min(flowWidth,
+                    std::max(320.0f,
+                             (flowWidth - kMessageFlowAttachmentGap) * 0.5f));
+}
+
+ComposerAttachmentNodeSize messageImageNodeSize(
+    const relaydesk::storage::ChatMessagePart& part,
+    float flowWidth)
+{
+    if (flowWidth <= 0.0f) {
+        return {};
+    }
+
+    const float minimumSide = std::min(44.0f, flowWidth);
+    const std::optional<std::filesystem::path> imagePath =
+        resolveRenderableImagePath(part);
+    if (!imagePath.has_value()) {
+        return {composerDraftFileNodeWidth(flowWidth), 58.0f};
+    }
+
+    const float aspectRatio = messageImageAspectRatio(imagePath.value());
+    if (!std::isfinite(aspectRatio) || aspectRatio <= 0.0f) {
+        return {
+            std::min(flowWidth, kMessageImageFallbackWidth),
+            kMessageImageFallbackHeight
+        };
+    }
+
+    const float maxWidth = messageImageMaxWidth(flowWidth);
+    float nodeWidth = maxWidth;
+    float nodeHeight = nodeWidth / aspectRatio;
+    if (nodeHeight > kMessageImageMaxHeight) {
+        nodeHeight = kMessageImageMaxHeight;
+        nodeWidth = nodeHeight * aspectRatio;
+    }
+
+    if (nodeWidth > flowWidth) {
+        nodeWidth = flowWidth;
+        nodeHeight = nodeWidth / aspectRatio;
+    }
+
+    nodeWidth = std::clamp(nodeWidth, minimumSide, flowWidth);
+    nodeHeight = std::clamp(nodeHeight, minimumSide, kMessageImageMaxHeight);
+    return {nodeWidth, nodeHeight};
+}
+
+ComposerAttachmentNodeSize messagePartNodeSize(
+    const relaydesk::storage::ChatMessagePart& part,
+    float flowWidth)
+{
+    switch (part.GetType()) {
+    case relaydesk::storage::MessagePartType::Image:
+        return messageImageNodeSize(part, flowWidth);
+    case relaydesk::storage::MessagePartType::File:
+    case relaydesk::storage::MessagePartType::Folder:
+        return {composerDraftFileNodeWidth(flowWidth), 58.0f};
+    case relaydesk::storage::MessagePartType::Text:
+    case relaydesk::storage::MessagePartType::Emoji:
+        return {};
+    }
+
+    return {};
+}
+
+void addMessageTextPartToLayout(
+    MessageFlowLayout& layout,
+    ComposerFlowCursor& cursor,
+    std::size_t partIndex,
+    const relaydesk::storage::ChatMessagePart& part,
+    float width,
+    bool& hasVisiblePart)
+{
+    const std::string value = messageTextPartValue(part);
+    const float fontSize = messageTextPartFontSize(part);
+    const float lineHeight = messageTextPartLineHeight(part);
+    for (const std::string& codepoint : splitUtf8Codepoints(value)) {
+        if (codepoint == "\n") {
+            advanceComposerEditorLine(cursor, 0.0f, kMessageFlowRowGap);
+            hasVisiblePart = true;
+            continue;
+        }
+
+        const float atomWidth = messageTextAtomWidth(codepoint, fontSize);
+        if (cursor.x > 0.0f && cursor.x + atomWidth > width) {
+            advanceComposerEditorLine(cursor, 0.0f, kMessageFlowRowGap);
+        }
+
+        const bool emoji = part.GetType() == relaydesk::storage::MessagePartType::Emoji
+            || isEmojiCodepointText(codepoint);
+        layout.textAtoms.push_back(
+            {partIndex,
+             codepoint,
+             cursor.x,
+             cursor.y,
+             atomWidth,
+             fontSize,
+             lineHeight,
+             emoji});
+        cursor.x += atomWidth;
+        cursor.lineHeight = std::max(cursor.lineHeight, lineHeight);
+        hasVisiblePart = true;
+    }
+}
+
+void addMessageNodePartToLayout(
+    MessageFlowLayout& layout,
+    ComposerFlowCursor& cursor,
+    std::size_t partIndex,
+    const relaydesk::storage::ChatMessagePart& part,
+    float width,
+    bool& hasVisiblePart)
+{
+    const ComposerAttachmentNodeSize nodeSize = messagePartNodeSize(part, width);
+    if (nodeSize.width <= 0.0f || nodeSize.height <= 0.0f) {
+        return;
+    }
+
+    const float leadingGap = cursor.x > 0.0f ? kMessageFlowAttachmentGap : 0.0f;
+    if (cursor.x > 0.0f && cursor.x + leadingGap + nodeSize.width > width) {
+        advanceComposerEditorLine(cursor, 0.0f, kMessageFlowRowGap);
+    } else {
+        cursor.x += leadingGap;
+    }
+
+    layout.partNodes.push_back(
+        {partIndex, cursor.x, cursor.y, nodeSize.width, nodeSize.height});
+    cursor.x += nodeSize.width + kMessageFlowAttachmentGap;
+    cursor.lineHeight = std::max(cursor.lineHeight, nodeSize.height);
+    hasVisiblePart = true;
+}
+
+MessageFlowLayout makeMessageFlowLayout(
+    const relaydesk::storage::ChatMessageRecord& message,
+    float width)
+{
+    MessageFlowLayout layout;
+    ComposerFlowCursor cursor{0.0f, 0.0f, kComposerEditorLineHeight};
+    bool hasVisiblePart = false;
+
+    for (std::size_t partIndex = 0; partIndex < message.GetParts().size();
+         ++partIndex) {
+        const auto& part = message.GetParts()[partIndex];
+        switch (part.GetType()) {
+        case relaydesk::storage::MessagePartType::Text:
+        case relaydesk::storage::MessagePartType::Emoji:
+            addMessageTextPartToLayout(layout,
+                                       cursor,
+                                       partIndex,
+                                       part,
+                                       width,
+                                       hasVisiblePart);
+            break;
+        case relaydesk::storage::MessagePartType::Image:
+        case relaydesk::storage::MessagePartType::File:
+        case relaydesk::storage::MessagePartType::Folder:
+            addMessageNodePartToLayout(layout,
+                                       cursor,
+                                       partIndex,
+                                       part,
+                                       width,
+                                       hasVisiblePart);
+            break;
+        }
+    }
+
+    layout.contentHeight = hasVisiblePart
+        ? cursor.y + std::max(cursor.lineHeight, kComposerEditorLineHeight)
+        : kComposerEditorLineHeight;
+    return layout;
 }
 
 float messageDocumentContentHeight(
     const relaydesk::storage::ChatMessageRecord& message,
     float width)
 {
-    float height = 0.0f;
-    bool hasVisiblePart = false;
-    for (const auto& part : message.GetParts()) {
-        const float partHeight = messagePartHeight(part, width);
-        if (partHeight <= 0.0f) {
-            continue;
-        }
-        if (hasVisiblePart) {
-            height += kMessagePartGap;
-        }
-        height += partHeight;
-        hasVisiblePart = true;
-    }
-    return hasVisiblePart ? height : 20.0f;
+    return makeMessageFlowLayout(message, width).contentHeight;
 }
 
 bool shouldDrawFailedDeliveryStateInsideBubble(
@@ -2983,7 +3240,7 @@ void drawMessageImagePart(eui::Ui& ui,
     const std::string imagePathText =
         filesystemPathToGenericUtf8String(imagePath.value());
     const std::string imageName = messagePartTitle(part);
-    const float imageWidth = std::min(width, 260.0f);
+    const float imageWidth = width;
     rect(ui, id + ".frame", x, y, imageWidth, height,
          {1.0f, 1.0f, 1.0f, 0.72f}, 8.0f, kBorder);
     ui.image(id + ".image")
@@ -3019,39 +3276,79 @@ void drawMessageImagePart(eui::Ui& ui,
         .build();
 }
 
-void drawMessagePart(eui::Ui& ui,
-                     const std::string& id,
-                     float x,
-                     float y,
-                     float width,
-                     const relaydesk::storage::ChatMessagePart& part,
-                     bool& stickerMenuOpen,
-                     float& stickerMenuX,
-                     float& stickerMenuY,
-                     std::string& stickerMenuPath,
-                     std::string& stickerMenuName)
+void drawMessageFlowTextAtoms(eui::Ui& ui,
+                              const std::string& id,
+                              const MessageFlowLayout& layout,
+                              float x,
+                              float y)
+{
+    std::string fragmentText;
+    float fragmentX = 0.0f;
+    float fragmentY = 0.0f;
+    float fragmentWidth = 0.0f;
+    float fragmentFontSize = kComposerEditorFontSize;
+    float fragmentLineHeight = kComposerEditorLineHeight;
+    bool fragmentEmoji = false;
+    std::size_t fragmentIndex = 0;
+    auto flushFragment = [&] {
+        if (fragmentText.empty()) {
+            return;
+        }
+        paragraphText(ui,
+                      id + ".text." + std::to_string(fragmentIndex),
+                      x + fragmentX,
+                      y + fragmentY,
+                      fragmentWidth + 6.0f,
+                      fragmentLineHeight,
+                      fragmentText,
+                      fragmentFontSize,
+                      fragmentLineHeight);
+        fragmentText.clear();
+        fragmentWidth = 0.0f;
+        ++fragmentIndex;
+    };
+
+    for (const MessageFlowTextAtom& atom : layout.textAtoms) {
+        const bool sameLine = !fragmentText.empty()
+            && std::fabs(atom.y - fragmentY) < 0.5f
+            && std::fabs(atom.x - (fragmentX + fragmentWidth)) < 1.5f
+            && std::fabs(atom.fontSize - fragmentFontSize) < 0.5f
+            && std::fabs(atom.lineHeight - fragmentLineHeight) < 0.5f
+            && atom.emoji == fragmentEmoji;
+        if (!sameLine) {
+            flushFragment();
+            fragmentX = atom.x;
+            fragmentY = atom.y;
+            fragmentFontSize = atom.fontSize;
+            fragmentLineHeight = atom.lineHeight;
+            fragmentEmoji = atom.emoji;
+        }
+        fragmentText += atom.text;
+        fragmentWidth = (atom.x + atom.width) - fragmentX;
+    }
+    flushFragment();
+}
+
+void drawMessagePartNode(eui::Ui& ui,
+                         const std::string& id,
+                         float x,
+                         float y,
+                         const relaydesk::storage::ChatMessagePart& part,
+                         const MessageFlowPartNode& node,
+                         bool& stickerMenuOpen,
+                         float& stickerMenuX,
+                         float& stickerMenuY,
+                         std::string& stickerMenuPath,
+                         std::string& stickerMenuName)
 {
     switch (part.GetType()) {
-    case relaydesk::storage::MessagePartType::Text: {
-        const float height = messageTextPartHeight(part, width);
-        paragraphText(ui, id + ".text", x, y, width, height,
-                      part.GetText().value_or(""), 14.0f, 20.0f);
-        return;
-    }
-    case relaydesk::storage::MessagePartType::Emoji: {
-        const float height = messageTextPartHeight(part, width);
-        paragraphText(ui, id + ".emoji", x, y, width, height,
-                      emojiPreviewText(part.GetEmoji().value_or("")),
-                      24.0f, 32.0f);
-        return;
-    }
     case relaydesk::storage::MessagePartType::Image:
         drawMessageImagePart(ui,
                              id,
                              x,
                              y,
-                             width,
-                             messagePartHeight(part, width),
+                             node.width,
+                             node.height,
                              part,
                              stickerMenuOpen,
                              stickerMenuX,
@@ -3064,7 +3361,7 @@ void drawMessagePart(eui::Ui& ui,
                              id,
                              x,
                              y,
-                             width,
+                             node.width,
                              messagePartTitle(part),
                              messagePartDetail(part),
                              false,
@@ -3075,11 +3372,14 @@ void drawMessagePart(eui::Ui& ui,
                              id,
                              x,
                              y,
-                             width,
+                             node.width,
                              messagePartTitle(part),
                              messagePartDetail(part),
                              true,
                              false);
+        return;
+    case relaydesk::storage::MessagePartType::Text:
+    case relaydesk::storage::MessagePartType::Emoji:
         return;
     }
 }
@@ -3100,32 +3400,35 @@ float drawMessageDocumentBubble(
 {
     const float innerWidth =
         std::max(80.0f, width - kMessageBubblePadding * 2.0f);
-    const float bubbleHeight =
-        messageDocumentBubbleHeight(message, innerWidth, outgoing);
+    const MessageFlowLayout layout = makeMessageFlowLayout(message, innerWidth);
+    const float bubbleHeight = layout.contentHeight
+        + kMessageBubblePadding * 2.0f
+        + messageDeliveryStateFooterHeight(message, outgoing);
     const Color fill = outgoing ? kTealSoft : Color{0.990f, 0.990f, 0.992f, 1.0f};
 
     rect(ui, id + ".bg", x, y, width, bubbleHeight, fill, 9.0f, kBorder);
 
-    float partY = y + kMessageBubblePadding;
-    for (std::size_t partIndex = 0; partIndex < message.GetParts().size(); ++partIndex) {
-        const auto& part = message.GetParts()[partIndex];
-        const float height = messagePartHeight(part, innerWidth);
-        if (height <= 0.0f) {
+    const float contentX = x + kMessageBubblePadding;
+    const float contentY = y + kMessageBubblePadding;
+    for (std::size_t nodeIndex = 0; nodeIndex < layout.partNodes.size();
+         ++nodeIndex) {
+        const MessageFlowPartNode& node = layout.partNodes[nodeIndex];
+        if (node.partIndex >= message.GetParts().size()) {
             continue;
         }
-        drawMessagePart(ui,
-                        id + ".part." + std::to_string(partIndex),
-                        x + kMessageBubblePadding,
-                        partY,
-                        innerWidth,
-                        part,
-                        stickerMenuOpen,
-                        stickerMenuX,
-                        stickerMenuY,
-                        stickerMenuPath,
-                        stickerMenuName);
-        partY += height + kMessagePartGap;
+        drawMessagePartNode(ui,
+                            id + ".node." + std::to_string(nodeIndex),
+                            contentX + node.x,
+                            contentY + node.y,
+                            message.GetParts()[node.partIndex],
+                            node,
+                            stickerMenuOpen,
+                            stickerMenuX,
+                            stickerMenuY,
+                            stickerMenuPath,
+                            stickerMenuName);
     }
+    drawMessageFlowTextAtoms(ui, id, layout, contentX, contentY);
 
     return bubbleHeight;
 }
@@ -3613,6 +3916,16 @@ void drawRuntimeMessageDeliveryState(
         .build();
 }
 
+float runtimeMessageBubbleWidth(float timelineWidth, float availableBubbleWidth)
+{
+    const float maxWidth = availableBubbleWidth;
+    if (maxWidth <= 210.0f) {
+        return maxWidth;
+    }
+
+    return std::clamp(timelineWidth * 0.86f, 210.0f, maxWidth);
+}
+
 void drawRuntimeChatTimelineContent(
     eui::Ui& ui,
     float width,
@@ -3624,12 +3937,8 @@ void drawRuntimeChatTimelineContent(
     constexpr float avatarBubbleGap = 12.0f;
     const float availableBubbleWidth =
         std::max(160.0f, width - sidePadding * 2.0f - avatarSize - avatarBubbleGap);
-    const float incomingWidth = std::min(
-        420.0f,
-        std::max(210.0f, std::min(width * 0.54f, availableBubbleWidth)));
-    const float outgoingWidth = std::min(
-        420.0f,
-        std::max(210.0f, std::min(width * 0.54f, availableBubbleWidth)));
+    const float messageBubbleWidth =
+        runtimeMessageBubbleWidth(width, availableBubbleWidth);
     float y = 22.0f;
     bool& stickerMenuOpen = ui.state<bool>("chat.sticker.context.open");
     float& stickerMenuX = ui.state<float>("chat.sticker.context.x");
@@ -3645,7 +3954,7 @@ void drawRuntimeChatTimelineContent(
         const auto& message = messages[index];
         const bool outgoing =
             message.GetDirection() == relaydesk::storage::MessageDirection::Outgoing;
-        const float bubbleWidth = outgoing ? outgoingWidth : incomingWidth;
+        const float bubbleWidth = messageBubbleWidth;
         const float avatarX = outgoing
             ? width - sidePadding - avatarSize
             : sidePadding;
@@ -3745,18 +4054,14 @@ void drawRuntimeChatTimeline(
         const float availableBubbleWidth =
             std::max(160.0f,
                      width - sidePadding * 2.0f - avatarSize - avatarBubbleGap);
-        const float incomingWidth = std::min(
-            420.0f,
-            std::max(210.0f, std::min(width * 0.54f, availableBubbleWidth)));
-        const float outgoingWidth = std::min(
-            420.0f,
-            std::max(210.0f, std::min(width * 0.54f, availableBubbleWidth)));
+        const float messageBubbleWidth =
+            runtimeMessageBubbleWidth(width, availableBubbleWidth);
         float measuredContentHeight = 42.0f;
         for (const auto& message : messages) {
             const bool outgoing =
                 message.GetDirection()
                 == relaydesk::storage::MessageDirection::Outgoing;
-            const float bubbleWidth = outgoing ? outgoingWidth : incomingWidth;
+            const float bubbleWidth = messageBubbleWidth;
             const float innerWidth =
                 std::max(80.0f, bubbleWidth - kMessageBubblePadding * 2.0f);
             const bool failedStateInside =
