@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iomanip>
 #include <optional>
@@ -26,6 +27,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -56,6 +58,12 @@ constexpr float kComposerHeight = 196.0f;
 constexpr float kMessageBubblePadding = 12.0f;
 constexpr float kFailedDeliveryStateHeight = 20.0f;
 constexpr float kFailedDeliveryStateGap = 8.0f;
+constexpr float kFailedDeliveryStateTextWidth = 72.0f;
+constexpr float kFailedDeliveryStateRetryGap = 6.0f;
+constexpr float kFailedDeliveryStateRetryButtonSize = 20.0f;
+constexpr float kFailedDeliveryStateRightInset = 4.0f;
+constexpr const char* kFileTypeIconAssetDirectory =
+    "assets/third_party/vscode-icons/icons";
 constexpr std::size_t kMaxRecentEmojiCount = 10;
 constexpr std::size_t kMaxPendingAttachmentCount = 8;
 
@@ -179,6 +187,14 @@ struct TransferPreview {
     Color accent;
 };
 
+struct FileTypeIconStyle {
+    std::string iconFileName;
+    std::string fallbackLabel;
+    Color fallbackBackground;
+    Color fallbackForeground;
+    bool generic = false;
+};
+
 struct StickerPickerItem {
     std::string packId;
     std::string itemId;
@@ -202,7 +218,6 @@ struct PendingAttachmentItem {
     std::uintmax_t fileSize = 0;
     unsigned int imagePixelWidth = 0;
     unsigned int imagePixelHeight = 0;
-    bool stageOnSend = false;
 };
 
 enum class ComposerDraftItemType {
@@ -240,10 +255,7 @@ struct AppLayout {
     float peerWidth;
     float chatX;
     float chatWidth;
-    float detailX;
-    float detailWidth;
     bool showPeers;
-    bool showDetails;
 };
 
 AppLayout makeLayout(const eui::Screen& screen)
@@ -253,30 +265,18 @@ AppLayout makeLayout(const eui::Screen& screen)
     layout.height = std::max(screen.height, 520.0f);
     layout.contentHeight = std::max(1.0f, layout.height - kContentTop);
     layout.showPeers = layout.width >= 720.0f;
-    layout.showDetails = layout.width >= 980.0f;
     layout.peerX = 0.0f;
     layout.peerWidth = layout.showPeers
         ? std::clamp(layout.width * 0.28f, 310.0f, 420.0f)
         : 0.0f;
-    layout.detailWidth = layout.showDetails
-        ? std::clamp(layout.width * 0.24f, 270.0f, 360.0f)
-        : 0.0f;
     layout.chatX = layout.peerWidth + 1.0f;
-    layout.detailX = layout.width - layout.detailWidth;
-    layout.chatWidth = layout.detailX - layout.chatX;
-
-    if (layout.showDetails && layout.chatWidth < 400.0f) {
-        layout.showDetails = false;
-        layout.detailWidth = 0.0f;
-        layout.detailX = layout.width;
-        layout.chatWidth = layout.detailX - layout.chatX;
-    }
+    layout.chatWidth = layout.width - layout.chatX;
 
     if (layout.showPeers && layout.chatWidth < 360.0f) {
         layout.showPeers = false;
         layout.peerWidth = 0.0f;
         layout.chatX = 0.0f;
-        layout.chatWidth = layout.detailX - layout.chatX;
+        layout.chatWidth = layout.width;
     }
 
     return layout;
@@ -634,6 +634,99 @@ std::filesystem::path resolveWorkRelativePath(
     return filePath.lexically_normal();
 }
 
+std::optional<std::filesystem::path> findRelativePathFromAncestor(
+    const std::filesystem::path& startDirectory,
+    const std::filesystem::path& relativePath)
+{
+    if (startDirectory.empty() || relativePath.empty() || relativePath.is_absolute()) {
+        return std::nullopt;
+    }
+
+    std::error_code error;
+    std::filesystem::path directory =
+        std::filesystem::absolute(startDirectory, error);
+    if (error) {
+        directory = startDirectory;
+        error.clear();
+    }
+
+    while (!directory.empty()) {
+        const std::filesystem::path candidate = directory / relativePath;
+        if (std::filesystem::exists(candidate, error) && !error) {
+            const std::filesystem::path absolutePath =
+                std::filesystem::absolute(candidate, error);
+            return error ? candidate.lexically_normal()
+                         : absolutePath.lexically_normal();
+        }
+        error.clear();
+
+        const std::filesystem::path parent = directory.parent_path();
+        if (parent.empty() || parent == directory) {
+            break;
+        }
+        directory = parent;
+    }
+
+    return std::nullopt;
+}
+
+std::optional<std::filesystem::path> findBundledAssetPath(
+    const std::filesystem::path& relativePath)
+{
+    try {
+        const auto appPaths = relaydesk::storage::createAppPaths();
+        if (const auto path =
+                findRelativePathFromAncestor(appPaths.GetWorkDirectory(), relativePath)) {
+            return path;
+        }
+    } catch (const std::exception&) {
+    }
+
+    std::error_code error;
+    const std::filesystem::path currentDirectory =
+        std::filesystem::current_path(error);
+    if (!error) {
+        return findRelativePathFromAncestor(currentDirectory, relativePath);
+    }
+
+    return std::nullopt;
+}
+
+std::string readTextFile(const std::filesystem::path& filePath)
+{
+    std::ifstream input(filePath, std::ios::binary);
+    if (!input.good()) {
+        return {};
+    }
+
+    std::ostringstream output;
+    output << input.rdbuf();
+    return output.str();
+}
+
+std::string fileTypeIconSvgMarkup(const std::string& iconFileName)
+{
+    static std::unordered_map<std::string, std::string> svgMarkupCache;
+    if (iconFileName.empty()) {
+        return {};
+    }
+
+    const auto cached = svgMarkupCache.find(iconFileName);
+    if (cached != svgMarkupCache.end()) {
+        return cached->second;
+    }
+
+    std::string markup;
+    const auto path = findBundledAssetPath(
+        std::filesystem::path(kFileTypeIconAssetDirectory) / iconFileName);
+    if (path) {
+        markup = readTextFile(*path);
+    }
+
+    svgMarkupCache[iconFileName] = markup;
+    return markup;
+}
+
 bool isParentTraversalPath(const std::filesystem::path& filePath)
 {
     const auto begin = filePath.begin();
@@ -750,6 +843,413 @@ std::string fileTypeTag(const std::string& fileName)
     return extension.empty() ? "FILE" : extension;
 }
 
+std::string fileIconExtensionKey(const std::string& fileName)
+{
+    const std::filesystem::path filePath(fileName);
+    std::string baseName = filePath.filename().string();
+    if (baseName.empty()) {
+        baseName = fileName;
+    }
+
+    const std::string lowerBaseName = lowerAscii(baseName);
+    if (lowerBaseName == ".gitattributes" || lowerBaseName == ".gitignore") {
+        return "git";
+    }
+    if (lowerBaseName == "cmakelists.txt") {
+        return "cmake";
+    }
+
+    std::string extension = lowerAscii(std::filesystem::path(baseName).extension().string());
+    if (!extension.empty() && extension.front() == '.') {
+        extension.erase(extension.begin());
+    }
+    return extension.empty() ? "file" : extension;
+}
+
+template <std::size_t Size>
+bool matchesFileExtension(const std::string& extension,
+                          const std::array<const char*, Size>& candidates)
+{
+    return std::find(candidates.begin(), candidates.end(), extension)
+        != candidates.end();
+}
+
+FileTypeIconStyle makeIconStyle(const char* iconFileName,
+                                std::string fallbackLabel,
+                                Color fallbackBackground,
+                                Color fallbackForeground,
+                                bool generic = false)
+{
+    return {
+        iconFileName,
+        std::move(fallbackLabel),
+        fallbackBackground,
+        fallbackForeground,
+        generic
+    };
+}
+
+FileTypeIconStyle makeFileTypeIconStyle(const std::string& fileName)
+{
+    const std::string extension = fileIconExtensionKey(fileName);
+    if (matchesFileExtension(extension, std::array{"git"})) {
+        return makeIconStyle("file_type_git.svg",
+                             "GIT",
+                             {0.950f, 0.300f, 0.120f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "sln") {
+        return makeIconStyle("file_type_sln.svg",
+                             "VS",
+                             {0.485f, 0.265f, 0.835f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "vcxproj") {
+        return makeIconStyle("file_type_vcxproj.svg",
+                             "VC",
+                             {0.485f, 0.265f, 0.835f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "csproj") {
+        return makeIconStyle("file_type_csproj.svg",
+                             "CS",
+                             {0.485f, 0.265f, 0.835f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "fsproj") {
+        return makeIconStyle("file_type_fsproj.svg",
+                             "FS",
+                             {0.485f, 0.265f, 0.835f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (matchesFileExtension(extension, std::array{"uproject", "uasset", "umap"})) {
+        return makeIconStyle("default_file.svg",
+                             "UE",
+                             {0.145f, 0.155f, 0.175f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f},
+                             true);
+    }
+    if (matchesFileExtension(extension, std::array{"exe", "msi", "app", "dmg"})) {
+        return makeIconStyle("file_type_binary.svg",
+                             "EXE",
+                             {0.090f, 0.445f, 0.790f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (matchesFileExtension(extension, std::array{"bat", "cmd"})) {
+        return makeIconStyle("file_type_bat.svg",
+                             "BAT",
+                             {0.120f, 0.545f, 0.545f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (matchesFileExtension(extension, std::array{"ps1", "psm1", "psd1"})) {
+        return makeIconStyle("file_type_powershell.svg",
+                             "PS",
+                             {0.120f, 0.545f, 0.545f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (matchesFileExtension(extension, std::array{"sh", "bash", "zsh"})) {
+        return makeIconStyle("file_type_shell.svg",
+                             "SH",
+                             {0.120f, 0.545f, 0.545f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "jar") {
+        return makeIconStyle("file_type_jar.svg",
+                             "JAR",
+                             {0.120f, 0.545f, 0.545f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "lnk") {
+        return makeIconStyle("file_type_lnk.svg",
+                             "LNK",
+                             {0.120f, 0.545f, 0.545f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (matchesFileExtension(extension,
+                             std::array{"mp4", "mov", "webm", "avi", "mkv", "wmv"})) {
+        return makeIconStyle("file_type_video.svg",
+                             "VID",
+                             {0.805f, 0.190f, 0.420f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (matchesFileExtension(extension,
+                             std::array{"mp3", "wav", "flac", "aac", "ogg"})) {
+        return makeIconStyle("file_type_audio.svg",
+                             "AUD",
+                             {0.650f, 0.250f, 0.760f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "svg") {
+        return makeIconStyle("file_type_svg.svg",
+                             "SVG",
+                             {0.120f, 0.615f, 0.390f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "avif") {
+        return makeIconStyle("file_type_avif.svg",
+                             "AVIF",
+                             {0.120f, 0.615f, 0.390f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (matchesFileExtension(extension,
+                             std::array{"png", "jpg", "jpeg", "gif", "webp", "bmp"})) {
+        return makeIconStyle("file_type_image.svg",
+                             "IMG",
+                             {0.120f, 0.615f, 0.390f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (matchesFileExtension(extension,
+                             std::array{"zip", "rar", "7z", "tar", "gz", "bz2"})) {
+        return makeIconStyle("file_type_zip.svg",
+                             "ZIP",
+                             {0.820f, 0.520f, 0.080f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (matchesFileExtension(extension, std::array{"pdf"})) {
+        return makeIconStyle("file_type_pdf.svg",
+                             "PDF",
+                             {0.855f, 0.180f, 0.160f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (matchesFileExtension(extension,
+                             std::array{"doc", "docx", "rtf", "odt"})) {
+        return makeIconStyle("file_type_word.svg",
+                             "DOC",
+                             {0.160f, 0.390f, 0.820f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (matchesFileExtension(extension,
+                             std::array{"xls", "xlsx", "csv", "ods"})) {
+        return makeIconStyle("file_type_excel.svg",
+                             "XLS",
+                             {0.130f, 0.570f, 0.320f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (matchesFileExtension(extension,
+                             std::array{"ppt", "pptx", "odp"})) {
+        return makeIconStyle("file_type_powerpoint.svg",
+                             "PPT",
+                             {0.870f, 0.365f, 0.130f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (matchesFileExtension(extension, std::array{"md", "markdown"})) {
+        return makeIconStyle("file_type_markdown.svg",
+                             "MD",
+                             {0.385f, 0.475f, 0.575f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "log") {
+        return makeIconStyle("file_type_log.svg",
+                             "LOG",
+                             {0.385f, 0.475f, 0.575f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (matchesFileExtension(extension, std::array{"txt", "text"})) {
+        return makeIconStyle("file_type_text.svg",
+                             "TXT",
+                             {0.385f, 0.475f, 0.575f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (matchesFileExtension(extension, std::array{"cpp", "cxx", "cc"})) {
+        return makeIconStyle("file_type_cpp.svg",
+                             "C++",
+                             {0.205f, 0.345f, 0.780f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "c") {
+        return makeIconStyle("file_type_c.svg",
+                             "C",
+                             {0.205f, 0.345f, 0.780f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "h") {
+        return makeIconStyle("file_type_cheader.svg",
+                             "H",
+                             {0.205f, 0.345f, 0.780f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (matchesFileExtension(extension, std::array{"hpp", "hh", "hxx"})) {
+        return makeIconStyle("file_type_cppheader.svg",
+                             "H++",
+                             {0.205f, 0.345f, 0.780f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "cs") {
+        return makeIconStyle("file_type_csharp.svg",
+                             "CS",
+                             {0.245f, 0.455f, 0.765f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "java") {
+        return makeIconStyle("file_type_java.svg",
+                             "JAVA",
+                             {0.245f, 0.455f, 0.765f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "py") {
+        return makeIconStyle("file_type_python.svg",
+                             "PY",
+                             {0.245f, 0.455f, 0.765f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "go") {
+        return makeIconStyle("file_type_go.svg",
+                             "GO",
+                             {0.245f, 0.455f, 0.765f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "rs") {
+        return makeIconStyle("file_type_rust.svg",
+                             "RS",
+                             {0.245f, 0.455f, 0.765f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "swift") {
+        return makeIconStyle("file_type_swift.svg",
+                             "SWIFT",
+                             {0.245f, 0.455f, 0.765f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "php") {
+        return makeIconStyle("file_type_php.svg",
+                             "PHP",
+                             {0.245f, 0.455f, 0.765f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (matchesFileExtension(extension, std::array{"rb", "ruby"})) {
+        return makeIconStyle("file_type_ruby.svg",
+                             "RB",
+                             {0.245f, 0.455f, 0.765f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "jsx") {
+        return makeIconStyle("file_type_reactjs.svg",
+                             "JSX",
+                             {0.865f, 0.690f, 0.080f, 1.0f},
+                             {0.120f, 0.105f, 0.070f, 1.0f});
+    }
+    if (extension == "tsx") {
+        return makeIconStyle("file_type_reactts.svg",
+                             "TSX",
+                             {0.865f, 0.690f, 0.080f, 1.0f},
+                             {0.120f, 0.105f, 0.070f, 1.0f});
+    }
+    if (extension == "js") {
+        return makeIconStyle("file_type_js.svg",
+                             "JS",
+                             {0.865f, 0.690f, 0.080f, 1.0f},
+                             {0.120f, 0.105f, 0.070f, 1.0f});
+    }
+    if (extension == "ts") {
+        return makeIconStyle("file_type_typescript.svg",
+                             "TS",
+                             {0.865f, 0.690f, 0.080f, 1.0f},
+                             {0.120f, 0.105f, 0.070f, 1.0f});
+    }
+    if (matchesFileExtension(extension, std::array{"html", "htm"})) {
+        return makeIconStyle("file_type_html.svg",
+                             "HTML",
+                             {0.890f, 0.390f, 0.120f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "css") {
+        return makeIconStyle("file_type_css.svg",
+                             "CSS",
+                             {0.890f, 0.390f, 0.120f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (matchesFileExtension(extension, std::array{"scss", "sass"})) {
+        return makeIconStyle("file_type_scss.svg",
+                             "SCSS",
+                             {0.890f, 0.390f, 0.120f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "json") {
+        return makeIconStyle("file_type_json.svg",
+                             "JSON",
+                             {0.430f, 0.455f, 0.510f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "xml") {
+        return makeIconStyle("file_type_xml.svg",
+                             "XML",
+                             {0.430f, 0.455f, 0.510f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (matchesFileExtension(extension, std::array{"yaml", "yml"})) {
+        return makeIconStyle("file_type_yaml.svg",
+                             "YML",
+                             {0.430f, 0.455f, 0.510f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "toml") {
+        return makeIconStyle("file_type_toml.svg",
+                             "TOML",
+                             {0.430f, 0.455f, 0.510f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "ini") {
+        return makeIconStyle("file_type_ini.svg",
+                             "INI",
+                             {0.430f, 0.455f, 0.510f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (matchesFileExtension(extension, std::array{"cfg", "conf", "config"})) {
+        return makeIconStyle("file_type_config.svg",
+                             "CFG",
+                             {0.430f, 0.455f, 0.510f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (matchesFileExtension(extension, std::array{"cmake", "mk", "make"})) {
+        return makeIconStyle("file_type_cmake.svg",
+                             "MAKE",
+                             {0.210f, 0.495f, 0.545f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "sql") {
+        return makeIconStyle("file_type_sql.svg",
+                             "SQL",
+                             {0.380f, 0.470f, 0.790f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "sqlite") {
+        return makeIconStyle("file_type_sqlite.svg",
+                             "DB",
+                             {0.380f, 0.470f, 0.790f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (extension == "db") {
+        return makeIconStyle("file_type_db.svg",
+                             "DB",
+                             {0.380f, 0.470f, 0.790f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+    if (matchesFileExtension(extension,
+                             std::array{"ttf", "otf", "woff", "woff2"})) {
+        return makeIconStyle("file_type_font.svg",
+                             "FNT",
+                             {0.420f, 0.365f, 0.700f, 1.0f},
+                             {1.0f, 1.0f, 1.0f, 1.0f});
+    }
+
+    return makeIconStyle("default_file.svg",
+                         fileTypeTag(fileName),
+                         {0.925f, 0.935f, 0.950f, 1.0f},
+                         kMutedText,
+                         true);
+}
+
+float fileIconLabelFontSize(const std::string& label, float iconSize)
+{
+    if (label.size() <= 2u) {
+        return iconSize * 0.330f;
+    }
+    if (label.size() == 3u) {
+        return iconSize * 0.285f;
+    }
+    return iconSize * 0.225f;
+}
+
 std::size_t utf8CodepointCount(const std::string& value)
 {
     std::size_t count = 0;
@@ -828,22 +1328,6 @@ void applyImageSizeMetadata(PendingAttachmentItem& attachment,
     attachment.imagePixelHeight = imageSize->height;
 }
 
-std::filesystem::path stageAttachmentForSend(
-    const relaydesk::storage::AppPaths& appPaths,
-    const PendingAttachmentItem& attachment)
-{
-    const std::filesystem::path fileName = attachment.sourcePath.filename();
-    const std::filesystem::path targetDirectory =
-        appPaths.GetOutboxDirectory() / relaydesk::core::createUuidV4();
-    std::filesystem::create_directories(targetDirectory);
-    const std::filesystem::path targetPath = targetDirectory / fileName;
-    std::filesystem::copy_file(
-        attachment.sourcePath,
-        targetPath,
-        std::filesystem::copy_options::overwrite_existing);
-    return targetPath;
-}
-
 struct ComposerImageStage {
     std::filesystem::path sourcePath;
     std::filesystem::path previewPath;
@@ -890,7 +1374,6 @@ std::optional<PendingAttachmentItem> makePendingAttachmentFromPath(
     std::filesystem::path previewPath = absolutePath;
     std::string localPath = makeAttachmentLocalPath(appPaths, absolutePath);
     std::string sha256;
-    bool stageOnSend = localPath == filesystemPathToUtf8String(absolutePath);
     if (imageAttachment) {
         try {
             const ComposerImageStage imageStage =
@@ -898,7 +1381,6 @@ std::optional<PendingAttachmentItem> makePendingAttachmentFromPath(
             sourcePath = imageStage.sourcePath;
             previewPath = imageStage.previewPath;
             localPath = makeAttachmentLocalPath(appPaths, imageStage.sourcePath);
-            stageOnSend = false;
             sha256 = imageStage.sha256;
         } catch (const std::exception&) {
             previewPath = absolutePath;
@@ -917,7 +1399,6 @@ std::optional<PendingAttachmentItem> makePendingAttachmentFromPath(
     if (imageAttachment) {
         applyImageSizeMetadata(attachment, sourcePath);
     }
-    attachment.stageOnSend = stageOnSend;
     return attachment;
 }
 
@@ -954,7 +1435,6 @@ PendingAttachmentItem makePendingAttachmentFromSticker(
     }
     attachment.fileSize = fileSizeOrZero(imagePath);
     applyImageSizeMetadata(attachment, attachment.sourcePath);
-    attachment.stageOnSend = false;
     return attachment;
 }
 
@@ -1475,10 +1955,7 @@ std::optional<relaydesk::storage::ChatMessagePart> makeComposerAttachmentPart(
     try {
         const auto appPaths = relaydesk::storage::createAppPaths();
         relaydesk::storage::ensureAppDirectories(appPaths);
-        if (attachment.stageOnSend) {
-            localPath = stageAttachmentForSend(appPaths, attachment);
-            localPathText = makeAttachmentLocalPath(appPaths, localPath);
-        } else if (localPathText.empty()) {
+        if (localPathText.empty()) {
             localPathText = makeAttachmentLocalPath(appPaths, localPath);
         }
         fileSize = fileSizeOrZero(localPath);
@@ -2880,6 +3357,93 @@ void messageBubble(eui::Ui& ui,
     text(ui, id + ".text", x + 12.0f, y + 9.0f, width - 24.0f, 22.0f, value, 14.0f);
 }
 
+bool drawFileTypeAssetIcon(eui::Ui& ui,
+                           const std::string& id,
+                           float x,
+                           float y,
+                           float size,
+                           const std::string& iconFileName)
+{
+    const std::string svgMarkup = fileTypeIconSvgMarkup(iconFileName);
+    if (svgMarkup.empty()) {
+        return false;
+    }
+
+    ui.svg(id)
+        .markup(svgMarkup)
+        .position(x, y)
+        .size(size, size)
+        .contain()
+        .build();
+    return true;
+}
+
+void drawFallbackFileTypeIcon(eui::Ui& ui,
+                              const std::string& id,
+                              float x,
+                              float y,
+                              float size,
+                              const FileTypeIconStyle& style)
+{
+    rect(ui, id + ".icon.bg", x, y, size, size, style.fallbackBackground, 7.0f);
+    if (style.generic && style.fallbackLabel == "FILE") {
+        icon(ui, id + ".icon", x + 2.0f, y + 2.0f, size - 4.0f, 0xE7C3,
+             style.fallbackForeground);
+        return;
+    }
+
+    const float labelHeight = std::max(14.0f, size * 0.42f);
+    text(ui,
+         id + ".icon.label",
+         x,
+         y + (size - labelHeight) * 0.5f,
+         size,
+         labelHeight,
+         style.fallbackLabel,
+         fileIconLabelFontSize(style.fallbackLabel, size),
+         style.fallbackForeground,
+         eui::HorizontalAlign::Center);
+}
+
+void drawFileTypeIcon(eui::Ui& ui,
+                      const std::string& id,
+                      float x,
+                      float y,
+                      float size,
+                      const std::string& fileName,
+                      bool folder)
+{
+    const float iconInset = std::max(2.0f, size * 0.08f);
+    const float assetSize = size - iconInset * 2.0f;
+    if (folder) {
+        if (drawFileTypeAssetIcon(ui,
+                                  id + ".icon.asset",
+                                  x + iconInset,
+                                  y + iconInset,
+                                  assetSize,
+                                  "default_folder.svg")) {
+            return;
+        }
+
+        rect(ui, id + ".icon.bg", x, y, size, size,
+             {0.890f, 0.950f, 0.990f, 1.0f}, 7.0f);
+        icon(ui, id + ".icon", x + 2.0f, y + 2.0f, size - 4.0f, 0xE8B7, kTeal);
+        return;
+    }
+
+    const FileTypeIconStyle style = makeFileTypeIconStyle(fileName);
+    if (drawFileTypeAssetIcon(ui,
+                              id + ".icon.asset",
+                              x + iconInset,
+                              y + iconInset,
+                              assetSize,
+                              style.iconFileName)) {
+        return;
+    }
+
+    drawFallbackFileTypeIcon(ui, id, x, y, size, style);
+}
+
 void drawFileDocumentCard(eui::Ui& ui,
                           const std::string& id,
                           float x,
@@ -2894,21 +3458,13 @@ void drawFileDocumentCard(eui::Ui& ui,
     const float iconSize = compact ? 34.0f : 40.0f;
     const float iconX = x + 9.0f;
     const float iconY = y + (height - iconSize) * 0.5f;
-    const Color iconFill = folder
-        ? Color{0.890f, 0.950f, 0.990f, 1.0f}
-        : Color{0.925f, 0.935f, 0.950f, 1.0f};
-    const Color iconColor = folder ? kTeal : kMutedText;
-    const unsigned int iconCodepoint = folder ? 0xE8B7 : 0xE7C3;
 
     rect(ui, id + ".bg", x, y, width, height,
          {0.972f, 0.976f, 0.982f, 1.0f}, 8.0f, kBorder);
-    rect(ui, id + ".icon.bg", iconX, iconY, iconSize, iconSize, iconFill, 7.0f);
-    icon(ui, id + ".icon", iconX + 2.0f, iconY + 2.0f, iconSize - 4.0f,
-         iconCodepoint, iconColor);
+    drawFileTypeIcon(ui, id, iconX, iconY, iconSize, title, folder);
 
     const float textX = iconX + iconSize + 10.0f;
-    const float tagWidth = compact ? 42.0f : 50.0f;
-    const float titleWidth = std::max(40.0f, width - (textX - x) - tagWidth - 20.0f);
+    const float titleWidth = std::max(40.0f, width - (textX - x) - 12.0f);
     text(ui, id + ".title", textX, y + (compact ? 5.0f : 7.0f), titleWidth,
          22.0f, title, compact ? 13.0f : 14.0f);
     if (!detail.empty()) {
@@ -2922,21 +3478,6 @@ void drawFileDocumentCard(eui::Ui& ui,
              compact ? 11.0f : 12.0f,
              kMutedText);
     }
-
-    const std::string tag = folder ? "DIR" : fileTypeTag(title);
-    rect(ui, id + ".tag.bg", x + width - tagWidth - 10.0f,
-         y + (height - 22.0f) * 0.5f, tagWidth, 22.0f,
-         {1.0f, 1.0f, 1.0f, 0.82f}, 5.0f, kBorder);
-    text(ui,
-         id + ".tag",
-         x + width - tagWidth - 10.0f,
-         y + (height - 20.0f) * 0.5f,
-         tagWidth,
-         18.0f,
-         tag,
-         compact ? 10.0f : 11.0f,
-         kSubtleText,
-         eui::HorizontalAlign::Center);
 }
 
 void drawCompactImageDocumentCard(eui::Ui& ui,
@@ -3004,7 +3545,14 @@ struct MessageFlowPartNode {
 struct MessageFlowLayout {
     std::vector<MessageFlowTextAtom> textAtoms;
     std::vector<MessageFlowPartNode> partNodes;
+    float contentWidth = 0.0f;
     float contentHeight = kComposerEditorLineHeight;
+};
+
+struct MessageDocumentBubbleMetrics {
+    MessageFlowLayout layout;
+    float width = 0.0f;
+    float height = 0.0f;
 };
 
 constexpr float kMessageFlowAttachmentGap = 8.0f;
@@ -3026,6 +3574,11 @@ float messageTextAtomWidth(const std::string& value, float fontSize)
     }
     return std::max(4.0f,
                     static_cast<float>(utf8CodepointCount(value)) * fontSize * 0.62f);
+}
+
+void expandMessageFlowContentWidth(MessageFlowLayout& layout, float width)
+{
+    layout.contentWidth = std::max(layout.contentWidth, width);
 }
 
 std::string messageTextPartValue(
@@ -3149,6 +3702,7 @@ void addMessageTextPartToLayout(
     const float lineHeight = messageTextPartLineHeight(part);
     for (const std::string& codepoint : splitUtf8Codepoints(value)) {
         if (codepoint == "\n") {
+            expandMessageFlowContentWidth(layout, cursor.x);
             advanceComposerEditorLine(cursor, 0.0f, kMessageFlowRowGap);
             hasVisiblePart = true;
             continue;
@@ -3156,6 +3710,7 @@ void addMessageTextPartToLayout(
 
         const float atomWidth = messageTextAtomWidth(codepoint, fontSize);
         if (cursor.x > 0.0f && cursor.x + atomWidth > width) {
+            expandMessageFlowContentWidth(layout, cursor.x);
             advanceComposerEditorLine(cursor, 0.0f, kMessageFlowRowGap);
         }
 
@@ -3171,6 +3726,7 @@ void addMessageTextPartToLayout(
              lineHeight,
              emoji});
         cursor.x += atomWidth;
+        expandMessageFlowContentWidth(layout, cursor.x);
         cursor.lineHeight = std::max(cursor.lineHeight, lineHeight);
         hasVisiblePart = true;
     }
@@ -3198,7 +3754,9 @@ void addMessageNodePartToLayout(
 
     layout.partNodes.push_back(
         {partIndex, cursor.x, cursor.y, nodeSize.width, nodeSize.height});
-    cursor.x += nodeSize.width + kMessageFlowAttachmentGap;
+    const float nodeRight = cursor.x + nodeSize.width;
+    expandMessageFlowContentWidth(layout, nodeRight);
+    cursor.x = nodeRight + kMessageFlowAttachmentGap;
     cursor.lineHeight = std::max(cursor.lineHeight, nodeSize.height);
     hasVisiblePart = true;
 }
@@ -3243,13 +3801,6 @@ MessageFlowLayout makeMessageFlowLayout(
     return layout;
 }
 
-float messageDocumentContentHeight(
-    const relaydesk::storage::ChatMessageRecord& message,
-    float width)
-{
-    return makeMessageFlowLayout(message, width).contentHeight;
-}
-
 bool shouldDrawFailedDeliveryStateInsideBubble(
     const relaydesk::storage::ChatMessageRecord& message,
     bool outgoing)
@@ -3267,13 +3818,43 @@ float messageDeliveryStateFooterHeight(
         : 0.0f;
 }
 
-float messageDocumentBubbleHeight(const relaydesk::storage::ChatMessageRecord& message,
-                                  float innerWidth,
-                                  bool outgoing)
+float messageDeliveryStateMinimumContentWidth(
+    const relaydesk::storage::ChatMessageRecord& message,
+    bool outgoing)
 {
-    return messageDocumentContentHeight(message, innerWidth)
+    if (!shouldDrawFailedDeliveryStateInsideBubble(message, outgoing)) {
+        return 0.0f;
+    }
+
+    return kFailedDeliveryStateTextWidth
+        + kFailedDeliveryStateRetryGap
+        + kFailedDeliveryStateRetryButtonSize
+        + kFailedDeliveryStateRightInset;
+}
+
+MessageDocumentBubbleMetrics makeMessageDocumentBubbleMetrics(
+    const relaydesk::storage::ChatMessageRecord& message,
+    float maxWidth,
+    bool outgoing)
+{
+    constexpr float minimumBubbleWidth = 72.0f;
+    const float resolvedMaxWidth = std::max(1.0f, maxWidth);
+    const float innerWidth =
+        std::max(80.0f, resolvedMaxWidth - kMessageBubblePadding * 2.0f);
+
+    MessageDocumentBubbleMetrics metrics;
+    metrics.layout = makeMessageFlowLayout(message, innerWidth);
+    const float contentWidth =
+        std::max(metrics.layout.contentWidth,
+                 messageDeliveryStateMinimumContentWidth(message, outgoing));
+    const float minWidth = std::min(minimumBubbleWidth, resolvedMaxWidth);
+    metrics.width = std::clamp(contentWidth + kMessageBubblePadding * 2.0f,
+                               minWidth,
+                               resolvedMaxWidth);
+    metrics.height = metrics.layout.contentHeight
         + kMessageBubblePadding * 2.0f
         + messageDeliveryStateFooterHeight(message, outgoing);
+    return metrics;
 }
 
 void drawMessageImagePart(eui::Ui& ui,
@@ -3464,7 +4045,7 @@ float drawMessageDocumentBubble(
     const std::string& id,
     float x,
     float y,
-    float width,
+    const MessageDocumentBubbleMetrics& metrics,
     const relaydesk::storage::ChatMessageRecord& message,
     bool outgoing,
     bool& stickerMenuOpen,
@@ -3473,12 +4054,9 @@ float drawMessageDocumentBubble(
     std::string& stickerMenuPath,
     std::string& stickerMenuName)
 {
-    const float innerWidth =
-        std::max(80.0f, width - kMessageBubblePadding * 2.0f);
-    const MessageFlowLayout layout = makeMessageFlowLayout(message, innerWidth);
-    const float bubbleHeight = layout.contentHeight
-        + kMessageBubblePadding * 2.0f
-        + messageDeliveryStateFooterHeight(message, outgoing);
+    const float width = metrics.width;
+    const float bubbleHeight = metrics.height;
+    const MessageFlowLayout& layout = metrics.layout;
     const Color fill = outgoing ? kTealSoft : Color{0.990f, 0.990f, 0.992f, 1.0f};
 
     rect(ui, id + ".bg", x, y, width, bubbleHeight, fill, 9.0f, kBorder);
@@ -3520,7 +4098,8 @@ void transferCard(eui::Ui& ui,
         ? Color{0.950f, 0.760f, 0.420f, 1.0f}
         : Color{0.640f, 0.880f, 0.870f, 1.0f};
     rect(ui, id + ".bg", x, y, width, 112.0f, fill, 8.0f, border);
-    icon(ui, id + ".file", x + 18.0f, y + 22.0f, 42.0f, 0xE7C3, transfer.accent);
+    drawFileTypeIcon(ui, id + ".file", x + 18.0f, y + 22.0f, 42.0f,
+                     transfer.fileName, false);
     text(ui, id + ".name", x + 72.0f, y + 20.0f, width - 160.0f, 24.0f,
          transfer.fileName, 15.0f);
     text(ui, id + ".size", x + 72.0f, y + 46.0f, 170.0f, 20.0f, transfer.direction,
@@ -3940,17 +4519,18 @@ void drawRuntimeMessageDeliveryState(
         return;
     }
 
-    constexpr float stateTextWidth = 72.0f;
-    constexpr float retryGap = 6.0f;
-    constexpr float retryButtonSize = 20.0f;
-    const float rowWidth = stateTextWidth + retryGap + retryButtonSize;
-    const float rowX = bubbleX + bubbleWidth - rowWidth - 4.0f;
-    const float retryButtonX = rowX + stateTextWidth + retryGap;
+    const float rowWidth = kFailedDeliveryStateTextWidth
+        + kFailedDeliveryStateRetryGap
+        + kFailedDeliveryStateRetryButtonSize;
+    const float rowX = bubbleX + bubbleWidth - rowWidth
+        - kFailedDeliveryStateRightInset;
+    const float retryButtonX = rowX + kFailedDeliveryStateTextWidth
+        + kFailedDeliveryStateRetryGap;
     rect(ui,
          id + ".state.bg",
          rowX,
          statusY + 1.0f,
-         stateTextWidth,
+         kFailedDeliveryStateTextWidth,
          18.0f,
          kDangerSoft,
          6.0f,
@@ -3959,7 +4539,7 @@ void drawRuntimeMessageDeliveryState(
          id + ".state",
          rowX,
          statusY + 1.0f,
-         stateTextWidth,
+         kFailedDeliveryStateTextWidth,
          18.0f,
          deliveryStateText(message.GetDeliveryState()),
          11.0f,
@@ -3969,8 +4549,8 @@ void drawRuntimeMessageDeliveryState(
          id + ".retry.bg",
          retryButtonX,
          statusY,
-         retryButtonSize,
-         retryButtonSize,
+         kFailedDeliveryStateRetryButtonSize,
+         kFailedDeliveryStateRetryButtonSize,
          Color{1.0f, 1.0f, 1.0f, 0.82f},
          10.0f,
          kBorder);
@@ -3983,7 +4563,8 @@ void drawRuntimeMessageDeliveryState(
          kTeal);
     ui.rect(id + ".retry.hit")
         .position(retryButtonX, statusY)
-        .size(retryButtonSize, retryButtonSize)
+        .size(kFailedDeliveryStateRetryButtonSize,
+              kFailedDeliveryStateRetryButtonSize)
         .color({0.0f, 0.0f, 0.0f, 0.0f})
         .onClick([&runtime, messageId = message.GetMessageId()] {
             runtime.resendSelectedPeerMessage(messageId);
@@ -3991,7 +4572,8 @@ void drawRuntimeMessageDeliveryState(
         .build();
 }
 
-float runtimeMessageBubbleWidth(float timelineWidth, float availableBubbleWidth)
+float runtimeMessageBubbleMaxWidth(float timelineWidth,
+                                   float availableBubbleWidth)
 {
     const float maxWidth = availableBubbleWidth;
     if (maxWidth <= 210.0f) {
@@ -4012,8 +4594,8 @@ void drawRuntimeChatTimelineContent(
     constexpr float avatarBubbleGap = 12.0f;
     const float availableBubbleWidth =
         std::max(160.0f, width - sidePadding * 2.0f - avatarSize - avatarBubbleGap);
-    const float messageBubbleWidth =
-        runtimeMessageBubbleWidth(width, availableBubbleWidth);
+    const float messageBubbleMaxWidth =
+        runtimeMessageBubbleMaxWidth(width, availableBubbleWidth);
     float y = 22.0f;
     bool& stickerMenuOpen = ui.state<bool>("chat.sticker.context.open");
     float& stickerMenuX = ui.state<float>("chat.sticker.context.x");
@@ -4029,7 +4611,11 @@ void drawRuntimeChatTimelineContent(
         const auto& message = messages[index];
         const bool outgoing =
             message.GetDirection() == relaydesk::storage::MessageDirection::Outgoing;
-        const float bubbleWidth = messageBubbleWidth;
+        const MessageDocumentBubbleMetrics metrics =
+            makeMessageDocumentBubbleMetrics(message,
+                                             messageBubbleMaxWidth,
+                                             outgoing);
+        const float bubbleWidth = metrics.width;
         const float avatarX = outgoing
             ? width - sidePadding - avatarSize
             : sidePadding;
@@ -4048,7 +4634,7 @@ void drawRuntimeChatTimelineContent(
                                                              id,
                                                              bubbleX,
                                                              y,
-                                                             bubbleWidth,
+                                                             metrics,
                                                              message,
                                                              outgoing,
                                                              stickerMenuOpen,
@@ -4129,21 +4715,20 @@ void drawRuntimeChatTimeline(
         const float availableBubbleWidth =
             std::max(160.0f,
                      width - sidePadding * 2.0f - avatarSize - avatarBubbleGap);
-        const float messageBubbleWidth =
-            runtimeMessageBubbleWidth(width, availableBubbleWidth);
+        const float messageBubbleMaxWidth =
+            runtimeMessageBubbleMaxWidth(width, availableBubbleWidth);
         float measuredContentHeight = 42.0f;
         for (const auto& message : messages) {
             const bool outgoing =
                 message.GetDirection()
                 == relaydesk::storage::MessageDirection::Outgoing;
-            const float bubbleWidth = messageBubbleWidth;
-            const float innerWidth =
-                std::max(80.0f, bubbleWidth - kMessageBubblePadding * 2.0f);
+            const MessageDocumentBubbleMetrics metrics =
+                makeMessageDocumentBubbleMetrics(message,
+                                                 messageBubbleMaxWidth,
+                                                 outgoing);
             const bool failedStateInside =
                 shouldDrawFailedDeliveryStateInsideBubble(message, outgoing);
-            measuredContentHeight += messageDocumentBubbleHeight(message,
-                                                                 innerWidth,
-                                                                 outgoing)
+            measuredContentHeight += metrics.height
                 + (outgoing && !failedStateInside ? 24.0f : 16.0f);
         }
         const float contentHeight = std::max(height, measuredContentHeight);
@@ -4487,160 +5072,6 @@ void drawRuntimeComposer(
     }
 }
 
-void transferSummary(eui::Ui& ui,
-                     const std::string& id,
-                     float x,
-                     float y,
-                     float width,
-                     const TransferPreview& transfer)
-{
-    icon(ui, id + ".file", x, y + 2.0f, 36.0f, 0xE7C3, transfer.accent);
-    text(ui, id + ".name", x + 46.0f, y + 0.0f, width - 112.0f, 24.0f,
-         transfer.fileName, 14.0f);
-    text(ui, id + ".dir", x + 46.0f, y + 24.0f, 150.0f, 20.0f, transfer.direction,
-         12.0f, kMutedText);
-    text(ui, id + ".pct", x + width - 54.0f, y + 18.0f, 54.0f, 22.0f,
-         std::to_string(static_cast<int>(transfer.progress * 100.0f)) + "%", 14.0f,
-         transfer.accent, eui::HorizontalAlign::Right);
-    ui.stack(id + ".bar.pos")
-        .position(x, y + 52.0f)
-        .size(width, 6.0f)
-        .content([&] {
-            components::progress(ui, id + ".bar")
-                .size(width, 6.0f)
-                .value(transfer.progress)
-                .style(progressStyle({0.830f, 0.840f, 0.845f, 1.0f}, transfer.accent))
-                .build();
-        })
-        .build();
-    text(ui, id + ".detail", x, y + 62.0f, width, 20.0f, transfer.detail, 12.0f,
-         kMutedText);
-}
-
-void drawDetails(eui::Ui& ui, float x, float width, float height)
-{
-    const float bottom = kContentTop + height;
-    const float summaryWidth = width - 44.0f;
-
-    rect(ui, "details.bg", x, kContentTop, width, height, kPanelBackground);
-    rect(ui, "details.line", x, kContentTop, 1.0f, height, kBorder);
-    text(ui, "details.title", x + 22.0f, kContentTop + 19.0f, 170.0f, 28.0f,
-         "Alex-PC", 17.0f);
-    icon(ui, "details.close", x + width - 52.0f, kContentTop + 19.0f, 30.0f, 0xE711,
-         kText);
-    avatar(ui, "details.avatar", x + 50.0f, kContentTop + 73.0f, 78.0f,
-           "Alex-PC");
-    statusDot(ui, "details.status", x + 154.0f, kContentTop + 101.0f, kGreen, 12.0f);
-    text(ui, "details.online", x + 176.0f, kContentTop + 91.0f, 120.0f, 28.0f,
-         "在线", 18.0f, kGreen);
-    text(ui, "details.ip", x + 176.0f, kContentTop + 125.0f, 120.0f, 24.0f,
-         "192.168.1.24",
-         15.0f, kText);
-    rect(ui, "details.sep.1", x, kContentTop + 179.0f, width, 1.0f, kBorder);
-    text(ui, "details.device.title", x + 22.0f, kContentTop + 203.0f, 160.0f,
-         26.0f, "设备信息", 15.0f);
-    const std::array labels{
-        "电脑名", "用户", "系统", "IP 地址", "MAC 地址", "在线时长",
-    };
-    const std::array values{
-        "Alex-PC", "Alex", "Windows 11 Pro 23H2", "192.168.1.24",
-        "00-15-5D-8E-2A-7C", "2天 4时 18分",
-    };
-    for (int index = 0; index < static_cast<int>(labels.size()); ++index) {
-        const float rowY = kContentTop + 253.0f + static_cast<float>(index) * 28.0f;
-        text(ui, "details.label." + std::to_string(index), x + 22.0f, rowY,
-             130.0f, 22.0f, labels[static_cast<std::size_t>(index)], 12.0f,
-             kMutedText);
-        text(ui, "details.value." + std::to_string(index), x + 170.0f, rowY,
-             width - 190.0f, 22.0f, values[static_cast<std::size_t>(index)], 12.0f,
-             kText, eui::HorizontalAlign::Right);
-    }
-    rect(ui, "details.sep.2", x, kContentTop + 417.0f, width, 1.0f, kBorder);
-    text(ui, "details.transfers.title", x + 22.0f, kContentTop + 441.0f, 180.0f,
-         26.0f, "活跃传输 (2)", 15.0f);
-    const TransferPreview report{
-        "Q2_Report_2024.pdf",
-        "发给 Alex-PC",
-        "19.4 MB / 24.8 MB  -  5.2 MB/s",
-        0.78f,
-        kTeal,
-    };
-    const TransferPreview specs{
-        "Design_Specs_v2.zip",
-        "来自 Alex-PC",
-        "50.7 MB / 112.6 MB  -  4.1 MB/s",
-        0.45f,
-        kAmber,
-    };
-    const float firstTransferY = kContentTop + 486.0f;
-    const float secondTransferY = std::min(kContentTop + 586.0f, bottom - 82.0f);
-    transferSummary(ui, "details.transfer.report", x + 22.0f, firstTransferY,
-                    summaryWidth, report);
-    rect(ui, "details.transfer.sep", x + 22.0f, secondTransferY - 18.0f, summaryWidth,
-         1.0f, kBorder);
-    transferSummary(ui, "details.transfer.specs", x + 22.0f, secondTransferY,
-                    summaryWidth, specs);
-    if (height > 760.0f) {
-        text(ui, "details.show.all", x + 22.0f, bottom - 80.0f, 180.0f, 24.0f,
-             "查看全部传输", 14.0f, kTeal);
-    }
-}
-
-void drawRuntimeDetails(
-    eui::Ui& ui,
-    float x,
-    float width,
-    float height,
-    const std::optional<relaydesk::runtime::PeerListItem>& selectedPeer)
-{
-    rect(ui, "details.bg", x, kContentTop, width, height, kPanelBackground);
-    rect(ui, "details.line", x, kContentTop, 1.0f, height, kBorder);
-    text(ui, "details.title", x + 22.0f, kContentTop + 19.0f, width - 74.0f,
-         28.0f, getSelectedPeerTitle(selectedPeer), 17.0f);
-    icon(ui, "details.close", x + width - 52.0f, kContentTop + 19.0f, 30.0f, 0xE711,
-         kText);
-    avatar(ui, "details.avatar", x + 50.0f, kContentTop + 73.0f, 78.0f,
-           getSelectedPeerTitle(selectedPeer));
-
-    const bool online = selectedPeer.has_value() && selectedPeer->GetOnline();
-    statusDot(ui, "details.status", x + 154.0f, kContentTop + 101.0f,
-              online ? kGreen : kOffline, 12.0f);
-    text(ui, "details.online", x + 176.0f, kContentTop + 91.0f, 120.0f, 28.0f,
-         online ? "在线" : "离线", 18.0f, online ? kGreen : kOffline);
-    text(ui, "details.ip", x + 176.0f, kContentTop + 125.0f, width - 198.0f,
-         24.0f, getSelectedPeerAddress(selectedPeer), 15.0f, kText);
-    rect(ui, "details.sep.1", x, kContentTop + 179.0f, width, 1.0f, kBorder);
-    text(ui, "details.device.title", x + 22.0f, kContentTop + 203.0f,
-         160.0f, 26.0f, "设备", 15.0f);
-
-    const std::array labels{
-        "显示名",
-        "主机名",
-        "地址",
-    };
-    const std::array values{
-        selectedPeer.has_value() ? getPeerDisplayName(selectedPeer.value()) : "-",
-        selectedPeer.has_value() ? selectedPeer->GetHostName() : "-",
-        selectedPeer.has_value() ? selectedPeer->GetAddress() : "-",
-    };
-
-    for (int index = 0; index < static_cast<int>(labels.size()); ++index) {
-        const float rowY = kContentTop + 253.0f + static_cast<float>(index) * 32.0f;
-        text(ui, "details.label." + std::to_string(index), x + 22.0f, rowY,
-             100.0f, 22.0f, labels[static_cast<std::size_t>(index)], 12.0f,
-             kMutedText);
-        text(ui, "details.value." + std::to_string(index), x + 128.0f, rowY,
-             width - 150.0f, 22.0f, values[static_cast<std::size_t>(index)],
-             12.0f, kText, eui::HorizontalAlign::Right);
-    }
-
-    rect(ui, "details.sep.2", x, kContentTop + 365.0f, width, 1.0f, kBorder);
-    text(ui, "details.transfers.title", x + 22.0f, kContentTop + 389.0f,
-         width - 44.0f, 26.0f, "传输", 15.0f);
-    text(ui, "details.transfers.empty", x + 22.0f, kContentTop + 433.0f,
-         width - 44.0f, 24.0f, "暂无活动传输", 13.0f, kMutedText);
-}
-
 void drawImagePreviewOverlay(eui::Ui& ui, float width, float height)
 {
     bool& previewOpen = ui.state<bool>("chat.image.preview.open");
@@ -4757,14 +5188,6 @@ void drawRelayDesk(eui::Ui& ui,
                         layout.chatWidth,
                         runtime,
                         selectedPeer);
-
-    if (layout.showDetails) {
-        drawRuntimeDetails(ui,
-                           layout.detailX,
-                           layout.detailWidth,
-                           layout.contentHeight,
-                           selectedPeer);
-    }
 
     drawImagePreviewOverlay(ui, layout.width, layout.height);
 }

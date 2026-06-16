@@ -201,6 +201,9 @@ if(RELAYDESK_HAS_EUI_NEO)
             ${CMAKE_SOURCE_DIR}/assets/icon.ico
             ${CMAKE_SOURCE_DIR}/assets/icon.png
             $<TARGET_FILE_DIR:relaydesk>/assets
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/assets/third_party
+            $<TARGET_FILE_DIR:relaydesk>/assets/third_party
     )
 endif()
 

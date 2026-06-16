@@ -107,6 +107,7 @@ nlohmann::json transferOfferToJson(const TransferOfferMessage& message)
         {"sender_device_id", message.GetSenderDeviceId()},
         {"file_name", message.GetFileName()},
         {"file_size", message.GetFileSize()},
+        {"image_transfer", message.GetImageTransfer()},
     };
     if (message.GetSha256().has_value()) {
         value["sha256"] = message.GetSha256().value();
@@ -123,6 +124,7 @@ TransferOfferMessage transferOfferFromJson(const nlohmann::json& value)
     message.SetSenderDeviceId(readRequiredString(value, "sender_device_id"));
     message.SetFileName(readRequiredString(value, "file_name"));
     message.SetFileSize(readRequiredFileSize(value));
+    message.SetImageTransfer(value.value("image_transfer", false));
     if (value.contains("sha256") && value["sha256"].is_string()) {
         message.SetSha256(value["sha256"].get<std::string>());
     }

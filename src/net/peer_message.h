@@ -25,6 +25,7 @@ public:
     const std::string& GetFileName() const { return fileName_; }
     std::uintmax_t GetFileSize() const { return fileSize_; }
     const std::optional<std::string>& GetSha256() const { return sha256_; }
+    bool GetImageTransfer() const { return imageTransfer_; }
 
     void SetMessageId(std::string messageId) { messageId_ = std::move(messageId); }
     void SetPartId(std::string partId) { partId_ = std::move(partId); }
@@ -36,6 +37,7 @@ public:
     void SetFileName(std::string fileName) { fileName_ = std::move(fileName); }
     void SetFileSize(std::uintmax_t fileSize) { fileSize_ = fileSize; }
     void SetSha256(std::string sha256) { sha256_ = std::move(sha256); }
+    void SetImageTransfer(bool imageTransfer) { imageTransfer_ = imageTransfer; }
 
 protected:
     std::string messageId_;
@@ -45,6 +47,7 @@ protected:
     std::string fileName_;
     std::uintmax_t fileSize_ = 0;
     std::optional<std::string> sha256_;
+    bool imageTransfer_ = false;
 };
 
 class TransferChunkMessage {

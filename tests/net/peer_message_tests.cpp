@@ -164,6 +164,7 @@ relaydesk::net::TransferOfferMessage makeTransferOffer()
     message.SetFileName("photo.png");
     message.SetFileSize(4);
     message.SetSha256("hash-transfer-1");
+    message.SetImageTransfer(true);
     return message;
 }
 
@@ -218,9 +219,35 @@ int roundTripsTransferOfferFrame()
         check != 0) {
         return check;
     }
+    if (const int check = expect(decoded.GetImageTransfer(),
+                                 "Decoded transfer offer image flag mismatch.");
+        check != 0) {
+        return check;
+    }
 
     return expect(decoded.GetSha256().value() == "hash-transfer-1",
                   "Decoded transfer offer hash mismatch.");
+}
+
+int treatsLegacyTransferOfferAsFile()
+{
+    const relaydesk::net::TransferOfferMessage decoded =
+        relaydesk::net::parseTransferOfferHeader(
+            R"({
+                "protocol": "relaydesk.peer",
+                "version": 1,
+                "type": "transfer_offer",
+                "message": {
+                    "message_id": "message-1",
+                    "part_id": "p3",
+                    "transfer_id": "transfer-1",
+                    "sender_device_id": "local-device",
+                    "file_name": "photo.png",
+                    "file_size": 4
+                }
+            })");
+    return expect(!decoded.GetImageTransfer(),
+                  "Legacy transfer offer was treated as an image transfer.");
 }
 
 int roundTripsTransferChunkFrame()
@@ -288,6 +315,9 @@ int main()
         return result;
     }
     if (const int result = roundTripsTransferOfferFrame(); result != 0) {
+        return result;
+    }
+    if (const int result = treatsLegacyTransferOfferAsFile(); result != 0) {
         return result;
     }
     if (const int result = roundTripsTransferChunkFrame(); result != 0) {

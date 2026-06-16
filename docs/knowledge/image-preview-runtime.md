@@ -47,3 +47,43 @@ RelayDesk 在部分 Windows 电脑上图片卡片或图片预览弹层无法显�
 2. 如果出现 `__std_*` 未解析符号，优先检查是否用 VS2022/VC143 链接了 VS18/VC145 构建出的 Skia/Boost 静态库。
 3. 图片路径相关问题先确认路径是否包含中文、空格、emoji 或非当前系统代码页字符。
 4. `.webp` 不能只看扩展名；如果 WIC 不能生成 PNG 缩略图，而底层解码器也不支持 WebP，就应降级为普通文件或引入明确的 WebP 解码方案。
+
+## 2026-06-16 SVG 文件图标空白
+
+### 现象
+
+文件传输卡片已预留左侧文件类型图标位置，但运行在
+`out/build/啊啊啊/relaydesk.exe` 时，`.exe`、`.webm`、`.txt` 的
+`vscode-icons` SVG 图标全部空白，fallback 文本图标也没有显示。
+
+### 影响范围
+
+- 走 `ui.image().path(...)` 加载 SVG 文件路径的 UI。
+- exe 所在路径或资源路径包含中文等非 ASCII 字符时更容易触发。
+
+### 根因
+
+RelayDesk 自己用 `std::filesystem::path` 能找到 SVG 资源，所以渲染函数判断
+“图标资源可用”并跳过 fallback。但 EUI 的 SVG 文件加载最终在
+`core/render/image_source.cpp` 里使用 `std::ifstream(path, std::ios::binary)`，
+这个窄字符路径在 Windows 中文目录下会打开失败，最终表现为空白图标。
+
+### 最终解决方案
+
+RelayDesk 不再把 SVG 文件路径直接传给 `ui.image().path(...)`。改为：
+
+- 用 `std::filesystem::path` 定位 `assets/third_party/vscode-icons/icons/*.svg`。
+- 用 `std::ifstream(std::filesystem::path, ...)` 读取 SVG 文本，保证 Windows 中文路径可打开。
+- 用 `ui.svg(...).markup(svgText)` 渲染 SVG 文本。
+- 只有读到非空 SVG 文本时才认为图标绘制成功；否则继续走 fallback。
+
+### 验证方式
+
+- `cmake --build out/build/windows-msvc-nmake-release --target relaydesk --config Release`
+- `ctest --test-dir out/build/windows-msvc-nmake-release --output-on-failure`
+
+### 快速检查清单
+
+1. EUI SVG 图标空白时，先看 exe 或资源目录是否含中文路径。
+2. 不要用 `ui.image().path(...)` 直接加载项目内 SVG 图标文件；优先读成文本后走 `ui.svg().markup(...)`。
+3. 如果资源定位成功但画面空白，不能直接返回成功，应保留可见 fallback。

@@ -424,14 +424,35 @@ std::filesystem::path makeIncomingTempFilePath(
         / (sanitizeFileName(fileName) + ".part");
 }
 
+std::filesystem::path makeAvailableSiblingPath(
+    const std::filesystem::path& desiredPath)
+{
+    std::error_code error;
+    if (!std::filesystem::exists(desiredPath, error)) {
+        return desiredPath;
+    }
+
+    const std::filesystem::path directory = desiredPath.parent_path();
+    const std::wstring stem = desiredPath.stem().wstring();
+    const std::wstring extension = desiredPath.extension().wstring();
+    for (int index = 1; index < 10000; ++index) {
+        const std::filesystem::path candidate =
+            directory / (stem + L"(" + std::to_wstring(index) + L")" + extension);
+        error.clear();
+        if (!std::filesystem::exists(candidate, error)) {
+            return candidate;
+        }
+    }
+
+    throw std::runtime_error("No available incoming transfer file name.");
+}
+
 std::filesystem::path makeIncomingFinalFilePath(
     const relaydesk::storage::AppPaths& appPaths,
     const PendingIncomingTransfer& transfer)
 {
-    return appPaths.GetInboxDirectory()
-        / sanitizeFileName(transfer.GetSenderDeviceId())
-        / sanitizeFileName(transfer.GetTransferId())
-        / sanitizeFileName(transfer.GetFileName());
+    return makeAvailableSiblingPath(
+        appPaths.GetInboxDirectory() / sanitizeFileName(transfer.GetFileName()));
 }
 
 std::string chooseTransferFileName(
@@ -462,6 +483,8 @@ relaydesk::net::TransferOfferMessage makeTransferOfferMessage(
     message.SetSenderDeviceId(record.GetSenderDeviceId());
     message.SetFileName(fileName);
     message.SetFileSize(fileSize);
+    message.SetImageTransfer(
+        part.GetType() == relaydesk::storage::MessagePartType::Image);
     if (part.GetSha256().has_value()) {
         message.SetSha256(part.GetSha256().value());
     }
@@ -1070,6 +1093,7 @@ void RelayDeskRuntime::handleIncomingPeerFrame(relaydesk::net::PeerFrame frame)
         transfer.SetExpectedSize(offer.GetFileSize());
         transfer.SetReceivedSize(0);
         transfer.SetTempFilePath(tempFilePath);
+        transfer.SetImageTransfer(offer.GetImageTransfer());
         {
             std::lock_guard lock(pendingTransferMutex_);
             pendingIncomingTransfers_[offer.GetTransferId()] = std::move(transfer);
@@ -1141,25 +1165,25 @@ void RelayDeskRuntime::handleIncomingPeerFrame(relaydesk::net::PeerFrame frame)
         const auto appPaths = relaydesk::storage::createAppPaths();
         std::filesystem::path finalFilePath;
         std::optional<std::string> sha256;
-        try {
-            const std::optional<StoredImageAttachment> storedImage =
-                storePreviewableImageAttachment(appPaths,
-                                                transfer.GetTempFilePath(),
-                                                transfer.GetFileName(),
-                                                true);
-            if (storedImage.has_value()) {
-                finalFilePath = storedImage->GetImagePath();
-                sha256 = storedImage->GetSha256();
+        if (transfer.GetImageTransfer()) {
+            try {
+                const std::optional<StoredImageAttachment> storedImage =
+                    storePreviewableImageAttachment(appPaths,
+                                                    transfer.GetTempFilePath(),
+                                                    transfer.GetFileName(),
+                                                    true);
+                if (storedImage.has_value()) {
+                    finalFilePath = storedImage->GetImagePath();
+                    sha256 = storedImage->GetSha256();
+                }
+            } catch (const std::exception&) {
             }
-        } catch (const std::exception&) {
         }
 
         if (finalFilePath.empty()) {
             finalFilePath = makeIncomingFinalFilePath(appPaths, transfer);
             std::filesystem::create_directories(finalFilePath.parent_path());
             std::error_code error;
-            std::filesystem::remove(finalFilePath, error);
-            error.clear();
             std::filesystem::rename(transfer.GetTempFilePath(), finalFilePath, error);
             if (error) {
                 throw std::runtime_error("Failed to finalize incoming transfer file.");

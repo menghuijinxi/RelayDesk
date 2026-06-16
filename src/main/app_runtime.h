@@ -102,6 +102,7 @@ public:
     std::uintmax_t GetExpectedSize() const { return expectedSize_; }
     std::uintmax_t GetReceivedSize() const { return receivedSize_; }
     const std::filesystem::path& GetTempFilePath() const { return tempFilePath_; }
+    bool GetImageTransfer() const { return imageTransfer_; }
 
     void SetSenderDeviceId(std::string senderDeviceId)
     {
@@ -120,6 +121,7 @@ public:
     {
         tempFilePath_ = std::move(tempFilePath);
     }
+    void SetImageTransfer(bool imageTransfer) { imageTransfer_ = imageTransfer; }
 
 protected:
     std::string senderDeviceId_;
@@ -130,6 +132,7 @@ protected:
     std::uintmax_t expectedSize_ = 0;
     std::uintmax_t receivedSize_ = 0;
     std::filesystem::path tempFilePath_;
+    bool imageTransfer_ = false;
 };
 
 class PendingTransferUpdate {
