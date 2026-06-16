@@ -4,6 +4,7 @@
 #include "core/platform/async.h"
 #include "core/time.h"
 #include "core/uuid.h"
+#include "main/image_attachment_store.h"
 #include "platform/computer_name.h"
 #include "platform/windows_install_id.h"
 #include "storage/app_paths.h"
@@ -271,6 +272,7 @@ bool applyTransferPartUpdate(
     const std::string& fileName,
     std::uintmax_t fileSize,
     const std::string& localPath,
+    const std::optional<std::string>& sha256,
     relaydesk::storage::TransferState transferState)
 {
     if (record.GetMessageId() != messageId) {
@@ -292,6 +294,9 @@ bool applyTransferPartUpdate(
         part.SetFileName(fileName);
         part.SetFileSize(fileSize);
         part.SetLocalPath(localPath);
+        if (sha256.has_value()) {
+            part.SetSha256(sha256.value());
+        }
         updated = true;
         break;
     }
@@ -321,9 +326,11 @@ std::string makeWorkRelativePath(const relaydesk::storage::AppPaths& appPaths,
     std::filesystem::path relativePath =
         std::filesystem::relative(path, appPaths.GetWorkDirectory(), error);
     if (error || relativePath.empty()) {
-        return path.string();
+        const auto fallback = path.u8string();
+        return std::string(fallback.begin(), fallback.end());
     }
-    return relativePath.generic_string();
+    const auto value = relativePath.generic_u8string();
+    return std::string(value.begin(), value.end());
 }
 
 std::string fileNameFromPathText(const std::string& pathText)
@@ -376,6 +383,10 @@ std::string chooseTransferFileName(
     const relaydesk::storage::ChatMessagePart& part,
     const std::filesystem::path& localPath)
 {
+    if (part.GetFileName().has_value() && !part.GetFileName().value().empty()) {
+        return sanitizeFileName(part.GetFileName().value());
+    }
+
     const std::string pathFileName = localPath.filename().string();
     if (!pathFileName.empty()) {
         return pathFileName;
@@ -1055,15 +1066,31 @@ void RelayDeskRuntime::handleIncomingPeerFrame(relaydesk::net::PeerFrame frame)
         }
 
         const auto appPaths = relaydesk::storage::createAppPaths();
-        const std::filesystem::path finalFilePath =
-            makeIncomingFinalFilePath(appPaths, transfer);
-        std::filesystem::create_directories(finalFilePath.parent_path());
-        std::error_code error;
-        std::filesystem::remove(finalFilePath, error);
-        error.clear();
-        std::filesystem::rename(transfer.GetTempFilePath(), finalFilePath, error);
-        if (error) {
-            throw std::runtime_error("Failed to finalize incoming transfer file.");
+        std::filesystem::path finalFilePath;
+        std::optional<std::string> sha256;
+        try {
+            const std::optional<StoredImageAttachment> storedImage =
+                storePreviewableImageAttachment(appPaths,
+                                                transfer.GetTempFilePath(),
+                                                transfer.GetFileName(),
+                                                true);
+            if (storedImage.has_value()) {
+                finalFilePath = storedImage->GetImagePath();
+                sha256 = storedImage->GetSha256();
+            }
+        } catch (const std::exception&) {
+        }
+
+        if (finalFilePath.empty()) {
+            finalFilePath = makeIncomingFinalFilePath(appPaths, transfer);
+            std::filesystem::create_directories(finalFilePath.parent_path());
+            std::error_code error;
+            std::filesystem::remove(finalFilePath, error);
+            error.clear();
+            std::filesystem::rename(transfer.GetTempFilePath(), finalFilePath, error);
+            if (error) {
+                throw std::runtime_error("Failed to finalize incoming transfer file.");
+            }
         }
 
         PendingTransferUpdate update;
@@ -1074,6 +1101,9 @@ void RelayDeskRuntime::handleIncomingPeerFrame(relaydesk::net::PeerFrame frame)
         update.SetFileName(transfer.GetFileName());
         update.SetFileSize(transfer.GetExpectedSize());
         update.SetLocalPath(makeWorkRelativePath(appPaths, finalFilePath));
+        if (sha256.has_value()) {
+            update.SetSha256(sha256.value());
+        }
         update.SetTransferState(relaydesk::storage::TransferState::Completed);
         enqueueTransferUpdate(std::move(update));
 
@@ -1184,6 +1214,7 @@ bool RelayDeskRuntime::updateChatMessageTransferPart(
                                         update.GetFileName(),
                                         update.GetFileSize(),
                                         update.GetLocalPath(),
+                                        update.GetSha256(),
                                         update.GetTransferState())) {
                 updatedPendingMessage = true;
                 break;
@@ -1201,6 +1232,7 @@ bool RelayDeskRuntime::updateChatMessageTransferPart(
                                         update.GetFileName(),
                                         update.GetFileSize(),
                                         update.GetLocalPath(),
+                                        update.GetSha256(),
                                         update.GetTransferState())) {
                 recordToPersist = message;
                 break;
@@ -1220,6 +1252,7 @@ bool RelayDeskRuntime::updateChatMessageTransferPart(
                                         update.GetFileName(),
                                         update.GetFileSize(),
                                         update.GetLocalPath(),
+                                        update.GetSha256(),
                                         update.GetTransferState())) {
                 recordToPersist = std::move(message);
                 break;

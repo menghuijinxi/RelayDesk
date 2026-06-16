@@ -34,6 +34,15 @@ public:
     {
         return tempTransfersDirectory_;
     }
+    const std::filesystem::path& GetImagesDirectory() const { return imagesDirectory_; }
+    const std::filesystem::path& GetImageBlobsDirectory() const
+    {
+        return imageBlobsDirectory_;
+    }
+    const std::filesystem::path& GetImageThumbnailsDirectory() const
+    {
+        return imageThumbnailsDirectory_;
+    }
 
 protected:
     std::filesystem::path executablePath_;
@@ -50,6 +59,9 @@ protected:
     std::filesystem::path inboxDirectory_;
     std::filesystem::path outboxDirectory_;
     std::filesystem::path tempTransfersDirectory_;
+    std::filesystem::path imagesDirectory_;
+    std::filesystem::path imageBlobsDirectory_;
+    std::filesystem::path imageThumbnailsDirectory_;
 };
 
 AppPaths createAppPaths();

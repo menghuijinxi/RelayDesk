@@ -19,7 +19,10 @@ AppPaths::AppPaths(std::filesystem::path executablePath)
       transfersDirectory_(dataDirectory_ / "transfers"),
       inboxDirectory_(transfersDirectory_ / "inbox"),
       outboxDirectory_(transfersDirectory_ / "outbox"),
-      tempTransfersDirectory_(transfersDirectory_ / "temp")
+      tempTransfersDirectory_(transfersDirectory_ / "temp"),
+      imagesDirectory_(dataDirectory_ / "images"),
+      imageBlobsDirectory_(imagesDirectory_ / "blobs"),
+      imageThumbnailsDirectory_(imagesDirectory_ / "thumbnails")
 {
 }
 
@@ -36,6 +39,9 @@ void ensureAppDirectories(const AppPaths& appPaths)
         appPaths.GetInboxDirectory(),
         appPaths.GetOutboxDirectory(),
         appPaths.GetTempTransfersDirectory(),
+        appPaths.GetImagesDirectory(),
+        appPaths.GetImageBlobsDirectory(),
+        appPaths.GetImageThumbnailsDirectory(),
     };
 
     for (const auto& directory : directories) {

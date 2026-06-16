@@ -130,6 +130,7 @@ if(RELAYDESK_HAS_EUI_NEO)
     add_executable(relaydesk
         "${RELAYDESK_EUI_NEO_SOURCE_DIR}/core/app/glfw_app_main.cpp"
         src/main/app.cpp
+        src/main/image_attachment_store.cpp
         src/main/app_runtime.cpp
         src/core/diagnostic_log.cpp
         src/core/time.cpp
@@ -167,7 +168,7 @@ if(RELAYDESK_HAS_EUI_NEO)
         target_sources(relaydesk PRIVATE
             ${CMAKE_SOURCE_DIR}/relaydesk.rc
         )
-        target_link_libraries(relaydesk PRIVATE shell32 windowscodecs ole32)
+        target_link_libraries(relaydesk PRIVATE shell32 windowscodecs ole32 bcrypt)
     else()
         message(FATAL_ERROR "RelayDesk currently targets Windows only.")
     endif()
@@ -218,6 +219,43 @@ if(MSVC)
 endif()
 
 add_test(NAME relaydesk_storage_tests COMMAND relaydesk_storage_tests)
+
+if(WIN32)
+    add_executable(relaydesk_image_attachment_store_tests
+        tests/main/image_attachment_store_tests.cpp
+        src/main/image_attachment_store.cpp
+        src/core/uuid.cpp
+        src/platform/attachment_input_win.cpp
+        src/storage/app_paths.cpp
+        src/storage/app_paths_win.cpp
+    )
+
+    target_include_directories(relaydesk_image_attachment_store_tests PRIVATE src)
+    target_compile_features(relaydesk_image_attachment_store_tests PRIVATE cxx_std_23)
+
+    target_compile_definitions(relaydesk_image_attachment_store_tests PRIVATE
+        RELAYDESK_IMAGE_ATTACHMENT_STORE_TEST_WORK_DIR="${CMAKE_SOURCE_DIR}/tmp/tests/image_attachment_store"
+        NOMINMAX
+        UNICODE
+        _UNICODE
+        WIN32_LEAN_AND_MEAN
+    )
+
+    target_link_libraries(relaydesk_image_attachment_store_tests PRIVATE
+        shell32
+        windowscodecs
+        ole32
+        bcrypt
+    )
+
+    if(MSVC)
+        target_compile_options(relaydesk_image_attachment_store_tests
+            PRIVATE /W4 /permissive- /utf-8)
+    endif()
+
+    add_test(NAME relaydesk_image_attachment_store_tests
+        COMMAND relaydesk_image_attachment_store_tests)
+endif()
 
 add_executable(relaydesk_identity_tests
     tests/storage/local_identity_tests.cpp

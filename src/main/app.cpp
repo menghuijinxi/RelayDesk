@@ -3,6 +3,7 @@
 #include "core/render/text.h"
 #include "core/platform/platform.h"
 #include "core/uuid.h"
+#include "main/image_attachment_store.h"
 #include "main/app_runtime.h"
 #include "platform/attachment_input.h"
 #include "platform/text_encoding.h"
@@ -22,6 +23,7 @@
 #include <iomanip>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -195,6 +197,7 @@ struct PendingAttachmentItem {
     std::string displayName;
     std::string localPath;
     std::string previewPath;
+    std::string sha256;
     std::filesystem::path sourcePath;
     std::uintmax_t fileSize = 0;
     unsigned int imagePixelWidth = 0;
@@ -651,6 +654,26 @@ std::string makeAttachmentLocalPath(
     return filesystemPathToUtf8String(filePath);
 }
 
+bool isPathUnderDirectory(const std::filesystem::path& filePath,
+                          const std::filesystem::path& directory)
+{
+    std::error_code error;
+    const std::filesystem::path relativePath =
+        std::filesystem::relative(filePath, directory, error);
+    return !error
+        && !relativePath.empty()
+        && !relativePath.is_absolute()
+        && !isParentTraversalPath(relativePath);
+}
+
+bool shouldMoveComposerImageSource(
+    const relaydesk::storage::AppPaths& appPaths,
+    const std::filesystem::path& sourcePath)
+{
+    return sourcePath.filename().string() == "clipboard.bmp"
+        && isPathUnderDirectory(sourcePath, appPaths.GetOutboxDirectory());
+}
+
 std::string lowerAscii(std::string value)
 {
     std::transform(
@@ -824,38 +847,30 @@ std::filesystem::path stageAttachmentForSend(
 struct ComposerImageStage {
     std::filesystem::path sourcePath;
     std::filesystem::path previewPath;
+    std::string sha256;
 };
 
 ComposerImageStage stageComposerImageFiles(
     const relaydesk::storage::AppPaths& appPaths,
     const std::filesystem::path& sourcePath)
 {
-    std::string extension = lowerAscii(sourcePath.extension().string());
-    if (extension.empty()) {
-        extension = ".img";
+    const std::string displayName =
+        filesystemPathToUtf8String(sourcePath.filename());
+    const bool removeSource =
+        shouldMoveComposerImageSource(appPaths, sourcePath);
+    const std::optional<relaydesk::runtime::StoredImageAttachment> storedImage =
+        relaydesk::runtime::storePreviewableImageAttachment(appPaths,
+                                                            sourcePath,
+                                                            displayName,
+                                                            removeSource);
+    if (!storedImage.has_value()) {
+        throw std::runtime_error("Image cannot be previewed.");
     }
 
-    const std::filesystem::path targetDirectory =
-        appPaths.GetOutboxDirectory() / relaydesk::core::createUuidV4();
-    std::filesystem::create_directories(targetDirectory);
-    const std::filesystem::path targetPath = targetDirectory / ("source" + extension);
-    std::filesystem::copy_file(
-        sourcePath,
-        targetPath,
-        std::filesystem::copy_options::overwrite_existing);
     ComposerImageStage stage;
-    stage.sourcePath = targetPath.lexically_normal();
-    stage.previewPath = stage.sourcePath;
-
-    const std::filesystem::path thumbnailPath = targetDirectory / "thumbnail.png";
-    const std::optional<std::filesystem::path> generatedThumbnail =
-        relaydesk::platform::createImageThumbnail(stage.sourcePath,
-                                                  thumbnailPath,
-                                                  512u);
-    if (generatedThumbnail.has_value()) {
-        stage.previewPath = generatedThumbnail.value();
-    }
-
+    stage.sourcePath = storedImage->GetImagePath();
+    stage.previewPath = storedImage->GetThumbnailPath().value_or(stage.sourcePath);
+    stage.sha256 = storedImage->GetSha256();
     return stage;
 }
 
@@ -874,6 +889,7 @@ std::optional<PendingAttachmentItem> makePendingAttachmentFromPath(
     std::filesystem::path sourcePath = absolutePath;
     std::filesystem::path previewPath = absolutePath;
     std::string localPath = makeAttachmentLocalPath(appPaths, absolutePath);
+    std::string sha256;
     bool stageOnSend = localPath == filesystemPathToUtf8String(absolutePath);
     if (imageAttachment) {
         try {
@@ -883,6 +899,7 @@ std::optional<PendingAttachmentItem> makePendingAttachmentFromPath(
             previewPath = imageStage.previewPath;
             localPath = makeAttachmentLocalPath(appPaths, imageStage.sourcePath);
             stageOnSend = false;
+            sha256 = imageStage.sha256;
         } catch (const std::exception&) {
             previewPath = absolutePath;
         }
@@ -894,6 +911,7 @@ std::optional<PendingAttachmentItem> makePendingAttachmentFromPath(
     attachment.displayName = filesystemPathToUtf8String(absolutePath.filename());
     attachment.localPath = localPath;
     attachment.previewPath = filesystemPathToGenericUtf8String(previewPath);
+    attachment.sha256 = std::move(sha256);
     attachment.sourcePath = sourcePath;
     attachment.fileSize = fileSizeOrZero(absolutePath);
     if (imageAttachment) {
@@ -915,8 +933,27 @@ PendingAttachmentItem makePendingAttachmentFromSticker(
     attachment.previewPath =
         filesystemPathToGenericUtf8String(std::filesystem::path(sticker.absolutePath));
     attachment.sourcePath = imagePath;
+    try {
+        const auto appPaths = relaydesk::storage::createAppPaths();
+        relaydesk::storage::ensureAppDirectories(appPaths);
+        const std::optional<relaydesk::runtime::StoredImageAttachment> storedImage =
+            relaydesk::runtime::storePreviewableImageAttachment(
+                appPaths,
+                imagePath,
+                attachment.displayName,
+                false);
+        if (storedImage.has_value()) {
+            attachment.localPath =
+                makeAttachmentLocalPath(appPaths, storedImage->GetImagePath());
+            attachment.previewPath = filesystemPathToGenericUtf8String(
+                storedImage->GetThumbnailPath().value_or(storedImage->GetImagePath()));
+            attachment.sourcePath = storedImage->GetImagePath();
+            attachment.sha256 = storedImage->GetSha256();
+        }
+    } catch (const std::exception&) {
+    }
     attachment.fileSize = fileSizeOrZero(imagePath);
-    applyImageSizeMetadata(attachment, imagePath);
+    applyImageSizeMetadata(attachment, attachment.sourcePath);
     attachment.stageOnSend = false;
     return attachment;
 }
@@ -1457,6 +1494,9 @@ std::optional<relaydesk::storage::ChatMessagePart> makeComposerAttachmentPart(
     part.SetTransferState(relaydesk::storage::TransferState::Pending);
     part.SetFileName(attachment.displayName);
     part.SetFileSize(fileSize);
+    if (!attachment.sha256.empty()) {
+        part.SetSha256(attachment.sha256);
+    }
     part.SetLocalPath(localPathText);
     return part;
 }

@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cwctype>
 #include <fstream>
 #include <limits>
 #include <mutex>
@@ -32,12 +33,19 @@ constexpr UINT kAllDroppedFiles = 0xFFFFFFFFu;
 constexpr WORD kBitmapFileSignature = 0x4D42u;
 constexpr DWORD kBitmapAlphaBitfieldsCompression = 6u;
 constexpr unsigned int kMinimumThumbnailSide = 1u;
+constexpr float kJpegThumbnailQuality = 0.78f;
 
 std::mutex gDroppedAttachmentPathsMutex;
 std::vector<std::filesystem::path> gDroppedAttachmentPaths;
 HWND gDropWindow = nullptr;
 WNDPROC gOriginalDropWndProc = nullptr;
 bool gBackspaceWasDown = false;
+
+struct ThumbnailEncoderFormat {
+    GUID containerFormat;
+    WICPixelFormatGUID pixelFormat;
+    bool jpeg = false;
+};
 
 class ClipboardScope {
 public:
@@ -106,6 +114,43 @@ protected:
     HRESULT result_ = E_FAIL;
     bool shouldUninitialize_ = false;
 };
+
+std::wstring lowercaseExtension(const std::filesystem::path& filePath)
+{
+    std::wstring extension = filePath.extension().wstring();
+    std::transform(extension.begin(),
+                   extension.end(),
+                   extension.begin(),
+                   [](wchar_t value) {
+                       return static_cast<wchar_t>(std::towlower(value));
+                   });
+    return extension;
+}
+
+ThumbnailEncoderFormat chooseThumbnailEncoderFormat(
+    const std::filesystem::path& targetPath)
+{
+    const std::wstring extension = lowercaseExtension(targetPath);
+    if (extension == L".jpg" || extension == L".jpeg") {
+        return {GUID_ContainerFormatJpeg, GUID_WICPixelFormat24bppBGR, true};
+    }
+    return {GUID_ContainerFormatPng, GUID_WICPixelFormat32bppBGRA, false};
+}
+
+bool writeJpegThumbnailQuality(IPropertyBag2* propertyBag)
+{
+    if (propertyBag == nullptr) {
+        return false;
+    }
+
+    PROPBAG2 option{};
+    option.pstrName = const_cast<LPOLESTR>(L"ImageQuality");
+
+    VARIANT value{};
+    value.vt = VT_R4;
+    value.fltVal = kJpegThumbnailQuality;
+    return SUCCEEDED(propertyBag->Write(1, &option, &value));
+}
 
 std::vector<std::filesystem::path> extractDroppedPaths(HDROP dropHandle)
 {
@@ -435,6 +480,8 @@ std::optional<std::filesystem::path> createImageThumbnail(
         return std::nullopt;
     }
 
+    const ThumbnailEncoderFormat encoderFormat =
+        chooseThumbnailEncoderFormat(targetPath);
     const double scale = std::min(
         1.0,
         std::min(static_cast<double>(maxSide) / static_cast<double>(sourceWidth),
@@ -457,13 +504,27 @@ std::optional<std::filesystem::path> createImageThumbnail(
         return std::nullopt;
     }
 
+    std::error_code error;
+    std::filesystem::create_directories(targetPath.parent_path(), error);
+    if (error) {
+        return std::nullopt;
+    }
+    const std::filesystem::path temporaryPath = targetPath;
+    const std::filesystem::path writingPath =
+        targetPath.parent_path()
+        / (targetPath.filename().wstring() + L".writing");
+    std::filesystem::remove(temporaryPath, error);
+    error.clear();
+    std::filesystem::remove(writingPath, error);
+    error.clear();
+
     ComPtr<IWICFormatConverter> converter;
     result = factory->CreateFormatConverter(&converter);
     if (FAILED(result)) {
         return std::nullopt;
     }
     result = converter->Initialize(scaler.Get(),
-                                   GUID_WICPixelFormat32bppPBGRA,
+                                   encoderFormat.pixelFormat,
                                    WICBitmapDitherTypeNone,
                                    nullptr,
                                    0.0,
@@ -472,31 +533,27 @@ std::optional<std::filesystem::path> createImageThumbnail(
         return std::nullopt;
     }
 
-    std::error_code error;
-    std::filesystem::create_directories(targetPath.parent_path(), error);
-    if (error) {
-        return std::nullopt;
-    }
-    std::filesystem::remove(targetPath, error);
-    error.clear();
-
     ComPtr<IWICStream> stream;
     result = factory->CreateStream(&stream);
     if (FAILED(result)) {
         return std::nullopt;
     }
-    result = stream->InitializeFromFilename(targetPath.c_str(), GENERIC_WRITE);
+    result = stream->InitializeFromFilename(writingPath.c_str(), GENERIC_WRITE);
     if (FAILED(result)) {
+        std::filesystem::remove(writingPath, error);
         return std::nullopt;
     }
 
     ComPtr<IWICBitmapEncoder> encoder;
-    result = factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder);
+    result = factory->CreateEncoder(encoderFormat.containerFormat,
+                                    nullptr,
+                                    &encoder);
     if (FAILED(result)) {
         return std::nullopt;
     }
     result = encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache);
     if (FAILED(result)) {
+        std::filesystem::remove(writingPath, error);
         return std::nullopt;
     }
 
@@ -504,35 +561,70 @@ std::optional<std::filesystem::path> createImageThumbnail(
     ComPtr<IPropertyBag2> propertyBag;
     result = encoder->CreateNewFrame(&frameEncode, &propertyBag);
     if (FAILED(result)) {
+        std::filesystem::remove(writingPath, error);
+        return std::nullopt;
+    }
+
+    if (encoderFormat.jpeg
+        && !writeJpegThumbnailQuality(propertyBag.Get())) {
+        std::filesystem::remove(writingPath, error);
         return std::nullopt;
     }
 
     result = frameEncode->Initialize(propertyBag.Get());
     if (FAILED(result)) {
+        std::filesystem::remove(writingPath, error);
         return std::nullopt;
     }
     result = frameEncode->SetSize(thumbWidth, thumbHeight);
     if (FAILED(result)) {
+        std::filesystem::remove(writingPath, error);
         return std::nullopt;
     }
 
-    WICPixelFormatGUID pixelFormat = GUID_WICPixelFormat32bppPBGRA;
+    WICPixelFormatGUID pixelFormat = encoderFormat.pixelFormat;
     result = frameEncode->SetPixelFormat(&pixelFormat);
     if (FAILED(result)
-        || !IsEqualGUID(pixelFormat, GUID_WICPixelFormat32bppPBGRA)) {
+        || !IsEqualGUID(pixelFormat, encoderFormat.pixelFormat)) {
+        std::filesystem::remove(writingPath, error);
         return std::nullopt;
     }
 
     result = frameEncode->WriteSource(converter.Get(), nullptr);
     if (FAILED(result)) {
+        std::filesystem::remove(writingPath, error);
         return std::nullopt;
     }
     result = frameEncode->Commit();
     if (FAILED(result)) {
+        std::filesystem::remove(writingPath, error);
         return std::nullopt;
     }
     result = encoder->Commit();
     if (FAILED(result)) {
+        std::filesystem::remove(writingPath, error);
+        return std::nullopt;
+    }
+    result = stream->Commit(STGC_DEFAULT);
+    if (FAILED(result)) {
+        std::filesystem::remove(writingPath, error);
+        return std::nullopt;
+    }
+    frameEncode.Reset();
+    propertyBag.Reset();
+    encoder.Reset();
+    stream.Reset();
+
+    const std::uintmax_t writtenSize =
+        std::filesystem::file_size(writingPath, error);
+    if (error || writtenSize == 0u) {
+        std::filesystem::remove(writingPath, error);
+        return std::nullopt;
+    }
+
+    std::filesystem::rename(writingPath, targetPath, error);
+    if (error) {
+        std::filesystem::remove(writingPath, error);
         return std::nullopt;
     }
 

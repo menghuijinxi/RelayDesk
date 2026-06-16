@@ -135,6 +135,7 @@ public:
     const std::string& GetFileName() const { return fileName_; }
     std::uintmax_t GetFileSize() const { return fileSize_; }
     const std::string& GetLocalPath() const { return localPath_; }
+    const std::optional<std::string>& GetSha256() const { return sha256_; }
     relaydesk::storage::TransferState GetTransferState() const
     {
         return transferState_;
@@ -153,6 +154,7 @@ public:
     void SetFileName(std::string fileName) { fileName_ = std::move(fileName); }
     void SetFileSize(std::uintmax_t fileSize) { fileSize_ = fileSize; }
     void SetLocalPath(std::string localPath) { localPath_ = std::move(localPath); }
+    void SetSha256(std::string sha256) { sha256_ = std::move(sha256); }
     void SetTransferState(relaydesk::storage::TransferState transferState)
     {
         transferState_ = transferState;
@@ -166,6 +168,7 @@ protected:
     std::string fileName_;
     std::uintmax_t fileSize_ = 0;
     std::string localPath_;
+    std::optional<std::string> sha256_;
     relaydesk::storage::TransferState transferState_ =
         relaydesk::storage::TransferState::Pending;
 };

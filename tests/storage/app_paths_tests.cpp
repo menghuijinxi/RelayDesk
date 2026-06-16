@@ -65,5 +65,18 @@ int main()
         return fail("Temporary transfer directory mismatch.");
     }
 
+    if (appPaths.GetImagesDirectory() != LR"(C:\RelayDesk\bin\data\images)") {
+        return fail("Images directory mismatch.");
+    }
+
+    if (appPaths.GetImageBlobsDirectory() != LR"(C:\RelayDesk\bin\data\images\blobs)") {
+        return fail("Image blobs directory mismatch.");
+    }
+
+    if (appPaths.GetImageThumbnailsDirectory()
+        != LR"(C:\RelayDesk\bin\data\images\thumbnails)") {
+        return fail("Image thumbnails directory mismatch.");
+    }
+
     return 0;
 }
