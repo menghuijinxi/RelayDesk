@@ -115,6 +115,61 @@ PeerListItem makePeerListItem(const relaydesk::storage::PeerProfile& profile,
     return item;
 }
 
+std::string peerSortName(const PeerListItem& peer)
+{
+    if (!peer.GetDisplayName().empty()) {
+        return peer.GetDisplayName();
+    }
+    if (!peer.GetHostName().empty()) {
+        return peer.GetHostName();
+    }
+    if (!peer.GetAddress().empty()) {
+        return peer.GetAddress();
+    }
+    return peer.GetDeviceId();
+}
+
+bool isPeerListItemBefore(const PeerListItem& left,
+                          const PeerListItem& right)
+{
+    if (left.GetOnline() != right.GetOnline()) {
+        return left.GetOnline();
+    }
+    if (left.GetLastConversationAt() != right.GetLastConversationAt()) {
+        return left.GetLastConversationAt() > right.GetLastConversationAt();
+    }
+    if (left.GetLastSeenAt() != right.GetLastSeenAt()) {
+        return left.GetLastSeenAt() > right.GetLastSeenAt();
+    }
+
+    const std::string leftName = peerSortName(left);
+    const std::string rightName = peerSortName(right);
+    if (leftName != rightName) {
+        return leftName < rightName;
+    }
+    return left.GetDeviceId() < right.GetDeviceId();
+}
+
+std::string latestConversationAt(
+    const std::vector<relaydesk::storage::ChatMessageRecord>& records)
+{
+    std::string result;
+    for (const auto& record : records) {
+        if (record.GetCreatedAt() > result) {
+            result = record.GetCreatedAt();
+        }
+    }
+    return result;
+}
+
+std::string loadPeerLastConversationAt(
+    const relaydesk::storage::AppPaths& appPaths,
+    const std::string& peerDeviceId)
+{
+    return latestConversationAt(
+        relaydesk::storage::loadChatHistory(appPaths, peerDeviceId).GetRecords());
+}
+
 #if defined(RELAYDESK_HAS_BOOST_ASIO)
 relaydesk::net::DiscoveryWorkerConfig makeDiscoveryWorkerConfig()
 {
@@ -595,6 +650,11 @@ void PeerListItem::SetLastSeenAt(std::string lastSeenAt)
     lastSeenAt_ = std::move(lastSeenAt);
 }
 
+void PeerListItem::SetLastConversationAt(std::string lastConversationAt)
+{
+    lastConversationAt_ = std::move(lastConversationAt);
+}
+
 void PeerListItem::SetTcpPort(std::uint16_t tcpPort)
 {
     tcpPort_ = tcpPort;
@@ -689,6 +749,8 @@ void RelayDeskRuntime::sendMessagePartsToSelectedPeer(
     relaydesk::storage::ChatMessageRecord record =
         makeOutgoingMessageRecord(localUser_, selectedPeer.value(), std::move(parts));
     selectedPeerMessages_.push_back(record);
+    updatePeerLastConversationAt(selectedPeer->GetDeviceId(),
+                                 record.GetCreatedAt());
     requestUiRefresh();
 
     sendOutgoingMessageRecordToPeer(std::move(record), selectedPeer.value(), false);
@@ -823,6 +885,13 @@ void RelayDeskRuntime::initialize()
         relaydesk::storage::ensureAppDirectories(appPaths);
         diagnosticLogFilePath_ = makeDiscoveryLogFilePath(appPaths);
         logDiagnostic("runtime.initialize.begin");
+        std::error_code currentPathError;
+        std::filesystem::current_path(appPaths.GetWorkDirectory(),
+                                      currentPathError);
+        if (currentPathError) {
+            logDiagnostic("runtime.current_path_failed message="
+                          + currentPathError.message());
+        }
 
         const std::string hostName = relaydesk::platform::getComputerNameUtf8();
         const auto identity = relaydesk::storage::loadOrCreateLocalIdentity(
@@ -906,9 +975,13 @@ void RelayDeskRuntime::refreshPeers()
         std::vector<PeerListItem> nextPeers;
         nextPeers.reserve(profiles.size());
         for (const auto& profile : profiles) {
-            nextPeers.push_back(makePeerListItem(profile, false));
+            PeerListItem item = makePeerListItem(profile, false);
+            item.SetLastConversationAt(
+                loadPeerLastConversationAtOrEmpty(appPaths, item.GetDeviceId()));
+            nextPeers.push_back(std::move(item));
         }
         peers_ = std::move(nextPeers);
+        sortPeers();
         logDiagnostic("runtime.peer.refresh_from_storage count="
                       + std::to_string(peers_.size()));
         syncSelectedPeer();
@@ -1184,6 +1257,7 @@ void RelayDeskRuntime::appendSelectedPeerMessage(
     if (peerDeviceId == selectedPeerDeviceId_) {
         selectedPeerMessages_.push_back(record);
     }
+    updatePeerLastConversationAt(peerDeviceId, record.GetCreatedAt());
 }
 
 void RelayDeskRuntime::persistChatMessageRecord(
@@ -1194,10 +1268,12 @@ void RelayDeskRuntime::persistChatMessageRecord(
     const auto appPaths = relaydesk::storage::createAppPaths();
     if (replaceExistingRecord
         && relaydesk::storage::replaceChatMessage(appPaths, peerDeviceId, record)) {
+        updatePeerLastConversationAt(peerDeviceId, record.GetCreatedAt());
         return;
     }
 
     relaydesk::storage::appendChatMessage(appPaths, peerDeviceId, record);
+    updatePeerLastConversationAt(peerDeviceId, record.GetCreatedAt());
 }
 
 bool RelayDeskRuntime::updateChatMessageTransferPart(
@@ -1367,12 +1443,23 @@ void RelayDeskRuntime::applyPeerProfile(
         return;
     }
 
+    std::string lastConversationAt;
+    if (existing != peers_.end()) {
+        lastConversationAt = existing->GetLastConversationAt();
+    } else {
+        const auto appPaths = relaydesk::storage::createAppPaths();
+        lastConversationAt =
+            loadPeerLastConversationAtOrEmpty(appPaths, profile.GetDeviceId());
+    }
+
     PeerListItem item = makePeerListItem(profile, online);
+    item.SetLastConversationAt(std::move(lastConversationAt));
     if (online) {
         item.SetLastOnlineSignalAt(now);
     }
     if (existing == peers_.end()) {
         peers_.push_back(item);
+        sortPeers();
         logDiagnostic("runtime.peer.apply action=added device_id="
                       + profile.GetDeviceId()
                       + " address=" + item.GetAddress()
@@ -1386,6 +1473,7 @@ void RelayDeskRuntime::applyPeerProfile(
     const bool wasOnline = existing->GetOnline();
     const std::string previousLastSeenAt = existing->GetLastSeenAt();
     *existing = item;
+    sortPeers();
     logDiagnostic("runtime.peer.apply action=updated device_id="
                   + profile.GetDeviceId()
                   + " address=" + item.GetAddress()
@@ -1399,16 +1487,73 @@ void RelayDeskRuntime::applyPeerProfile(
 void RelayDeskRuntime::refreshPeerOnlineStates()
 {
     const auto now = std::chrono::steady_clock::now();
+    bool sortNeeded = false;
     for (auto& peer : peers_) {
         const bool wasOnline = peer.GetOnline();
         const bool online = isPeerOnline(peer.GetLastOnlineSignalAt(), now);
         peer.SetOnline(online);
         if (wasOnline != online) {
+            sortNeeded = true;
             logDiagnostic("runtime.peer.online_changed device_id="
                           + peer.GetDeviceId()
                           + " online=" + std::to_string(online));
         }
     }
+
+    if (sortNeeded) {
+        sortPeers();
+    }
+}
+
+std::string RelayDeskRuntime::loadPeerLastConversationAtOrEmpty(
+    const relaydesk::storage::AppPaths& appPaths,
+    const std::string& peerDeviceId) const
+{
+    try {
+        return loadPeerLastConversationAt(appPaths, peerDeviceId);
+    } catch (const std::exception& error) {
+        logDiagnostic("runtime.peer.history_load_failed device_id="
+                      + peerDeviceId
+                      + " message=" + error.what());
+    }
+
+    return {};
+}
+
+void RelayDeskRuntime::sortPeers()
+{
+    std::stable_sort(
+        peers_.begin(),
+        peers_.end(),
+        [](const PeerListItem& left, const PeerListItem& right) {
+            return isPeerListItemBefore(left, right);
+        });
+}
+
+void RelayDeskRuntime::updatePeerLastConversationAt(
+    const std::string& peerDeviceId,
+    const std::string& lastConversationAt)
+{
+    if (peerDeviceId.empty() || lastConversationAt.empty()) {
+        return;
+    }
+
+    const auto peer = std::find_if(
+        peers_.begin(),
+        peers_.end(),
+        [&peerDeviceId](const PeerListItem& item) {
+            return item.GetDeviceId() == peerDeviceId;
+        });
+    if (peer == peers_.end()) {
+        return;
+    }
+
+    if (peer->GetLastConversationAt() >= lastConversationAt) {
+        return;
+    }
+
+    peer->SetLastConversationAt(lastConversationAt);
+    sortPeers();
 }
 
 void RelayDeskRuntime::syncSelectedPeer()

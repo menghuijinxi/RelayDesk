@@ -47,6 +47,10 @@ public:
     const std::string& GetHostName() const { return hostName_; }
     const std::string& GetAddress() const { return address_; }
     const std::string& GetLastSeenAt() const { return lastSeenAt_; }
+    const std::string& GetLastConversationAt() const
+    {
+        return lastConversationAt_;
+    }
     std::uint16_t GetTcpPort() const { return tcpPort_; }
     std::chrono::steady_clock::time_point GetLastOnlineSignalAt() const
     {
@@ -59,6 +63,7 @@ public:
     void SetHostName(std::string hostName);
     void SetAddress(std::string address);
     void SetLastSeenAt(std::string lastSeenAt);
+    void SetLastConversationAt(std::string lastConversationAt);
     void SetTcpPort(std::uint16_t tcpPort);
     void SetLastOnlineSignalAt(std::chrono::steady_clock::time_point signalAt);
     void SetOnline(bool online);
@@ -69,6 +74,7 @@ protected:
     std::string hostName_;
     std::string address_;
     std::string lastSeenAt_;
+    std::string lastConversationAt_;
     std::uint16_t tcpPort_ = 0;
     std::chrono::steady_clock::time_point lastOnlineSignalAt_{};
     bool online_ = false;
@@ -212,6 +218,12 @@ protected:
                           bool online,
                           std::chrono::steady_clock::time_point now);
     void refreshPeerOnlineStates();
+    std::string loadPeerLastConversationAtOrEmpty(
+        const relaydesk::storage::AppPaths& appPaths,
+        const std::string& peerDeviceId) const;
+    void sortPeers();
+    void updatePeerLastConversationAt(const std::string& peerDeviceId,
+                                      const std::string& lastConversationAt);
     void syncSelectedPeer();
     void setSelectedPeerDeviceId(std::string deviceId);
     void loadSelectedPeerMessages();

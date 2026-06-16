@@ -910,7 +910,7 @@ std::optional<PendingAttachmentItem> makePendingAttachmentFromPath(
         imageAttachment ? PendingAttachmentKind::Image : PendingAttachmentKind::File;
     attachment.displayName = filesystemPathToUtf8String(absolutePath.filename());
     attachment.localPath = localPath;
-    attachment.previewPath = filesystemPathToGenericUtf8String(previewPath);
+    attachment.previewPath = makeAttachmentLocalPath(appPaths, previewPath);
     attachment.sha256 = std::move(sha256);
     attachment.sourcePath = sourcePath;
     attachment.fileSize = fileSizeOrZero(absolutePath);
@@ -930,8 +930,7 @@ PendingAttachmentItem makePendingAttachmentFromSticker(
     attachment.displayName =
         sticker.displayName.empty() ? sticker.itemId : sticker.displayName;
     attachment.localPath = sticker.relativePath;
-    attachment.previewPath =
-        filesystemPathToGenericUtf8String(std::filesystem::path(sticker.absolutePath));
+    attachment.previewPath = sticker.relativePath;
     attachment.sourcePath = imagePath;
     try {
         const auto appPaths = relaydesk::storage::createAppPaths();
@@ -945,7 +944,8 @@ PendingAttachmentItem makePendingAttachmentFromSticker(
         if (storedImage.has_value()) {
             attachment.localPath =
                 makeAttachmentLocalPath(appPaths, storedImage->GetImagePath());
-            attachment.previewPath = filesystemPathToGenericUtf8String(
+            attachment.previewPath = makeAttachmentLocalPath(
+                appPaths,
                 storedImage->GetThumbnailPath().value_or(storedImage->GetImagePath()));
             attachment.sourcePath = storedImage->GetImagePath();
             attachment.sha256 = storedImage->GetSha256();
@@ -1545,6 +1545,35 @@ std::optional<std::filesystem::path> resolveRenderableImagePath(
     }
 }
 
+std::optional<std::filesystem::path> resolveMessageThumbnailPath(
+    const relaydesk::storage::AppPaths& appPaths,
+    const relaydesk::storage::ChatMessagePart& part)
+{
+    if (part.GetType() != relaydesk::storage::MessagePartType::Image
+        || !part.GetSha256().has_value()
+        || part.GetSha256().value().empty()) {
+        return std::nullopt;
+    }
+
+    const std::filesystem::path jpgThumbnailPath =
+        appPaths.GetImageThumbnailsDirectory()
+        / (part.GetSha256().value() + ".jpg");
+    std::error_code error;
+    if (std::filesystem::is_regular_file(jpgThumbnailPath, error)) {
+        return jpgThumbnailPath;
+    }
+
+    const std::filesystem::path pngThumbnailPath =
+        appPaths.GetImageThumbnailsDirectory()
+        / (part.GetSha256().value() + ".png");
+    error.clear();
+    if (std::filesystem::is_regular_file(pngThumbnailPath, error)) {
+        return pngThumbnailPath;
+    }
+
+    return std::nullopt;
+}
+
 std::string transferStateText(relaydesk::storage::TransferState state)
 {
     switch (state) {
@@ -1815,7 +1844,8 @@ void drawStickerCell(eui::Ui& ui,
     ui.image(id + ".image")
         .position(x + 4.0f, y + 4.0f)
         .size(size - 8.0f, size - 8.0f)
-        .path(sticker.absolutePath)
+        .path(sticker.relativePath.empty() ? sticker.absolutePath
+                                           : sticker.relativePath)
         .contain()
         .radius(5.0f)
         .build();
@@ -3277,8 +3307,13 @@ void drawMessageImagePart(eui::Ui& ui,
         return;
     }
 
+    const auto appPaths = relaydesk::storage::createAppPaths();
+    const std::filesystem::path displayPath =
+        resolveMessageThumbnailPath(appPaths, part).value_or(imagePath.value());
+    const std::string displayPathText =
+        makeAttachmentLocalPath(appPaths, displayPath);
     const std::string imagePathText =
-        filesystemPathToGenericUtf8String(imagePath.value());
+        makeAttachmentLocalPath(appPaths, imagePath.value());
     const std::string imageName = messagePartTitle(part);
     const float imageWidth = width;
     rect(ui, id + ".frame", x, y, imageWidth, height,
@@ -3286,7 +3321,7 @@ void drawMessageImagePart(eui::Ui& ui,
     ui.image(id + ".image")
         .position(x + 6.0f, y + 6.0f)
         .size(imageWidth - 12.0f, height - 12.0f)
-        .path(imagePathText)
+        .path(displayPathText)
         .contain()
         .radius(6.0f)
         .build();
@@ -4123,6 +4158,8 @@ void drawRuntimeChatTimeline(
             ui.state<float>("chat.runtime.scroll.previous_max_offset");
         float& previousContentHeight =
             ui.state<float>("chat.runtime.scroll.previous_content_height");
+        std::uint64_t& autoScrollRevision =
+            ui.state<std::uint64_t>("chat.runtime.scroll.auto_revision");
         const std::string& peerDeviceId = selectedPeer->GetDeviceId();
         const std::string& tailMessageId = messages.back().GetMessageId();
         const bool peerChanged = scrollPeerDeviceId != peerDeviceId;
@@ -4134,6 +4171,7 @@ void drawRuntimeChatTimeline(
             || scrollOffset >= previousMaxScrollOffset - 8.0f;
         if (peerChanged || ((tailChanged || contentHeightChanged) && wasAtBottom)) {
             scrollOffset = maxScrollOffset;
+            ++autoScrollRevision;
         } else {
             scrollOffset = std::clamp(scrollOffset, 0.0f, maxScrollOffset);
         }
@@ -4152,11 +4190,13 @@ void drawRuntimeChatTimeline(
             + tailMessageId
             + "."
             + std::to_string(contentHeightKey);
+        const std::string scrollViewId = "chat.runtime.scroll."
+            + std::to_string(autoScrollRevision);
         ui.stack("chat.runtime.scroll.pos")
             .position(x, y)
             .size(width, height)
             .content([&] {
-                components::scrollView(ui, "chat.runtime.scroll")
+                components::scrollView(ui, scrollViewId)
                     .size(width, height)
                     .offset(scrollOffset)
                     .gap(0.0f)
