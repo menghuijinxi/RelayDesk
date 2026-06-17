@@ -196,6 +196,21 @@ struct TransferPreview {
     Color accent;
 };
 
+struct SettingsCategoryItem {
+    const char* title = "";
+    const char* subtitle = "";
+    int icon = 0;
+};
+
+constexpr std::array<SettingsCategoryItem, 6> kSettingsCategories = {{
+    {"个人资料", "用户名与头像", 0xE77B},
+    {"外观", "字体大小", 0xE8D2},
+    {"发送", "回车发送方式", 0xE724},
+    {"截图", "自定义快捷键", 0xE722},
+    {"通知", "消息提示音", 0xE7F4},
+    {"更新", "检查新版本", 0xE895},
+}};
+
 struct FileTypeIconStyle {
     std::string iconFileName;
     std::string fallbackLabel;
@@ -543,6 +558,79 @@ components::ContextMenuStyle stickerContextMenuStyle()
     style.shadow = {true, {0.0f, 5.0f}, 12.0f, 0.0f,
                     {0.0f, 0.0f, 0.0f, 0.14f}, false};
     style.radius = 8.0f;
+    return style;
+}
+
+components::InputStyle settingsInputStyle()
+{
+    components::InputStyle style;
+    style.background = {1.0f, 1.0f, 1.0f, 1.0f};
+    style.hover = {1.0f, 1.0f, 1.0f, 1.0f};
+    style.focused = {0.985f, 1.0f, 0.998f, 1.0f};
+    style.pressed = style.focused;
+    style.border = kBorder;
+    style.focusBorder = kTeal;
+    style.text = kText;
+    style.placeholder = kSubtleText;
+    style.cursor = kTeal;
+    style.shadow = {};
+    style.radius = 7.0f;
+    return style;
+}
+
+components::DropdownStyle settingsDropdownStyle()
+{
+    components::DropdownStyle style;
+    style.field = {1.0f, 1.0f, 1.0f, 1.0f};
+    style.fieldHover = {0.985f, 1.0f, 0.998f, 1.0f};
+    style.fieldPressed = {0.950f, 0.985f, 0.980f, 1.0f};
+    style.popup = {1.0f, 1.0f, 1.0f, 1.0f};
+    style.optionHover = kTealSoft;
+    style.optionPressed = {0.790f, 0.940f, 0.930f, 1.0f};
+    style.selected = {0.790f, 0.940f, 0.930f, 1.0f};
+    style.text = kText;
+    style.mutedText = kSubtleText;
+    style.accent = kTeal;
+    style.border = kBorder;
+    style.shadow = {true, {0.0f, 5.0f}, 12.0f, 0.0f,
+                    {0.0f, 0.0f, 0.0f, 0.12f}, false};
+    style.radius = 7.0f;
+    return style;
+}
+
+components::ButtonStyle settingsButtonStyle(bool primary)
+{
+    components::ButtonStyle style;
+    if (primary) {
+        style.normal = kTeal;
+        style.hover = {0.000f, 0.670f, 0.660f, 1.0f};
+        style.pressed = {0.000f, 0.500f, 0.500f, 1.0f};
+        style.text = {1.0f, 1.0f, 1.0f, 1.0f};
+        style.icon = style.text;
+        style.border = {1.0f, style.normal};
+    } else {
+        style.normal = {1.0f, 1.0f, 1.0f, 1.0f};
+        style.hover = {0.985f, 1.0f, 0.998f, 1.0f};
+        style.pressed = {0.950f, 0.985f, 0.980f, 1.0f};
+        style.text = kText;
+        style.icon = kTeal;
+        style.border = {1.0f, kBorder};
+    }
+    style.shadow = {};
+    style.radius = 7.0f;
+    style.pressScale = 0.985f;
+    return style;
+}
+
+components::SwitchStyle settingsSwitchStyle()
+{
+    components::SwitchStyle style;
+    style.off = {0.820f, 0.850f, 0.870f, 1.0f};
+    style.on = kTeal;
+    style.knob = {1.0f, 1.0f, 1.0f, 1.0f};
+    style.text = kText;
+    style.rowHover = {0.900f, 0.955f, 0.950f, 1.0f};
+    style.rowPressed = {0.820f, 0.925f, 0.920f, 1.0f};
     return style;
 }
 
@@ -4616,12 +4704,24 @@ void drawRuntimeLocalUserHeader(eui::Ui& ui,
     const std::string displayName = localUser.GetDisplayName().empty()
         ? "RelayDesk"
         : localUser.GetDisplayName();
+    bool& settingsOpen = ui.state<bool>("settings.open");
 
     avatar(ui, "local.avatar", x + 22.0f, y + 16.0f, 44.0f, displayName);
     text(ui, "local.name", x + 78.0f, y + 15.0f, width - 132.0f, 26.0f,
          displayName, 17.0f);
     text(ui, "local.address", x + 78.0f, y + 41.0f, width - 132.0f, 22.0f,
          makeLocalStatusText(runtime), 13.0f, kMutedText);
+    ui.rect("local.settings.hit")
+        .position(x + width - 56.0f, y + 17.0f)
+        .size(38.0f, 38.0f)
+        .states(settingsOpen ? kTealSoft : Color{0.0f, 0.0f, 0.0f, 0.0f},
+                kTealSoft,
+                {0.790f, 0.940f, 0.930f, 1.0f})
+        .radius(19.0f)
+        .onClick([&settingsOpen] {
+            settingsOpen = true;
+        })
+        .build();
     icon(ui, "local.settings", x + width - 50.0f, y + 21.0f, 32.0f, 0xE713, kText);
     rect(ui, "local.bottom.line", x, y + 76.0f, width, 1.0f, kBorder);
 }
@@ -4661,7 +4761,9 @@ void peerRowHitTarget(eui::Ui& ui,
         .size(width - 12.0f, 64.0f)
         .color({0.0f, 0.0f, 0.0f, 0.0f})
         .radius(6.0f)
-        .onClick([&runtime, deviceId] {
+        .onClick([&ui, &runtime, deviceId] {
+            bool& settingsOpen = ui.state<bool>("settings.open");
+            settingsOpen = false;
             runtime.selectPeer(deviceId);
         })
         .build();
@@ -5646,6 +5748,524 @@ void drawImagePreviewOverlay(eui::Ui& ui, float width, float height)
         .build();
 }
 
+std::string localDisplayName(
+    const relaydesk::runtime::RelayDeskRuntime& runtime)
+{
+    const auto& localUser = runtime.GetLocalUser();
+    return localUser.GetDisplayName().empty()
+        ? "RelayDesk"
+        : localUser.GetDisplayName();
+}
+
+float settingsFieldWidth(float contentWidth)
+{
+    return std::min(380.0f, std::max(240.0f, contentWidth * 0.56f));
+}
+
+void drawSettingsTitle(eui::Ui& ui,
+                       const std::string& id,
+                       float x,
+                       float y,
+                       float width,
+                       const std::string& title,
+                       const std::string& detail)
+{
+    text(ui, id + ".title", x, y, width, 28.0f, title, 19.0f, kText);
+    text(ui, id + ".detail", x, y + 32.0f, width, 22.0f, detail, 13.0f,
+         kMutedText);
+}
+
+void drawSettingsRowLabel(eui::Ui& ui,
+                          const std::string& id,
+                          float x,
+                          float y,
+                          float width,
+                          const std::string& title,
+                          const std::string& detail)
+{
+    text(ui, id + ".title", x, y, width, 24.0f, title, 14.0f, kText);
+    text(ui, id + ".detail", x, y + 25.0f, width, 22.0f, detail, 12.0f,
+         kMutedText);
+}
+
+void drawSettingsCategoryRail(eui::Ui& ui,
+                              float x,
+                              float y,
+                              float width,
+                              float height,
+                              int& selectedCategory)
+{
+    rect(ui, "settings.rail.bg", x, y, width, height, kPanelBackground);
+    rect(ui, "settings.rail.line", x + width, y, 1.0f, height, kBorder);
+    text(ui, "settings.rail.title", x + 24.0f, y + 24.0f, width - 48.0f,
+         30.0f, "设置", 22.0f, kText);
+    text(ui, "settings.rail.detail", x + 24.0f, y + 58.0f, width - 48.0f,
+         22.0f, "界面占位", 13.0f, kMutedText);
+
+    const float rowX = x + 14.0f;
+    const float rowW = width - 28.0f;
+    const float firstY = y + 108.0f;
+    constexpr float rowH = 58.0f;
+    constexpr float rowGap = 8.0f;
+    for (int index = 0; index < static_cast<int>(kSettingsCategories.size());
+         ++index) {
+        const auto& item = kSettingsCategories[static_cast<std::size_t>(index)];
+        const float rowY = firstY + static_cast<float>(index) * (rowH + rowGap);
+        const bool active = index == selectedCategory;
+        if (active) {
+            rect(ui,
+                 "settings.rail.active." + std::to_string(index),
+                 rowX,
+                 rowY,
+                 rowW,
+                 rowH,
+                 kTealSoft,
+                 7.0f);
+            rect(ui,
+                 "settings.rail.active.mark." + std::to_string(index),
+                 rowX,
+                 rowY + 10.0f,
+                 3.0f,
+                 rowH - 20.0f,
+                 kTeal,
+                 2.0f);
+        }
+        ui.rect("settings.rail.hit." + std::to_string(index))
+            .position(rowX, rowY)
+            .size(rowW, rowH)
+            .states(Color{0.0f, 0.0f, 0.0f, 0.0f},
+                    active ? kTealSoft
+                           : Color{0.955f, 0.975f, 0.975f, 1.0f},
+                    Color{0.900f, 0.955f, 0.950f, 1.0f})
+            .radius(7.0f)
+            .onClick([&selectedCategory, index] {
+                selectedCategory = index;
+            })
+            .build();
+        icon(ui,
+             "settings.rail.icon." + std::to_string(index),
+             rowX + 12.0f,
+             rowY + 13.0f,
+             32.0f,
+             item.icon,
+             active ? kTeal : kMutedText);
+        text(ui,
+             "settings.rail.label." + std::to_string(index),
+             rowX + 52.0f,
+             rowY + 9.0f,
+             rowW - 68.0f,
+             22.0f,
+             item.title,
+             14.0f,
+             active ? kText : kMutedText);
+        text(ui,
+             "settings.rail.sub." + std::to_string(index),
+             rowX + 52.0f,
+             rowY + 32.0f,
+             rowW - 68.0f,
+             20.0f,
+             item.subtitle,
+             12.0f,
+             kSubtleText);
+    }
+}
+
+void drawSettingsInput(eui::Ui& ui,
+                       const std::string& id,
+                       float x,
+                       float y,
+                       float width,
+                       std::string& value,
+                       const std::string& placeholder)
+{
+    ui.stack(id + ".pos")
+        .position(x, y)
+        .size(width, 40.0f)
+        .content([&] {
+            components::input(ui, id)
+                .size(width, 40.0f)
+                .text(value)
+                .placeholder(placeholder)
+                .fontSize(14.0f)
+                .inset(12.0f)
+                .style(settingsInputStyle())
+                .onChange([&value](const std::string& next) {
+                    value = next;
+                })
+                .build();
+        })
+        .build();
+}
+
+void drawSettingsButton(eui::Ui& ui,
+                        const std::string& id,
+                        float x,
+                        float y,
+                        float width,
+                        float height,
+                        const std::string& label,
+                        bool primary,
+                        std::function<void()> onClick)
+{
+    ui.stack(id + ".pos")
+        .position(x, y)
+        .size(width, height)
+        .content([&] {
+            components::button(ui, id)
+                .size(width, height)
+                .text(label)
+                .fontSize(14.0f)
+                .style(settingsButtonStyle(primary))
+                .onClick(std::move(onClick))
+                .build();
+        })
+        .build();
+}
+
+void drawSettingsProfilePage(eui::Ui& ui,
+                             float x,
+                             float y,
+                             float width,
+                             const relaydesk::runtime::RelayDeskRuntime& runtime)
+{
+    bool& initialized = ui.state<bool>("settings.profile.initialized");
+    std::string& userName = ui.state<std::string>("settings.profile.username");
+    if (!initialized) {
+        userName = localDisplayName(runtime);
+        initialized = true;
+    }
+
+    drawSettingsTitle(ui, "settings.profile.header", x, y, width,
+                      "个人资料", "用户名和头像先保存在设置界面占位状态中。");
+    const float rowY = y + 86.0f;
+    const float labelW = std::min(180.0f, width * 0.34f);
+    const float fieldX = x + labelW + 26.0f;
+    const float fieldW = settingsFieldWidth(width - labelW - 26.0f);
+
+    drawSettingsRowLabel(ui, "settings.profile.name.label", x, rowY, labelW,
+                         "用户名", "后续接入本机身份配置。");
+    drawSettingsInput(ui, "settings.profile.name.input", fieldX, rowY, fieldW,
+                      userName, "输入用户名");
+    rect(ui, "settings.profile.name.line", x, rowY + 70.0f, width, 1.0f,
+         kBorder);
+
+    const float avatarY = rowY + 96.0f;
+    drawSettingsRowLabel(ui, "settings.profile.avatar.label", x, avatarY, labelW,
+                         "头像", "先使用头像占位，不读取图片。");
+    avatar(ui, "settings.profile.avatar", fieldX, avatarY - 2.0f, 58.0f,
+           userName.empty() ? "RelayDesk" : userName);
+    drawSettingsButton(ui,
+                       "settings.profile.avatar.button",
+                       fieldX + 76.0f,
+                       avatarY + 8.0f,
+                       116.0f,
+                       36.0f,
+                       "更换头像",
+                       false,
+                       [] {});
+}
+
+void drawSettingsAppearancePage(eui::Ui& ui,
+                                float x,
+                                float y,
+                                float width)
+{
+    int& fontSize = ui.state<int>("settings.appearance.font_size");
+    if (fontSize < 12 || fontSize > 22) {
+        fontSize = 14;
+    }
+
+    drawSettingsTitle(ui, "settings.appearance.header", x, y, width,
+                      "外观", "字体大小控件先只影响这个设置页的预览。");
+    const float rowY = y + 86.0f;
+    const float labelW = std::min(180.0f, width * 0.34f);
+    const float fieldX = x + labelW + 26.0f;
+    const float controlW = std::min(300.0f, width - labelW - 26.0f);
+
+    drawSettingsRowLabel(ui, "settings.appearance.font.label", x, rowY, labelW,
+                         "字体大小", "范围先固定在 12 到 22。");
+    drawSettingsButton(ui,
+                       "settings.appearance.font.minus",
+                       fieldX,
+                       rowY,
+                       38.0f,
+                       36.0f,
+                       "-",
+                       false,
+                       [&fontSize] {
+                           fontSize = std::max(12, fontSize - 1);
+                       });
+    text(ui,
+         "settings.appearance.font.value",
+         fieldX + 48.0f,
+         rowY + 4.0f,
+         84.0f,
+         28.0f,
+         std::to_string(fontSize) + " px",
+         15.0f,
+         kText,
+         eui::HorizontalAlign::Center);
+    drawSettingsButton(ui,
+                       "settings.appearance.font.plus",
+                       fieldX + 142.0f,
+                       rowY,
+                       38.0f,
+                       36.0f,
+                       "+",
+                       false,
+                       [&fontSize] {
+                           fontSize = std::min(22, fontSize + 1);
+                       });
+
+    const float trackX = fieldX;
+    const float trackY = rowY + 62.0f;
+    const float trackW = std::max(160.0f, controlW);
+    const float progress =
+        static_cast<float>(fontSize - 12) / static_cast<float>(22 - 12);
+    rect(ui, "settings.appearance.font.track", trackX, trackY, trackW, 5.0f,
+         {0.850f, 0.885f, 0.895f, 1.0f}, 3.0f);
+    rect(ui, "settings.appearance.font.fill", trackX, trackY, trackW * progress,
+         5.0f, kTeal, 3.0f);
+    rect(ui, "settings.appearance.font.thumb",
+         trackX + std::max(0.0f, trackW * progress - 6.0f), trackY - 5.0f,
+         15.0f, 15.0f, kTeal, 8.0f);
+
+    rect(ui, "settings.appearance.preview.bg", x, rowY + 106.0f, width, 92.0f,
+         {1.0f, 1.0f, 1.0f, 1.0f}, 7.0f, kBorder);
+    text(ui, "settings.appearance.preview.title", x + 18.0f, rowY + 120.0f,
+         width - 36.0f, 24.0f, "预览文本", 13.0f, kMutedText);
+    text(ui, "settings.appearance.preview.text", x + 18.0f, rowY + 150.0f,
+         width - 36.0f, 30.0f, "RelayDesk 消息字体大小预览", static_cast<float>(fontSize),
+         kText);
+}
+
+void drawSettingsSendPage(eui::Ui& ui, float x, float y, float width)
+{
+    int& sendMode = ui.state<int>("settings.send.mode");
+    sendMode = std::clamp(sendMode, 0, 1);
+    bool& dropdownOpen = ui.state<bool>("settings.send.dropdown.open");
+    std::vector<std::string> modes{"Enter", "Ctrl + Enter"};
+
+    drawSettingsTitle(ui, "settings.send.header", x, y, width,
+                      "发送消息", "发送快捷键只提供 Enter 和 Ctrl + Enter 两种选择。");
+    const float rowY = y + 86.0f;
+    const float labelW = std::min(180.0f, width * 0.34f);
+    const float fieldX = x + labelW + 26.0f;
+    const float fieldW = std::min(260.0f, width - labelW - 26.0f);
+
+    drawSettingsRowLabel(ui, "settings.send.mode.label", x, rowY, labelW,
+                         "发送方式", "不可完全自定义。");
+    ui.stack("settings.send.mode.dropdown.pos")
+        .position(fieldX, rowY)
+        .size(fieldW, 136.0f)
+        .content([&] {
+            components::dropdown(ui, "settings.send.mode.dropdown")
+                .size(fieldW, 40.0f)
+                .items(modes)
+                .selected(sendMode)
+                .open(dropdownOpen)
+                .itemHeight(34.0f)
+                .style(settingsDropdownStyle())
+                .zIndex(90)
+                .onChange([&sendMode](int next) {
+                    sendMode = std::clamp(next, 0, 1);
+                })
+                .onOpenChange([&dropdownOpen](bool open) {
+                    dropdownOpen = open;
+                })
+                .build();
+        })
+        .build();
+    text(ui, "settings.send.mode.note", fieldX, rowY + 54.0f,
+         std::max(180.0f, fieldW), 22.0f,
+         sendMode == 0 ? "当前占位选择：Enter 发送"
+                       : "当前占位选择：Ctrl + Enter 发送",
+         12.0f, kMutedText);
+}
+
+void drawSettingsScreenshotPage(eui::Ui& ui,
+                                float x,
+                                float y,
+                                float width)
+{
+    bool& initialized = ui.state<bool>("settings.shortcut.initialized");
+    std::string& shortcut = ui.state<std::string>("settings.shortcut.screenshot");
+    if (!initialized) {
+        shortcut = "Ctrl + Shift + A";
+        initialized = true;
+    }
+
+    drawSettingsTitle(ui, "settings.shortcut.header", x, y, width,
+                      "截图", "截图快捷键保留完全自定义入口，包括组合键。");
+    const float rowY = y + 86.0f;
+    const float labelW = std::min(180.0f, width * 0.34f);
+    const float fieldX = x + labelW + 26.0f;
+    const float fieldW = std::min(320.0f, width - labelW - 26.0f);
+
+    drawSettingsRowLabel(ui, "settings.shortcut.capture.label", x, rowY, labelW,
+                         "快捷键", "这里先用文本框占位。");
+    drawSettingsInput(ui, "settings.shortcut.capture.input", fieldX, rowY,
+                      fieldW, shortcut, "例如 Ctrl + Shift + A");
+    text(ui, "settings.shortcut.capture.note", fieldX, rowY + 54.0f,
+         std::max(220.0f, fieldW), 22.0f,
+         "后续需要接入真实按键录入和冲突检测。", 12.0f, kMutedText);
+}
+
+void drawSettingsNotificationPage(eui::Ui& ui,
+                                  float x,
+                                  float y,
+                                  float width)
+{
+    bool& initialized = ui.state<bool>("settings.notification.initialized");
+    bool& soundEnabled = ui.state<bool>("settings.notification.sound_enabled");
+    if (!initialized) {
+        soundEnabled = true;
+        initialized = true;
+    }
+
+    drawSettingsTitle(ui, "settings.notification.header", x, y, width,
+                      "通知", "消息提示音默认开启，当前只做界面占位。");
+    const float rowY = y + 86.0f;
+    const float labelW = std::min(180.0f, width * 0.34f);
+    const float fieldX = x + labelW + 26.0f;
+
+    drawSettingsRowLabel(ui, "settings.notification.sound.label", x, rowY,
+                         labelW, "消息通知音", "收到消息时播放提示音。");
+    ui.stack("settings.notification.sound.switch.pos")
+        .position(fieldX, rowY + 5.0f)
+        .size(240.0f, 34.0f)
+        .content([&] {
+            components::toggleSwitch(ui, "settings.notification.sound.switch")
+                .size(240.0f, 34.0f)
+                .checked(soundEnabled)
+                .label(soundEnabled ? "已启用" : "已关闭")
+                .fontSize(14.0f)
+                .trackSize(48.0f, 24.0f)
+                .style(settingsSwitchStyle())
+                .onChange([&soundEnabled](bool next) {
+                    soundEnabled = next;
+                })
+                .build();
+        })
+        .build();
+}
+
+void drawSettingsUpdatePage(eui::Ui& ui, float x, float y, float width)
+{
+    bool& initialized = ui.state<bool>("settings.update.initialized");
+    std::string& status = ui.state<std::string>("settings.update.status");
+    if (!initialized) {
+        status = "尚未检查更新";
+        initialized = true;
+    }
+
+    drawSettingsTitle(ui, "settings.update.header", x, y, width,
+                      "检查更新", "先预留更新入口，不发起网络请求。");
+    const float rowY = y + 86.0f;
+    const float labelW = std::min(180.0f, width * 0.34f);
+    const float fieldX = x + labelW + 26.0f;
+
+    drawSettingsRowLabel(ui, "settings.update.check.label", x, rowY, labelW,
+                         "软件更新", "后续接入版本检查。");
+    drawSettingsButton(ui,
+                       "settings.update.check.button",
+                       fieldX,
+                       rowY,
+                       116.0f,
+                       38.0f,
+                       "检查更新",
+                       true,
+                       [&status] {
+                           status = "检查更新功能占位，等待接入更新服务";
+                       });
+    text(ui, "settings.update.status", fieldX, rowY + 52.0f,
+         std::max(260.0f, width - labelW - 26.0f), 22.0f, status, 12.0f,
+         kMutedText);
+}
+
+void drawSettingsContent(eui::Ui& ui,
+                         float x,
+                         float y,
+                         float width,
+                         float height,
+                         int selectedCategory,
+                         const relaydesk::runtime::RelayDeskRuntime& runtime)
+{
+    rect(ui, "settings.content.bg", x, y, width, height,
+         {1.0f, 1.0f, 1.0f, 1.0f});
+    const float insetX = width < 620.0f ? 22.0f : 34.0f;
+    const float contentX = x + insetX;
+    const float contentY = y + 100.0f;
+    const float contentW = std::max(1.0f, width - insetX * 2.0f);
+    rect(ui, "settings.content.top.line", x, y + 78.0f, width, 1.0f, kBorder);
+
+    switch (selectedCategory) {
+    case 0:
+        drawSettingsProfilePage(ui, contentX, contentY, contentW, runtime);
+        break;
+    case 1:
+        drawSettingsAppearancePage(ui, contentX, contentY, contentW);
+        break;
+    case 2:
+        drawSettingsSendPage(ui, contentX, contentY, contentW);
+        break;
+    case 3:
+        drawSettingsScreenshotPage(ui, contentX, contentY, contentW);
+        break;
+    case 4:
+        drawSettingsNotificationPage(ui, contentX, contentY, contentW);
+        break;
+    case 5:
+        drawSettingsUpdatePage(ui, contentX, contentY, contentW);
+        break;
+    default:
+        break;
+    }
+}
+
+void drawSettingsPage(eui::Ui& ui,
+                      float x,
+                      float y,
+                      float width,
+                      float height,
+                      relaydesk::runtime::RelayDeskRuntime& runtime)
+{
+    bool& settingsOpen = ui.state<bool>("settings.open");
+    int& selectedCategory = ui.state<int>("settings.category");
+    selectedCategory =
+        std::clamp(selectedCategory, 0,
+                   static_cast<int>(kSettingsCategories.size()) - 1);
+
+    rect(ui, "settings.bg", x, y, width, height, {1.0f, 1.0f, 1.0f, 1.0f});
+    const float railWidth = std::clamp(width * 0.27f, 184.0f, 238.0f);
+    drawSettingsCategoryRail(ui, x, y, railWidth, height, selectedCategory);
+
+    const float contentX = x + railWidth + 1.0f;
+    const float contentW = std::max(1.0f, width - railWidth - 1.0f);
+    drawSettingsContent(ui, contentX, y, contentW, height, selectedCategory,
+                        runtime);
+
+    text(ui, "settings.header.title", contentX + 34.0f, y + 20.0f,
+         contentW - 96.0f, 28.0f, kSettingsCategories[
+             static_cast<std::size_t>(selectedCategory)].title,
+         20.0f, kText);
+    text(ui, "settings.header.detail", contentX + 34.0f, y + 50.0f,
+         contentW - 96.0f, 22.0f, "设置项暂未写入真实配置", 13.0f, kMutedText);
+    ui.rect("settings.close.hit")
+        .position(contentX + contentW - 58.0f, y + 16.0f)
+        .size(42.0f, 42.0f)
+        .states(Color{0.0f, 0.0f, 0.0f, 0.0f},
+                Color{0.930f, 0.960f, 0.960f, 1.0f},
+                Color{0.850f, 0.925f, 0.920f, 1.0f})
+        .radius(21.0f)
+        .onClick([&settingsOpen] {
+            settingsOpen = false;
+        })
+        .build();
+    icon(ui, "settings.close.icon", contentX + contentW - 52.0f, y + 22.0f,
+         32.0f, 0xE711, kText);
+}
+
 void drawRelayDesk(eui::Ui& ui,
                    const eui::Screen& screen,
                    relaydesk::runtime::RelayDeskRuntime& runtime)
@@ -5667,6 +6287,18 @@ void drawRelayDesk(eui::Ui& ui,
                                layout.peerX,
                                layout.peerWidth,
                                layout.contentHeight);
+    }
+
+    bool& settingsOpen = ui.state<bool>("settings.open");
+    if (settingsOpen) {
+        drawSettingsPage(ui,
+                         layout.chatX,
+                         kContentTop,
+                         layout.chatWidth,
+                         layout.contentHeight,
+                         runtime);
+        drawImagePreviewOverlay(ui, layout.width, layout.height);
+        return;
     }
 
     drawRuntimeChatHeader(ui, layout.chatX, layout.chatWidth, selectedPeer);
