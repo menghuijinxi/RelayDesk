@@ -93,6 +93,22 @@ relaydesk::storage::ChatMessagePart makeFolderPart(const std::string& partId,
     return part;
 }
 
+relaydesk::storage::ChatMessagePart makeFolderPartWithoutManifest(
+    const std::string& partId,
+    const std::string& transferId)
+{
+    relaydesk::storage::ChatMessagePart part;
+    part.SetPartId(partId);
+    part.SetType(relaydesk::storage::MessagePartType::Folder);
+    part.SetTransferId(transferId);
+    part.SetTransferState(relaydesk::storage::TransferState::Completed);
+    part.SetFileName("ProjectDocs");
+    part.SetFileSize(2048);
+    part.SetLocalPath("data/transfers/outbox/peer-device/" + transferId
+                      + "/ProjectDocs");
+    return part;
+}
+
 relaydesk::storage::ChatMessageRecord makeBaseRecord(const std::string& messageId)
 {
     relaydesk::storage::ChatMessageRecord record;
@@ -275,6 +291,37 @@ int appendsAndLoadsRejectedTransferState()
     return expect(result.GetRecords()[0].GetParts()[0].GetTransferState().value()
                       == relaydesk::storage::TransferState::Rejected,
                   "Rejected transfer state did not round-trip.");
+}
+
+int appendsAndLoadsFolderWithoutManifest()
+{
+    const auto appPaths = makeAppPaths("folder-without-manifest");
+    auto record = makeBaseRecord("m-folder-no-manifest");
+    record.AddPart(
+        makeFolderPartWithoutManifest("p1", "transfer-folder-no-manifest"));
+    relaydesk::storage::appendChatMessage(appPaths, "peer-device", record);
+
+    const auto result = relaydesk::storage::loadChatHistory(appPaths, "peer-device");
+    if (const int check = expect(result.GetRecords().size() == 1,
+                                 "Folder record without manifest was not loaded.");
+        check != 0) {
+        return check;
+    }
+
+    const auto& loadedPart = result.GetRecords()[0].GetParts()[0];
+    if (const int check = expect(loadedPart.GetType()
+                                     == relaydesk::storage::MessagePartType::Folder,
+                                 "Folder without manifest type mismatch.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(!loadedPart.GetManifestPath().has_value(),
+                                 "Folder without manifest unexpectedly loaded one.");
+        check != 0) {
+        return check;
+    }
+    return expect(loadedPart.GetFileSize().value() == 2048,
+                  "Folder without manifest file size mismatch.");
 }
 
 int appendsAndLoadsTransferProgress()
@@ -473,6 +520,9 @@ int main()
         return result;
     }
     if (const int result = appendsAndLoadsRejectedTransferState(); result != 0) {
+        return result;
+    }
+    if (const int result = appendsAndLoadsFolderWithoutManifest(); result != 0) {
         return result;
     }
     if (const int result = appendsAndLoadsTransferProgress(); result != 0) {

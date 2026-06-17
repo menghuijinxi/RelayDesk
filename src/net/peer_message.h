@@ -34,6 +34,7 @@ public:
     std::uintmax_t GetFileSize() const { return fileSize_; }
     const std::optional<std::string>& GetSha256() const { return sha256_; }
     bool GetImageTransfer() const { return imageTransfer_; }
+    bool GetFolderTransfer() const { return folderTransfer_; }
 
     void SetMessageId(std::string messageId) { messageId_ = std::move(messageId); }
     void SetPartId(std::string partId) { partId_ = std::move(partId); }
@@ -46,6 +47,7 @@ public:
     void SetFileSize(std::uintmax_t fileSize) { fileSize_ = fileSize; }
     void SetSha256(std::string sha256) { sha256_ = std::move(sha256); }
     void SetImageTransfer(bool imageTransfer) { imageTransfer_ = imageTransfer; }
+    void SetFolderTransfer(bool folderTransfer) { folderTransfer_ = folderTransfer; }
 
 protected:
     std::string messageId_;
@@ -56,6 +58,7 @@ protected:
     std::uintmax_t fileSize_ = 0;
     std::optional<std::string> sha256_;
     bool imageTransfer_ = false;
+    bool folderTransfer_ = false;
 };
 
 class TransferAcceptMessage {

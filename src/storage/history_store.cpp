@@ -311,8 +311,7 @@ void validatePart(const ChatMessagePart& part)
         if (!hasRequiredString(part.GetTransferId())
             || !part.GetTransferState().has_value()
             || !hasRequiredString(part.GetFileName())
-            || !hasRequiredString(part.GetLocalPath())
-            || !hasRequiredString(part.GetManifestPath())) {
+            || !hasRequiredString(part.GetLocalPath())) {
             throw std::runtime_error("Folder message part is missing transfer fields.");
         }
         return;
@@ -440,8 +439,13 @@ ChatMessagePart partFromJson(const nlohmann::json& value)
         part.SetTransferState(
             transferStateFromJsonValue(readRequiredString(value, "transfer_state")));
         part.SetFileName(readRequiredString(value, "file_name"));
+        if (const auto fileSize = readOptionalUnsigned(value, "file_size")) {
+            part.SetFileSize(*fileSize);
+        }
         part.SetLocalPath(readRequiredString(value, "local_path"));
-        part.SetManifestPath(readRequiredString(value, "manifest_path"));
+        if (value.contains("manifest_path") && value["manifest_path"].is_string()) {
+            part.SetManifestPath(value["manifest_path"].get<std::string>());
+        }
         break;
     }
 
@@ -478,8 +482,13 @@ ChatMessagePart legacyPartFromJson(const nlohmann::json& value,
         part.SetTransferId(readRequiredString(value, "transfer_id"));
         part.SetTransferState(transferStateFromLegacyDeliveryState(deliveryState));
         part.SetFileName(readRequiredString(value, "file_name"));
+        if (const auto fileSize = readOptionalUnsigned(value, "file_size")) {
+            part.SetFileSize(*fileSize);
+        }
         part.SetLocalPath(readRequiredString(value, "local_path"));
-        part.SetManifestPath(readRequiredString(value, "manifest_path"));
+        if (value.contains("manifest_path") && value["manifest_path"].is_string()) {
+            part.SetManifestPath(value["manifest_path"].get<std::string>());
+        }
         break;
     }
 

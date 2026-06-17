@@ -168,6 +168,19 @@ relaydesk::net::TransferOfferMessage makeTransferOffer()
     return message;
 }
 
+relaydesk::net::TransferOfferMessage makeFolderTransferOffer()
+{
+    relaydesk::net::TransferOfferMessage message;
+    message.SetMessageId("message-folder");
+    message.SetPartId("p4");
+    message.SetTransferId("transfer-folder");
+    message.SetSenderDeviceId("local-device");
+    message.SetFileName("Project");
+    message.SetFileSize(128);
+    message.SetFolderTransfer(true);
+    return message;
+}
+
 relaydesk::net::TransferChunkMessage makeTransferChunk()
 {
     relaydesk::net::TransferChunkMessage message;
@@ -279,8 +292,35 @@ int treatsLegacyTransferOfferAsFile()
                     "file_size": 4
                 }
             })");
-    return expect(!decoded.GetImageTransfer(),
-                  "Legacy transfer offer was treated as an image transfer.");
+    if (const int check = expect(!decoded.GetImageTransfer(),
+                                 "Legacy transfer offer was treated as an image.");
+        check != 0) {
+        return check;
+    }
+    return expect(!decoded.GetFolderTransfer(),
+                  "Legacy transfer offer was treated as a folder.");
+}
+
+int roundTripsFolderTransferOfferFrame()
+{
+    const relaydesk::net::PeerFrame frame =
+        relaydesk::net::makeTransferOfferFrame(makeFolderTransferOffer());
+    const relaydesk::net::TransferOfferMessage decoded =
+        relaydesk::net::parseTransferOfferFrame(
+            relaydesk::net::decodePeerFrame(
+                relaydesk::net::encodePeerFrame(frame)));
+    if (const int check = expect(decoded.GetFolderTransfer(),
+                                 "Decoded folder transfer flag mismatch.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(!decoded.GetImageTransfer(),
+                                 "Folder transfer was treated as image.");
+        check != 0) {
+        return check;
+    }
+    return expect(decoded.GetFileName() == "Project",
+                  "Decoded folder transfer name mismatch.");
 }
 
 int roundTripsTransferAcceptFrame()
@@ -421,6 +461,9 @@ int main()
         return result;
     }
     if (const int result = treatsLegacyTransferOfferAsFile(); result != 0) {
+        return result;
+    }
+    if (const int result = roundTripsFolderTransferOfferFrame(); result != 0) {
         return result;
     }
     if (const int result = roundTripsTransferAcceptFrame(); result != 0) {

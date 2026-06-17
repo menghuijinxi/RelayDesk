@@ -215,6 +215,7 @@ struct StickerPickerItem {
 enum class PendingAttachmentKind {
     Image,
     File,
+    Folder,
 };
 
 struct PendingAttachmentItem {
@@ -1377,6 +1378,29 @@ std::uintmax_t fileSizeOrZero(const std::filesystem::path& filePath)
     return error ? 0u : size;
 }
 
+std::uintmax_t directoryContentSizeOrZero(const std::filesystem::path& directory)
+{
+    std::uintmax_t totalSize = 0;
+    std::error_code error;
+    std::filesystem::recursive_directory_iterator iterator(
+        directory,
+        std::filesystem::directory_options::skip_permission_denied,
+        error);
+    const std::filesystem::recursive_directory_iterator end;
+    while (!error && iterator != end) {
+        std::error_code entryError;
+        if (iterator->is_regular_file(entryError) && !entryError) {
+            const std::uintmax_t fileSize =
+                std::filesystem::file_size(iterator->path(), entryError);
+            if (!entryError) {
+                totalSize += fileSize;
+            }
+        }
+        iterator.increment(error);
+    }
+    return totalSize;
+}
+
 void applyImageSizeMetadata(PendingAttachmentItem& attachment,
                             const std::filesystem::path& imagePath)
 {
@@ -1424,14 +1448,20 @@ std::optional<PendingAttachmentItem> makePendingAttachmentFromPath(
     const std::filesystem::path& filePath)
 {
     std::error_code error;
-    if (!std::filesystem::is_regular_file(filePath, error) || error) {
+    const bool regularFile = std::filesystem::is_regular_file(filePath, error);
+    if (error) {
+        return std::nullopt;
+    }
+    error.clear();
+    const bool directory = std::filesystem::is_directory(filePath, error);
+    if (error || (!regularFile && !directory)) {
         return std::nullopt;
     }
 
     const auto appPaths = relaydesk::storage::createAppPaths();
     relaydesk::storage::ensureAppDirectories(appPaths);
     const std::filesystem::path absolutePath = makeAbsolutePath(filePath);
-    const bool imageAttachment = isImageAttachmentPath(absolutePath);
+    const bool imageAttachment = regularFile && isImageAttachmentPath(absolutePath);
     std::filesystem::path sourcePath = absolutePath;
     std::filesystem::path previewPath = absolutePath;
     std::string localPath = makeAttachmentLocalPath(appPaths, absolutePath);
@@ -1450,14 +1480,20 @@ std::optional<PendingAttachmentItem> makePendingAttachmentFromPath(
     }
 
     PendingAttachmentItem attachment;
-    attachment.kind =
-        imageAttachment ? PendingAttachmentKind::Image : PendingAttachmentKind::File;
+    if (directory) {
+        attachment.kind = PendingAttachmentKind::Folder;
+    } else {
+        attachment.kind =
+            imageAttachment ? PendingAttachmentKind::Image : PendingAttachmentKind::File;
+    }
     attachment.displayName = filesystemPathToUtf8String(absolutePath.filename());
     attachment.localPath = localPath;
     attachment.previewPath = makeAttachmentLocalPath(appPaths, previewPath);
     attachment.sha256 = std::move(sha256);
     attachment.sourcePath = sourcePath;
-    attachment.fileSize = fileSizeOrZero(absolutePath);
+    attachment.fileSize = directory
+        ? directoryContentSizeOrZero(absolutePath)
+        : fileSizeOrZero(absolutePath);
     if (imageAttachment) {
         applyImageSizeMetadata(attachment, sourcePath);
     }
@@ -2020,15 +2056,25 @@ std::optional<relaydesk::storage::ChatMessagePart> makeComposerAttachmentPart(
         if (localPathText.empty()) {
             localPathText = makeAttachmentLocalPath(appPaths, localPath);
         }
-        fileSize = fileSizeOrZero(localPath);
+        if (attachment.kind != PendingAttachmentKind::Folder) {
+            fileSize = fileSizeOrZero(localPath);
+        }
     } catch (const std::exception&) {
         return std::nullopt;
     }
 
     relaydesk::storage::ChatMessagePart part;
-    part.SetType(attachment.kind == PendingAttachmentKind::Image
-                     ? relaydesk::storage::MessagePartType::Image
-                     : relaydesk::storage::MessagePartType::File);
+    switch (attachment.kind) {
+    case PendingAttachmentKind::Image:
+        part.SetType(relaydesk::storage::MessagePartType::Image);
+        break;
+    case PendingAttachmentKind::File:
+        part.SetType(relaydesk::storage::MessagePartType::File);
+        break;
+    case PendingAttachmentKind::Folder:
+        part.SetType(relaydesk::storage::MessagePartType::Folder);
+        break;
+    }
     part.SetTransferId(relaydesk::core::createUuidV4());
     part.SetTransferState(relaydesk::storage::TransferState::Pending);
     part.SetFileName(attachment.displayName);
@@ -2088,7 +2134,8 @@ std::optional<std::filesystem::path> resolveRenderableImagePath(
 std::optional<std::filesystem::path> resolveOpenableMessageFilePath(
     const relaydesk::storage::ChatMessagePart& part)
 {
-    if (part.GetType() != relaydesk::storage::MessagePartType::File
+    const bool folder = part.GetType() == relaydesk::storage::MessagePartType::Folder;
+    if ((part.GetType() != relaydesk::storage::MessagePartType::File && !folder)
         || !part.GetLocalPath().has_value()
         || part.GetLocalPath().value().empty()) {
         return std::nullopt;
@@ -2099,7 +2146,10 @@ std::optional<std::filesystem::path> resolveOpenableMessageFilePath(
         const std::filesystem::path filePath =
             resolveWorkRelativePath(appPaths, part.GetLocalPath().value());
         std::error_code error;
-        if (!std::filesystem::is_regular_file(filePath, error) || error) {
+        const bool pathExists = folder
+            ? std::filesystem::is_directory(filePath, error)
+            : std::filesystem::is_regular_file(filePath, error);
+        if (!pathExists || error) {
             return std::nullopt;
         }
 
@@ -2214,7 +2264,8 @@ std::string transferFileNameLeaf(std::string fileName)
 bool incomingTransferTargetExists(
     const relaydesk::storage::ChatMessagePart& part)
 {
-    if (part.GetType() != relaydesk::storage::MessagePartType::File
+    const bool folder = part.GetType() == relaydesk::storage::MessagePartType::Folder;
+    if ((part.GetType() != relaydesk::storage::MessagePartType::File && !folder)
         || !part.GetFileName().has_value()) {
         return false;
     }
@@ -2257,6 +2308,9 @@ std::string messagePartDetail(const relaydesk::storage::ChatMessagePart& part)
     std::string detail;
     if (part.GetType() == relaydesk::storage::MessagePartType::Folder) {
         detail = "文件夹";
+        if (part.GetFileSize().has_value() && part.GetFileSize().value() > 0) {
+            detail += " · " + formatFileSize(part.GetFileSize().value());
+        }
     } else if (part.GetFileSize().has_value()) {
         detail = formatFileSize(part.GetFileSize().value());
     }
@@ -3315,7 +3369,7 @@ void drawComposerEditorAttachmentNode(eui::Ui& ui,
                          node.width,
                          attachment.displayName,
                          formatFileSize(attachment.fileSize),
-                         false,
+                         attachment.kind == PendingAttachmentKind::Folder,
                          false);
     drawComposerEditorCloseButton(ui,
                                   id,
@@ -3852,7 +3906,8 @@ ComposerAttachmentNodeSize messagePartNodeSize(
         return {composerDraftFileNodeWidth(flowWidth),
                 kMessageFileTransferNodeHeight};
     case relaydesk::storage::MessagePartType::Folder:
-        return {composerDraftFileNodeWidth(flowWidth), 58.0f};
+        return {composerDraftFileNodeWidth(flowWidth),
+                kMessageFileTransferNodeHeight};
     case relaydesk::storage::MessagePartType::Text:
     case relaydesk::storage::MessagePartType::Emoji:
         return {};
@@ -4175,6 +4230,8 @@ void drawMessageFilePart(eui::Ui& ui,
                          bool outgoing,
                          relaydesk::runtime::RelayDeskRuntime& runtime)
 {
+    const bool folder =
+        part.GetType() == relaydesk::storage::MessagePartType::Folder;
     drawFileDocumentCard(ui,
                          id,
                          x,
@@ -4182,7 +4239,7 @@ void drawMessageFilePart(eui::Ui& ui,
                          width,
                          messagePartTitle(part),
                          messagePartDetail(part),
-                         false,
+                         folder,
                          false);
 
     const std::optional<relaydesk::storage::TransferState> transferState =
@@ -4193,6 +4250,24 @@ void drawMessageFilePart(eui::Ui& ui,
         const std::optional<std::filesystem::path> filePath =
             resolveOpenableMessageFilePath(part);
         if (!filePath.has_value()) {
+            return;
+        }
+
+        if (folder) {
+            constexpr float openFolderButtonWidth = 82.0f;
+            const float rowY = y + 62.0f;
+            const float buttonX = x + width - openFolderButtonWidth - 8.0f;
+            drawTransferActionButton(
+                ui,
+                id + ".open_folder",
+                buttonX,
+                rowY,
+                openFolderButtonWidth,
+                "打开文件夹",
+                true,
+                [openPath = filePath.value()] {
+                    shellOpenPath(openPath);
+                });
             return;
         }
 
@@ -4413,15 +4488,15 @@ void drawMessagePartNode(eui::Ui& ui,
                             runtime);
         return;
     case relaydesk::storage::MessagePartType::Folder:
-        drawFileDocumentCard(ui,
-                             id,
-                             x,
-                             y,
-                             node.width,
-                             messagePartTitle(part),
-                             messagePartDetail(part),
-                             true,
-                             false);
+        drawMessageFilePart(ui,
+                            id,
+                            x,
+                            y,
+                            node.width,
+                            message,
+                            part,
+                            outgoing,
+                            runtime);
         return;
     case relaydesk::storage::MessagePartType::Text:
     case relaydesk::storage::MessagePartType::Emoji:

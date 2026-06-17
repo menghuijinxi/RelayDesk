@@ -104,6 +104,7 @@ public:
     const std::filesystem::path& GetTempFilePath() const { return tempFilePath_; }
     const std::filesystem::path& GetFinalFilePath() const { return finalFilePath_; }
     bool GetImageTransfer() const { return imageTransfer_; }
+    bool GetFolderTransfer() const { return folderTransfer_; }
 
     void SetSenderDeviceId(std::string senderDeviceId)
     {
@@ -127,6 +128,7 @@ public:
         finalFilePath_ = std::move(finalFilePath);
     }
     void SetImageTransfer(bool imageTransfer) { imageTransfer_ = imageTransfer; }
+    void SetFolderTransfer(bool folderTransfer) { folderTransfer_ = folderTransfer; }
 
 protected:
     std::string senderDeviceId_;
@@ -139,6 +141,7 @@ protected:
     std::filesystem::path tempFilePath_;
     std::filesystem::path finalFilePath_;
     bool imageTransfer_ = false;
+    bool folderTransfer_ = false;
 };
 
 class PendingOutgoingTransferRequest {
