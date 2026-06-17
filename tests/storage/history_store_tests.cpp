@@ -6,6 +6,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
@@ -251,6 +252,62 @@ int appendsAndLoadsMixedMessageParts()
                   "Folder part manifest path was not loaded.");
 }
 
+int appendsAndLoadsRejectedTransferState()
+{
+    const auto appPaths = makeAppPaths("rejected-transfer");
+    auto record = makeBaseRecord("m-rejected");
+    record.SetDeliveryState(relaydesk::storage::DeliveryState::Failed);
+    auto part = makeFileLikePart("p1",
+                                 relaydesk::storage::MessagePartType::File,
+                                 "transfer-rejected",
+                                 "report.pdf");
+    part.SetTransferState(relaydesk::storage::TransferState::Rejected);
+    record.AddPart(std::move(part));
+    relaydesk::storage::appendChatMessage(appPaths, "peer-device", record);
+
+    const auto result = relaydesk::storage::loadChatHistory(appPaths, "peer-device");
+    if (const int check = expect(result.GetRecords().size() == 1,
+                                 "Rejected history record count mismatch.");
+        check != 0) {
+        return check;
+    }
+
+    return expect(result.GetRecords()[0].GetParts()[0].GetTransferState().value()
+                      == relaydesk::storage::TransferState::Rejected,
+                  "Rejected transfer state did not round-trip.");
+}
+
+int appendsAndLoadsTransferProgress()
+{
+    const auto appPaths = makeAppPaths("transfer-progress");
+    auto record = makeBaseRecord("m-progress");
+    auto part = makeFileLikePart("p1",
+                                 relaydesk::storage::MessagePartType::File,
+                                 "transfer-progress",
+                                 "report.pdf");
+    part.SetTransferState(relaydesk::storage::TransferState::Transferring);
+    part.SetTransferredSize(512);
+    record.AddPart(std::move(part));
+    relaydesk::storage::appendChatMessage(appPaths, "peer-device", record);
+
+    const auto result = relaydesk::storage::loadChatHistory(appPaths, "peer-device");
+    if (const int check = expect(result.GetRecords().size() == 1,
+                                 "Transfer progress history record count mismatch.");
+        check != 0) {
+        return check;
+    }
+
+    const auto& loadedPart = result.GetRecords()[0].GetParts()[0];
+    if (const int check = expect(loadedPart.GetTransferredSize().has_value(),
+                                 "Transfer progress was not loaded.");
+        check != 0) {
+        return check;
+    }
+
+    return expect(loadedPart.GetTransferredSize().value() == 512,
+                  "Transfer progress did not round-trip.");
+}
+
 int keepsConversationIdStableAcrossDeviceOrder()
 {
     const std::string first =
@@ -413,6 +470,12 @@ int main()
     std::filesystem::remove_all(testRoot());
 
     if (const int result = appendsAndLoadsMixedMessageParts(); result != 0) {
+        return result;
+    }
+    if (const int result = appendsAndLoadsRejectedTransferState(); result != 0) {
+        return result;
+    }
+    if (const int result = appendsAndLoadsTransferProgress(); result != 0) {
         return result;
     }
 

@@ -178,6 +178,39 @@ relaydesk::net::TransferChunkMessage makeTransferChunk()
     return message;
 }
 
+relaydesk::net::TransferAcceptMessage makeTransferAccept()
+{
+    relaydesk::net::TransferAcceptMessage message;
+    message.SetMessageId("message-1");
+    message.SetPartId("p3");
+    message.SetTransferId("transfer-1");
+    message.SetReceiverDeviceId("peer-device");
+    message.SetSaveStrategy(relaydesk::net::TransferSaveStrategy::Overwrite);
+    return message;
+}
+
+relaydesk::net::TransferRejectMessage makeTransferReject()
+{
+    relaydesk::net::TransferRejectMessage message;
+    message.SetMessageId("message-1");
+    message.SetPartId("p3");
+    message.SetTransferId("transfer-1");
+    message.SetReceiverDeviceId("peer-device");
+    message.SetReason("user_rejected");
+    return message;
+}
+
+relaydesk::net::TransferCancelMessage makeTransferCancel()
+{
+    relaydesk::net::TransferCancelMessage message;
+    message.SetMessageId("message-1");
+    message.SetPartId("p3");
+    message.SetTransferId("transfer-1");
+    message.SetCancellerDeviceId("local-device");
+    message.SetReason("user_cancelled");
+    return message;
+}
+
 relaydesk::net::TransferCompleteMessage makeTransferComplete()
 {
     relaydesk::net::TransferCompleteMessage message;
@@ -250,6 +283,76 @@ int treatsLegacyTransferOfferAsFile()
                   "Legacy transfer offer was treated as an image transfer.");
 }
 
+int roundTripsTransferAcceptFrame()
+{
+    const relaydesk::net::PeerFrame frame =
+        relaydesk::net::makeTransferAcceptFrame(makeTransferAccept());
+    if (const int check = expect(frame.GetType()
+                                     == relaydesk::net::PeerFrameType::TransferAccept,
+                                 "Transfer accept frame type mismatch.");
+        check != 0) {
+        return check;
+    }
+
+    const relaydesk::net::TransferAcceptMessage decoded =
+        relaydesk::net::parseTransferAcceptFrame(
+            relaydesk::net::decodePeerFrame(relaydesk::net::encodePeerFrame(frame)));
+    if (const int check = expect(decoded.GetReceiverDeviceId() == "peer-device",
+                                 "Decoded transfer accept receiver mismatch.");
+        check != 0) {
+        return check;
+    }
+    return expect(decoded.GetSaveStrategy()
+                      == relaydesk::net::TransferSaveStrategy::Overwrite,
+                  "Decoded transfer accept save strategy mismatch.");
+}
+
+int roundTripsTransferRejectFrame()
+{
+    const relaydesk::net::PeerFrame frame =
+        relaydesk::net::makeTransferRejectFrame(makeTransferReject());
+    if (const int check = expect(frame.GetType()
+                                     == relaydesk::net::PeerFrameType::TransferReject,
+                                 "Transfer reject frame type mismatch.");
+        check != 0) {
+        return check;
+    }
+
+    const relaydesk::net::TransferRejectMessage decoded =
+        relaydesk::net::parseTransferRejectFrame(
+            relaydesk::net::decodePeerFrame(relaydesk::net::encodePeerFrame(frame)));
+    if (const int check = expect(decoded.GetReceiverDeviceId() == "peer-device",
+                                 "Decoded transfer reject receiver mismatch.");
+        check != 0) {
+        return check;
+    }
+    return expect(decoded.GetReason() == "user_rejected",
+                  "Decoded transfer reject reason mismatch.");
+}
+
+int roundTripsTransferCancelFrame()
+{
+    const relaydesk::net::PeerFrame frame =
+        relaydesk::net::makeTransferCancelFrame(makeTransferCancel());
+    if (const int check = expect(frame.GetType()
+                                     == relaydesk::net::PeerFrameType::TransferCancel,
+                                 "Transfer cancel frame type mismatch.");
+        check != 0) {
+        return check;
+    }
+
+    const relaydesk::net::TransferCancelMessage decoded =
+        relaydesk::net::parseTransferCancelFrame(
+            relaydesk::net::decodePeerFrame(relaydesk::net::encodePeerFrame(frame)));
+    if (const int check = expect(decoded.GetCancellerDeviceId() == "local-device",
+                                 "Decoded transfer cancel device mismatch.");
+        check != 0) {
+        return check;
+    }
+    return expect(decoded.GetReason() == "user_cancelled",
+                  "Decoded transfer cancel reason mismatch.");
+}
+
 int roundTripsTransferChunkFrame()
 {
     const std::vector<std::uint8_t> body{0x10, 0x20, 0x30, 0x40};
@@ -318,6 +421,15 @@ int main()
         return result;
     }
     if (const int result = treatsLegacyTransferOfferAsFile(); result != 0) {
+        return result;
+    }
+    if (const int result = roundTripsTransferAcceptFrame(); result != 0) {
+        return result;
+    }
+    if (const int result = roundTripsTransferRejectFrame(); result != 0) {
+        return result;
+    }
+    if (const int result = roundTripsTransferCancelFrame(); result != 0) {
         return result;
     }
     if (const int result = roundTripsTransferChunkFrame(); result != 0) {

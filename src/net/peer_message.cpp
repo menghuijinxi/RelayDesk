@@ -71,6 +71,30 @@ std::uintmax_t readRequiredOffset(const nlohmann::json& value)
     return value["offset"].get<std::uintmax_t>();
 }
 
+std::string toJsonValue(TransferSaveStrategy saveStrategy)
+{
+    switch (saveStrategy) {
+    case TransferSaveStrategy::Unique:
+        return "unique";
+    case TransferSaveStrategy::Overwrite:
+        return "overwrite";
+    }
+
+    throw std::runtime_error("Unsupported transfer save strategy.");
+}
+
+TransferSaveStrategy transferSaveStrategyFromJsonValue(const std::string& value)
+{
+    if (value == "unique") {
+        return TransferSaveStrategy::Unique;
+    }
+    if (value == "overwrite") {
+        return TransferSaveStrategy::Overwrite;
+    }
+
+    throw std::runtime_error("Unsupported transfer save strategy value.");
+}
+
 void requireEmptyBody(const PeerFrame& frame, const char* frameName)
 {
     if (!frame.GetBody().empty()) {
@@ -128,6 +152,96 @@ TransferOfferMessage transferOfferFromJson(const nlohmann::json& value)
     if (value.contains("sha256") && value["sha256"].is_string()) {
         message.SetSha256(value["sha256"].get<std::string>());
     }
+    return message;
+}
+
+nlohmann::json transferAcceptToJson(const TransferAcceptMessage& message)
+{
+    if (message.GetMessageId().empty()
+        || message.GetPartId().empty()
+        || message.GetTransferId().empty()
+        || message.GetReceiverDeviceId().empty()) {
+        throw std::runtime_error("Transfer accept header is missing required fields.");
+    }
+
+    return nlohmann::json{
+        {"message_id", message.GetMessageId()},
+        {"part_id", message.GetPartId()},
+        {"transfer_id", message.GetTransferId()},
+        {"receiver_device_id", message.GetReceiverDeviceId()},
+        {"save_strategy", toJsonValue(message.GetSaveStrategy())},
+    };
+}
+
+TransferAcceptMessage transferAcceptFromJson(const nlohmann::json& value)
+{
+    TransferAcceptMessage message;
+    message.SetMessageId(readRequiredString(value, "message_id"));
+    message.SetPartId(readRequiredString(value, "part_id"));
+    message.SetTransferId(readRequiredString(value, "transfer_id"));
+    message.SetReceiverDeviceId(readRequiredString(value, "receiver_device_id"));
+    message.SetSaveStrategy(
+        transferSaveStrategyFromJsonValue(readRequiredString(value, "save_strategy")));
+    return message;
+}
+
+nlohmann::json transferRejectToJson(const TransferRejectMessage& message)
+{
+    if (message.GetMessageId().empty()
+        || message.GetPartId().empty()
+        || message.GetTransferId().empty()
+        || message.GetReceiverDeviceId().empty()
+        || message.GetReason().empty()) {
+        throw std::runtime_error("Transfer reject header is missing required fields.");
+    }
+
+    return nlohmann::json{
+        {"message_id", message.GetMessageId()},
+        {"part_id", message.GetPartId()},
+        {"transfer_id", message.GetTransferId()},
+        {"receiver_device_id", message.GetReceiverDeviceId()},
+        {"reason", message.GetReason()},
+    };
+}
+
+TransferRejectMessage transferRejectFromJson(const nlohmann::json& value)
+{
+    TransferRejectMessage message;
+    message.SetMessageId(readRequiredString(value, "message_id"));
+    message.SetPartId(readRequiredString(value, "part_id"));
+    message.SetTransferId(readRequiredString(value, "transfer_id"));
+    message.SetReceiverDeviceId(readRequiredString(value, "receiver_device_id"));
+    message.SetReason(readRequiredString(value, "reason"));
+    return message;
+}
+
+nlohmann::json transferCancelToJson(const TransferCancelMessage& message)
+{
+    if (message.GetMessageId().empty()
+        || message.GetPartId().empty()
+        || message.GetTransferId().empty()
+        || message.GetCancellerDeviceId().empty()
+        || message.GetReason().empty()) {
+        throw std::runtime_error("Transfer cancel header is missing required fields.");
+    }
+
+    return nlohmann::json{
+        {"message_id", message.GetMessageId()},
+        {"part_id", message.GetPartId()},
+        {"transfer_id", message.GetTransferId()},
+        {"canceller_device_id", message.GetCancellerDeviceId()},
+        {"reason", message.GetReason()},
+    };
+}
+
+TransferCancelMessage transferCancelFromJson(const nlohmann::json& value)
+{
+    TransferCancelMessage message;
+    message.SetMessageId(readRequiredString(value, "message_id"));
+    message.SetPartId(readRequiredString(value, "part_id"));
+    message.SetTransferId(readRequiredString(value, "transfer_id"));
+    message.SetCancellerDeviceId(readRequiredString(value, "canceller_device_id"));
+    message.SetReason(readRequiredString(value, "reason"));
     return message;
 }
 
@@ -251,6 +365,93 @@ TransferOfferMessage parseTransferOfferFrame(const PeerFrame& frame)
     }
     requireEmptyBody(frame, "Transfer offer");
     return parseTransferOfferHeader(frame.GetHeader());
+}
+
+std::string serializeTransferAcceptHeader(const TransferAcceptMessage& message)
+{
+    return makeEnvelope(
+        kPeerMessageTypeTransferAccept,
+        transferAcceptToJson(message)).dump();
+}
+
+TransferAcceptMessage parseTransferAcceptHeader(const std::string& payload)
+{
+    const nlohmann::json value = parseEnvelope(payload);
+    requireEnvelope(value, kPeerMessageTypeTransferAccept);
+    return transferAcceptFromJson(value["message"]);
+}
+
+PeerFrame makeTransferAcceptFrame(const TransferAcceptMessage& message)
+{
+    return PeerFrame(PeerFrameType::TransferAccept,
+                     serializeTransferAcceptHeader(message));
+}
+
+TransferAcceptMessage parseTransferAcceptFrame(const PeerFrame& frame)
+{
+    if (frame.GetType() != PeerFrameType::TransferAccept) {
+        throw std::runtime_error("Peer frame is not a transfer_accept frame.");
+    }
+    requireEmptyBody(frame, "Transfer accept");
+    return parseTransferAcceptHeader(frame.GetHeader());
+}
+
+std::string serializeTransferRejectHeader(const TransferRejectMessage& message)
+{
+    return makeEnvelope(
+        kPeerMessageTypeTransferReject,
+        transferRejectToJson(message)).dump();
+}
+
+TransferRejectMessage parseTransferRejectHeader(const std::string& payload)
+{
+    const nlohmann::json value = parseEnvelope(payload);
+    requireEnvelope(value, kPeerMessageTypeTransferReject);
+    return transferRejectFromJson(value["message"]);
+}
+
+PeerFrame makeTransferRejectFrame(const TransferRejectMessage& message)
+{
+    return PeerFrame(PeerFrameType::TransferReject,
+                     serializeTransferRejectHeader(message));
+}
+
+TransferRejectMessage parseTransferRejectFrame(const PeerFrame& frame)
+{
+    if (frame.GetType() != PeerFrameType::TransferReject) {
+        throw std::runtime_error("Peer frame is not a transfer_reject frame.");
+    }
+    requireEmptyBody(frame, "Transfer reject");
+    return parseTransferRejectHeader(frame.GetHeader());
+}
+
+std::string serializeTransferCancelHeader(const TransferCancelMessage& message)
+{
+    return makeEnvelope(
+        kPeerMessageTypeTransferCancel,
+        transferCancelToJson(message)).dump();
+}
+
+TransferCancelMessage parseTransferCancelHeader(const std::string& payload)
+{
+    const nlohmann::json value = parseEnvelope(payload);
+    requireEnvelope(value, kPeerMessageTypeTransferCancel);
+    return transferCancelFromJson(value["message"]);
+}
+
+PeerFrame makeTransferCancelFrame(const TransferCancelMessage& message)
+{
+    return PeerFrame(PeerFrameType::TransferCancel,
+                     serializeTransferCancelHeader(message));
+}
+
+TransferCancelMessage parseTransferCancelFrame(const PeerFrame& frame)
+{
+    if (frame.GetType() != PeerFrameType::TransferCancel) {
+        throw std::runtime_error("Peer frame is not a transfer_cancel frame.");
+    }
+    requireEmptyBody(frame, "Transfer cancel");
+    return parseTransferCancelHeader(frame.GetHeader());
 }
 
 std::string serializeTransferChunkHeader(const TransferChunkMessage& message)

@@ -31,6 +31,14 @@
 #include <utility>
 #include <vector>
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <shellapi.h>
+#endif
+
 namespace {
 
 using eui::Color;
@@ -62,6 +70,7 @@ constexpr float kFailedDeliveryStateTextWidth = 72.0f;
 constexpr float kFailedDeliveryStateRetryGap = 6.0f;
 constexpr float kFailedDeliveryStateRetryButtonSize = 20.0f;
 constexpr float kFailedDeliveryStateRightInset = 4.0f;
+constexpr float kMessageFileTransferNodeHeight = 88.0f;
 constexpr const char* kFileTypeIconAssetDirectory =
     "assets/third_party/vscode-icons/icons";
 constexpr std::size_t kMaxRecentEmojiCount = 10;
@@ -702,6 +711,59 @@ std::string readTextFile(const std::filesystem::path& filePath)
     std::ostringstream output;
     output << input.rdbuf();
     return output.str();
+}
+
+bool shellOpenPath(const std::filesystem::path& filePath)
+{
+#if defined(_WIN32)
+    const HINSTANCE result = ShellExecuteW(nullptr,
+                                           L"open",
+                                           filePath.wstring().c_str(),
+                                           nullptr,
+                                           nullptr,
+                                           SW_SHOWNORMAL);
+    return reinterpret_cast<std::intptr_t>(result) > 32;
+#else
+    (void)filePath;
+    return false;
+#endif
+}
+
+#if defined(_WIN32)
+std::wstring quoteWindowsShellArgument(const std::wstring& argument)
+{
+    return L"\"" + argument + L"\"";
+}
+#endif
+
+bool shellRevealPath(const std::filesystem::path& filePath)
+{
+#if defined(_WIN32)
+    std::error_code error;
+    if (std::filesystem::is_regular_file(filePath, error)) {
+        const std::wstring parameters =
+            L"/select," + quoteWindowsShellArgument(filePath.wstring());
+        const HINSTANCE result = ShellExecuteW(nullptr,
+                                               L"open",
+                                               L"explorer.exe",
+                                               parameters.c_str(),
+                                               nullptr,
+                                               SW_SHOWNORMAL);
+        return reinterpret_cast<std::intptr_t>(result) > 32;
+    }
+
+    const std::filesystem::path directoryPath =
+        std::filesystem::is_directory(filePath, error)
+        ? filePath
+        : filePath.parent_path();
+    if (directoryPath.empty()) {
+        return false;
+    }
+    return shellOpenPath(directoryPath);
+#else
+    (void)filePath;
+    return false;
+#endif
 }
 
 std::string fileTypeIconSvgMarkup(const std::string& iconFileName)
@@ -1971,6 +2033,7 @@ std::optional<relaydesk::storage::ChatMessagePart> makeComposerAttachmentPart(
     part.SetTransferState(relaydesk::storage::TransferState::Pending);
     part.SetFileName(attachment.displayName);
     part.SetFileSize(fileSize);
+    part.SetTransferredSize(0);
     if (!attachment.sha256.empty()) {
         part.SetSha256(attachment.sha256);
     }
@@ -2022,6 +2085,30 @@ std::optional<std::filesystem::path> resolveRenderableImagePath(
     }
 }
 
+std::optional<std::filesystem::path> resolveOpenableMessageFilePath(
+    const relaydesk::storage::ChatMessagePart& part)
+{
+    if (part.GetType() != relaydesk::storage::MessagePartType::File
+        || !part.GetLocalPath().has_value()
+        || part.GetLocalPath().value().empty()) {
+        return std::nullopt;
+    }
+
+    try {
+        const auto appPaths = relaydesk::storage::createAppPaths();
+        const std::filesystem::path filePath =
+            resolveWorkRelativePath(appPaths, part.GetLocalPath().value());
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(filePath, error) || error) {
+            return std::nullopt;
+        }
+
+        return filePath;
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
 std::optional<std::filesystem::path> resolveMessageThumbnailPath(
     const relaydesk::storage::AppPaths& appPaths,
     const relaydesk::storage::ChatMessagePart& part)
@@ -2066,9 +2153,83 @@ std::string transferStateText(relaydesk::storage::TransferState state)
         return "传输失败";
     case relaydesk::storage::TransferState::Cancelled:
         return "已取消";
+    case relaydesk::storage::TransferState::Rejected:
+        return "已拒绝";
     }
 
     return "";
+}
+
+std::optional<int> transferProgressPercent(
+    const relaydesk::storage::ChatMessagePart& part)
+{
+    if (!part.GetFileSize().has_value()
+        || part.GetFileSize().value() == 0
+        || !part.GetTransferredSize().has_value()) {
+        return std::nullopt;
+    }
+
+    const double ratio = static_cast<double>(part.GetTransferredSize().value())
+        / static_cast<double>(part.GetFileSize().value());
+    return static_cast<int>(std::round(std::clamp(ratio, 0.0, 1.0) * 100.0));
+}
+
+bool shouldShowTransferProgress(relaydesk::storage::TransferState state)
+{
+    switch (state) {
+    case relaydesk::storage::TransferState::Transferring:
+    case relaydesk::storage::TransferState::Completed:
+    case relaydesk::storage::TransferState::Failed:
+    case relaydesk::storage::TransferState::Cancelled:
+        return true;
+    case relaydesk::storage::TransferState::Pending:
+    case relaydesk::storage::TransferState::Offered:
+    case relaydesk::storage::TransferState::Rejected:
+        return false;
+    }
+
+    return false;
+}
+
+std::string transferFileNameLeaf(std::string fileName)
+{
+    const std::size_t position = fileName.find_last_of("/\\");
+    if (position != std::string::npos) {
+        fileName = fileName.substr(position + 1);
+    }
+    if (fileName.empty() || fileName == "." || fileName == "..") {
+        return "transfer.bin";
+    }
+
+    for (char& value : fileName) {
+        if (value == '/' || value == '\\' || value == ':' || value == '*'
+            || value == '?' || value == '"' || value == '<' || value == '>'
+            || value == '|') {
+            value = '_';
+        }
+    }
+    return fileName;
+}
+
+bool incomingTransferTargetExists(
+    const relaydesk::storage::ChatMessagePart& part)
+{
+    if (part.GetType() != relaydesk::storage::MessagePartType::File
+        || !part.GetFileName().has_value()) {
+        return false;
+    }
+
+    try {
+        const auto appPaths = relaydesk::storage::createAppPaths();
+        const std::filesystem::path targetPath =
+            appPaths.GetInboxDirectory()
+            / filesystemPathFromUtf8String(
+                transferFileNameLeaf(part.GetFileName().value()));
+        std::error_code error;
+        return std::filesystem::exists(targetPath, error) && !error;
+    } catch (const std::exception&) {
+        return false;
+    }
 }
 
 std::string messagePartTitle(const relaydesk::storage::ChatMessagePart& part)
@@ -2101,13 +2262,22 @@ std::string messagePartDetail(const relaydesk::storage::ChatMessagePart& part)
     }
 
     if (part.GetTransferState().has_value()) {
+        const relaydesk::storage::TransferState transferState =
+            part.GetTransferState().value();
         const std::string stateText =
-            transferStateText(part.GetTransferState().value());
+            transferStateText(transferState);
         if (!stateText.empty()) {
             if (!detail.empty()) {
                 detail += " · ";
             }
             detail += stateText;
+            const std::optional<int> progressPercent =
+                shouldShowTransferProgress(transferState)
+                ? transferProgressPercent(part)
+                : std::nullopt;
+            if (progressPercent.has_value()) {
+                detail += " " + std::to_string(progressPercent.value()) + "%";
+            }
         }
     }
     return detail;
@@ -3679,6 +3849,8 @@ ComposerAttachmentNodeSize messagePartNodeSize(
     case relaydesk::storage::MessagePartType::Image:
         return messageImageNodeSize(part, flowWidth);
     case relaydesk::storage::MessagePartType::File:
+        return {composerDraftFileNodeWidth(flowWidth),
+                kMessageFileTransferNodeHeight};
     case relaydesk::storage::MessagePartType::Folder:
         return {composerDraftFileNodeWidth(flowWidth), 58.0f};
     case relaydesk::storage::MessagePartType::Text:
@@ -3932,6 +4104,190 @@ void drawMessageImagePart(eui::Ui& ui,
         .build();
 }
 
+void drawTransferActionButton(eui::Ui& ui,
+                              const std::string& id,
+                              float x,
+                              float y,
+                              float width,
+                              const std::string& label,
+                              bool primary,
+                              const std::function<void()>& onClick)
+{
+    const Color fill = primary ? kTeal : Color{1.0f, 1.0f, 1.0f, 0.86f};
+    const Color border = primary ? kTeal : kBorder;
+    const Color foreground = primary ? Color{1.0f, 1.0f, 1.0f, 1.0f} : kText;
+    rect(ui, id + ".bg", x, y, width, 22.0f, fill, 6.0f, border);
+    text(ui,
+         id + ".text",
+         x,
+         y + 3.0f,
+         width,
+         16.0f,
+         label,
+         11.0f,
+         foreground,
+         eui::HorizontalAlign::Center);
+    ui.rect(id + ".hit")
+        .position(x, y)
+        .size(width, 22.0f)
+        .color({0.0f, 0.0f, 0.0f, 0.0f})
+        .onClick(onClick)
+        .build();
+}
+
+void drawMessageFilePart(eui::Ui& ui,
+                         const std::string& id,
+                         float x,
+                         float y,
+                         float width,
+                         const relaydesk::storage::ChatMessageRecord& message,
+                         const relaydesk::storage::ChatMessagePart& part,
+                         bool outgoing,
+                         relaydesk::runtime::RelayDeskRuntime& runtime)
+{
+    drawFileDocumentCard(ui,
+                         id,
+                         x,
+                         y,
+                         width,
+                         messagePartTitle(part),
+                         messagePartDetail(part),
+                         false,
+                         false);
+
+    const std::optional<relaydesk::storage::TransferState> transferState =
+        part.GetTransferState();
+    if (transferState.has_value()
+        && transferState.value()
+            == relaydesk::storage::TransferState::Completed) {
+        const std::optional<std::filesystem::path> filePath =
+            resolveOpenableMessageFilePath(part);
+        if (!filePath.has_value()) {
+            return;
+        }
+
+        constexpr float openButtonWidth = 48.0f;
+        constexpr float revealButtonWidth = 82.0f;
+        constexpr float gap = 6.0f;
+        const float rowY = y + 62.0f;
+        const float rowWidth = openButtonWidth + gap + revealButtonWidth;
+        float buttonX = x + width - rowWidth - 8.0f;
+        drawTransferActionButton(
+            ui,
+            id + ".open",
+            buttonX,
+            rowY,
+            openButtonWidth,
+            "打开",
+            true,
+            [openPath = filePath.value()] {
+                shellOpenPath(openPath);
+            });
+        buttonX += openButtonWidth + gap;
+        drawTransferActionButton(
+            ui,
+            id + ".reveal",
+            buttonX,
+            rowY,
+            revealButtonWidth,
+            "打开文件夹",
+            false,
+            [openPath = filePath.value()] {
+                shellRevealPath(openPath);
+        });
+        return;
+    }
+
+    if (transferState.has_value()) {
+        const relaydesk::storage::TransferState state = transferState.value();
+        const bool canCancel = (outgoing
+                                && (state
+                                        == relaydesk::storage::TransferState::Offered
+                                    || state
+                                        == relaydesk::storage::TransferState::Transferring))
+            || (!outgoing
+                && state == relaydesk::storage::TransferState::Transferring);
+        if (canCancel) {
+            constexpr float cancelButtonWidth = 48.0f;
+            const float rowY = y + 62.0f;
+            const float buttonX = x + width - cancelButtonWidth - 8.0f;
+            drawTransferActionButton(
+                ui,
+                id + ".cancel",
+                buttonX,
+                rowY,
+                cancelButtonWidth,
+                "取消",
+                false,
+                [&runtime,
+                 messageId = message.GetMessageId(),
+                 partId = part.GetPartId()] {
+                    runtime.cancelSelectedPeerFileTransfer(messageId, partId);
+                });
+            return;
+        }
+    }
+
+    if (outgoing
+        || !transferState.has_value()
+        || transferState.value()
+            != relaydesk::storage::TransferState::Offered) {
+        return;
+    }
+
+    const bool targetExists = incomingTransferTargetExists(part);
+    const float buttonWidth = 48.0f;
+    const float gap = 6.0f;
+    const float rowY = y + 62.0f;
+    const float rowWidth = targetExists
+        ? buttonWidth * 3.0f + gap * 2.0f
+        : buttonWidth * 2.0f + gap;
+    float buttonX = x + width - rowWidth - 8.0f;
+    drawTransferActionButton(
+        ui,
+        id + ".accept",
+        buttonX,
+        rowY,
+        buttonWidth,
+        "接收",
+        true,
+        [&runtime,
+         messageId = message.GetMessageId(),
+         partId = part.GetPartId()] {
+            runtime.acceptSelectedPeerFileTransfer(messageId, partId, false);
+        });
+    buttonX += buttonWidth + gap;
+    if (targetExists) {
+        drawTransferActionButton(
+            ui,
+            id + ".overwrite",
+            buttonX,
+            rowY,
+            buttonWidth,
+            "覆盖",
+            false,
+            [&runtime,
+             messageId = message.GetMessageId(),
+             partId = part.GetPartId()] {
+                runtime.acceptSelectedPeerFileTransfer(messageId, partId, true);
+            });
+        buttonX += buttonWidth + gap;
+    }
+    drawTransferActionButton(
+        ui,
+        id + ".reject",
+        buttonX,
+        rowY,
+        buttonWidth,
+        "拒绝",
+        false,
+        [&runtime,
+         messageId = message.GetMessageId(),
+         partId = part.GetPartId()] {
+            runtime.rejectSelectedPeerFileTransfer(messageId, partId);
+        });
+}
+
 void drawMessageFlowTextAtoms(eui::Ui& ui,
                               const std::string& id,
                               const MessageFlowLayout& layout,
@@ -3989,8 +4345,11 @@ void drawMessagePartNode(eui::Ui& ui,
                          const std::string& id,
                          float x,
                          float y,
+                         const relaydesk::storage::ChatMessageRecord& message,
                          const relaydesk::storage::ChatMessagePart& part,
                          const MessageFlowPartNode& node,
+                         bool outgoing,
+                         relaydesk::runtime::RelayDeskRuntime& runtime,
                          bool& stickerMenuOpen,
                          float& stickerMenuX,
                          float& stickerMenuY,
@@ -4013,15 +4372,15 @@ void drawMessagePartNode(eui::Ui& ui,
                              stickerMenuName);
         return;
     case relaydesk::storage::MessagePartType::File:
-        drawFileDocumentCard(ui,
-                             id,
-                             x,
-                             y,
-                             node.width,
-                             messagePartTitle(part),
-                             messagePartDetail(part),
-                             false,
-                             false);
+        drawMessageFilePart(ui,
+                            id,
+                            x,
+                            y,
+                            node.width,
+                            message,
+                            part,
+                            outgoing,
+                            runtime);
         return;
     case relaydesk::storage::MessagePartType::Folder:
         drawFileDocumentCard(ui,
@@ -4048,6 +4407,7 @@ float drawMessageDocumentBubble(
     const MessageDocumentBubbleMetrics& metrics,
     const relaydesk::storage::ChatMessageRecord& message,
     bool outgoing,
+    relaydesk::runtime::RelayDeskRuntime& runtime,
     bool& stickerMenuOpen,
     float& stickerMenuX,
     float& stickerMenuY,
@@ -4073,8 +4433,11 @@ float drawMessageDocumentBubble(
                             id + ".node." + std::to_string(nodeIndex),
                             contentX + node.x,
                             contentY + node.y,
+                            message,
                             message.GetParts()[node.partIndex],
                             node,
+                            outgoing,
+                            runtime,
                             stickerMenuOpen,
                             stickerMenuX,
                             stickerMenuY,
@@ -4637,6 +5000,7 @@ void drawRuntimeChatTimelineContent(
                                                              metrics,
                                                              message,
                                                              outgoing,
+                                                             runtime,
                                                              stickerMenuOpen,
                                                              stickerMenuX,
                                                              stickerMenuY,

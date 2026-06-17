@@ -102,6 +102,7 @@ public:
     std::uintmax_t GetExpectedSize() const { return expectedSize_; }
     std::uintmax_t GetReceivedSize() const { return receivedSize_; }
     const std::filesystem::path& GetTempFilePath() const { return tempFilePath_; }
+    const std::filesystem::path& GetFinalFilePath() const { return finalFilePath_; }
     bool GetImageTransfer() const { return imageTransfer_; }
 
     void SetSenderDeviceId(std::string senderDeviceId)
@@ -121,6 +122,10 @@ public:
     {
         tempFilePath_ = std::move(tempFilePath);
     }
+    void SetFinalFilePath(std::filesystem::path finalFilePath)
+    {
+        finalFilePath_ = std::move(finalFilePath);
+    }
     void SetImageTransfer(bool imageTransfer) { imageTransfer_ = imageTransfer; }
 
 protected:
@@ -132,7 +137,93 @@ protected:
     std::uintmax_t expectedSize_ = 0;
     std::uintmax_t receivedSize_ = 0;
     std::filesystem::path tempFilePath_;
+    std::filesystem::path finalFilePath_;
     bool imageTransfer_ = false;
+};
+
+class PendingOutgoingTransferRequest {
+public:
+    const std::string& GetReceiverDeviceId() const { return receiverDeviceId_; }
+    const std::string& GetMessageId() const { return messageId_; }
+    const std::string& GetPartId() const { return partId_; }
+    const std::string& GetTransferId() const { return transferId_; }
+
+    void SetReceiverDeviceId(std::string receiverDeviceId)
+    {
+        receiverDeviceId_ = std::move(receiverDeviceId);
+    }
+    void SetMessageId(std::string messageId) { messageId_ = std::move(messageId); }
+    void SetPartId(std::string partId) { partId_ = std::move(partId); }
+    void SetTransferId(std::string transferId)
+    {
+        transferId_ = std::move(transferId);
+    }
+
+protected:
+    std::string receiverDeviceId_;
+    std::string messageId_;
+    std::string partId_;
+    std::string transferId_;
+};
+
+class PendingTransferStateUpdate {
+public:
+    const std::string& GetPeerDeviceId() const { return peerDeviceId_; }
+    const std::string& GetMessageId() const { return messageId_; }
+    const std::string& GetPartId() const { return partId_; }
+    const std::string& GetTransferId() const { return transferId_; }
+    relaydesk::storage::TransferState GetTransferState() const
+    {
+        return transferState_;
+    }
+
+    void SetPeerDeviceId(std::string peerDeviceId)
+    {
+        peerDeviceId_ = std::move(peerDeviceId);
+    }
+    void SetMessageId(std::string messageId) { messageId_ = std::move(messageId); }
+    void SetPartId(std::string partId) { partId_ = std::move(partId); }
+    void SetTransferId(std::string transferId)
+    {
+        transferId_ = std::move(transferId);
+    }
+    void SetTransferState(relaydesk::storage::TransferState transferState)
+    {
+        transferState_ = transferState;
+    }
+
+protected:
+    std::string peerDeviceId_;
+    std::string messageId_;
+    std::string partId_;
+    std::string transferId_;
+    relaydesk::storage::TransferState transferState_ =
+        relaydesk::storage::TransferState::Pending;
+};
+
+class PendingTransferProgressUpdate {
+public:
+    const std::string& GetMessageId() const { return messageId_; }
+    const std::string& GetPartId() const { return partId_; }
+    const std::string& GetTransferId() const { return transferId_; }
+    std::uintmax_t GetTransferredSize() const { return transferredSize_; }
+
+    void SetMessageId(std::string messageId) { messageId_ = std::move(messageId); }
+    void SetPartId(std::string partId) { partId_ = std::move(partId); }
+    void SetTransferId(std::string transferId)
+    {
+        transferId_ = std::move(transferId);
+    }
+    void SetTransferredSize(std::uintmax_t transferredSize)
+    {
+        transferredSize_ = transferredSize;
+    }
+
+protected:
+    std::string messageId_;
+    std::string partId_;
+    std::string transferId_;
+    std::uintmax_t transferredSize_ = 0;
 };
 
 class PendingTransferUpdate {
@@ -209,6 +300,13 @@ public:
     void sendMessagePartsToSelectedPeer(
         std::vector<relaydesk::storage::ChatMessagePart> parts);
     void resendSelectedPeerMessage(const std::string& messageId);
+    void acceptSelectedPeerFileTransfer(const std::string& messageId,
+                                        const std::string& partId,
+                                        bool overwriteExisting);
+    void rejectSelectedPeerFileTransfer(const std::string& messageId,
+                                        const std::string& partId);
+    void cancelSelectedPeerFileTransfer(const std::string& messageId,
+                                        const std::string& partId);
     void sendTextMessageToSelectedPeer(std::string text);
 
 protected:
@@ -237,6 +335,18 @@ protected:
     void drainPendingTransferUpdates();
     bool updateChatMessageTransferPart(
         const PendingTransferUpdate& update);
+    void enqueueOutgoingTransferRequest(PendingOutgoingTransferRequest request);
+    void drainPendingOutgoingTransferRequests();
+    void sendOutgoingTransferRequest(
+        const PendingOutgoingTransferRequest& request);
+    void enqueueTransferStateUpdate(PendingTransferStateUpdate update);
+    void drainPendingTransferStateUpdates();
+    bool updateChatMessageTransferState(
+        const PendingTransferStateUpdate& update);
+    void enqueueTransferProgressUpdate(PendingTransferProgressUpdate update);
+    void drainPendingTransferProgressUpdates();
+    bool updateChatMessageTransferProgress(
+        const PendingTransferProgressUpdate& update);
     void drainPendingChatMessages();
     void appendSelectedPeerMessage(
         const std::string& peerDeviceId,
@@ -261,6 +371,9 @@ protected:
     std::vector<PendingPeerProfile> pendingPeerProfiles_;
     std::vector<relaydesk::storage::ChatMessageRecord> pendingChatMessages_;
     std::vector<PendingTransferUpdate> pendingTransferUpdates_;
+    std::vector<PendingOutgoingTransferRequest> pendingOutgoingTransferRequests_;
+    std::vector<PendingTransferStateUpdate> pendingTransferStateUpdates_;
+    std::vector<PendingTransferProgressUpdate> pendingTransferProgressUpdates_;
     std::unordered_map<std::string, PendingIncomingTransfer>
         pendingIncomingTransfers_;
     std::vector<relaydesk::storage::ChatMessageRecord> selectedPeerMessages_;
@@ -271,6 +384,9 @@ protected:
     std::mutex pendingPeerMutex_;
     std::mutex pendingChatMutex_;
     std::mutex pendingTransferUpdateMutex_;
+    std::mutex pendingOutgoingTransferRequestMutex_;
+    std::mutex pendingTransferStateUpdateMutex_;
+    std::mutex pendingTransferProgressUpdateMutex_;
     std::mutex pendingTransferMutex_;
     std::atomic_bool uiRefreshPending_ = false;
     std::atomic_bool peerStatusRefreshPending_ = false;

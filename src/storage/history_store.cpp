@@ -144,6 +144,8 @@ std::string toJsonValue(TransferState transferState)
         return "failed";
     case TransferState::Cancelled:
         return "cancelled";
+    case TransferState::Rejected:
+        return "rejected";
     }
 
     throw std::runtime_error("Unsupported transfer state.");
@@ -168,6 +170,9 @@ TransferState transferStateFromJsonValue(const std::string& value)
     }
     if (value == "cancelled") {
         return TransferState::Cancelled;
+    }
+    if (value == "rejected") {
+        return TransferState::Rejected;
     }
 
     throw std::runtime_error("Unsupported transfer state value.");
@@ -216,6 +221,20 @@ std::uintmax_t readRequiredFileSize(const nlohmann::json& value)
     return value["file_size"].get<std::uintmax_t>();
 }
 
+std::optional<std::uintmax_t> readOptionalUnsigned(
+    const nlohmann::json& value,
+    const char* fieldName)
+{
+    if (!value.contains(fieldName)) {
+        return std::nullopt;
+    }
+    if (!value[fieldName].is_number_unsigned()) {
+        throw std::runtime_error("Chat history record has invalid unsigned field.");
+    }
+
+    return value[fieldName].get<std::uintmax_t>();
+}
+
 void validateCoreFields(const ChatMessageRecord& record)
 {
     if (record.GetSchemaVersion() != kSchemaVersion
@@ -244,6 +263,15 @@ void addOptionalFileSize(nlohmann::json& value,
 {
     if (fieldValue.has_value()) {
         value["file_size"] = *fieldValue;
+    }
+}
+
+void addOptionalUnsigned(nlohmann::json& value,
+                         const char* fieldName,
+                         const std::optional<std::uintmax_t>& fieldValue)
+{
+    if (fieldValue.has_value()) {
+        value[fieldName] = *fieldValue;
     }
 }
 
@@ -322,6 +350,7 @@ nlohmann::json partToJson(const ChatMessagePart& part)
     }
     addOptionalString(value, "file_name", part.GetFileName());
     addOptionalFileSize(value, part.GetFileSize());
+    addOptionalUnsigned(value, "transferred_size", part.GetTransferredSize());
     addOptionalString(value, "sha256", part.GetSha256());
     addOptionalString(value, "local_path", part.GetLocalPath());
     addOptionalString(value, "manifest_path", part.GetManifestPath());
@@ -397,6 +426,10 @@ ChatMessagePart partFromJson(const nlohmann::json& value)
             transferStateFromJsonValue(readRequiredString(value, "transfer_state")));
         part.SetFileName(readRequiredString(value, "file_name"));
         part.SetFileSize(readRequiredFileSize(value));
+        if (const auto transferredSize =
+                readOptionalUnsigned(value, "transferred_size")) {
+            part.SetTransferredSize(*transferredSize);
+        }
         part.SetLocalPath(readRequiredString(value, "local_path"));
         if (value.contains("sha256") && value["sha256"].is_string()) {
             part.SetSha256(value["sha256"].get<std::string>());

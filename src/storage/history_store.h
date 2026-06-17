@@ -41,6 +41,7 @@ enum class TransferState {
     Completed,
     Failed,
     Cancelled,
+    Rejected,
 };
 
 class ChatMessagePart {
@@ -56,6 +57,10 @@ public:
     }
     const std::optional<std::string>& GetFileName() const { return fileName_; }
     const std::optional<std::uintmax_t>& GetFileSize() const { return fileSize_; }
+    const std::optional<std::uintmax_t>& GetTransferredSize() const
+    {
+        return transferredSize_;
+    }
     const std::optional<std::string>& GetSha256() const { return sha256_; }
     const std::optional<std::string>& GetLocalPath() const { return localPath_; }
     const std::optional<std::string>& GetManifestPath() const { return manifestPath_; }
@@ -71,6 +76,10 @@ public:
     }
     void SetFileName(std::string fileName) { fileName_ = std::move(fileName); }
     void SetFileSize(std::uintmax_t fileSize) { fileSize_ = fileSize; }
+    void SetTransferredSize(std::uintmax_t transferredSize)
+    {
+        transferredSize_ = transferredSize;
+    }
     void SetSha256(std::string sha256) { sha256_ = std::move(sha256); }
     void SetLocalPath(std::string localPath) { localPath_ = std::move(localPath); }
     void SetManifestPath(std::string manifestPath)
@@ -87,6 +96,7 @@ protected:
     std::optional<TransferState> transferState_;
     std::optional<std::string> fileName_;
     std::optional<std::uintmax_t> fileSize_;
+    std::optional<std::uintmax_t> transferredSize_;
     std::optional<std::string> sha256_;
     std::optional<std::string> localPath_;
     std::optional<std::string> manifestPath_;
