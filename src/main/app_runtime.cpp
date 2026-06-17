@@ -254,7 +254,13 @@ bool shouldIgnoreTransferStateUpdate(
 
     const relaydesk::storage::TransferState currentState =
         part.GetTransferState().value();
-    return currentState != nextState && isTerminalTransferState(currentState);
+    const bool nextStateIsMoreSpecific =
+        currentState == relaydesk::storage::TransferState::Failed
+        && (nextState == relaydesk::storage::TransferState::Rejected
+            || nextState == relaydesk::storage::TransferState::Cancelled);
+    return currentState != nextState
+        && isTerminalTransferState(currentState)
+        && !nextStateIsMoreSpecific;
 }
 
 bool isSendableMessagePart(const relaydesk::storage::ChatMessagePart& part)
@@ -2404,10 +2410,12 @@ bool RelayDeskRuntime::updateChatMessageTransferPart(
 bool RelayDeskRuntime::updateChatMessageTransferState(
     const PendingTransferStateUpdate& update)
 {
-    const bool markFailed =
-        update.GetTransferState() == relaydesk::storage::TransferState::Failed
-        || update.GetTransferState() == relaydesk::storage::TransferState::Rejected
-        || update.GetTransferState() == relaydesk::storage::TransferState::Cancelled;
+    const bool markDeliveryFailed =
+        update.GetTransferState() == relaydesk::storage::TransferState::Failed;
+    const bool markDeliverySent =
+        update.GetTransferState() == relaydesk::storage::TransferState::Rejected
+        || update.GetTransferState()
+            == relaydesk::storage::TransferState::Cancelled;
     bool updatedPendingMessage = false;
     {
         std::lock_guard lock(pendingChatMutex_);
@@ -2431,10 +2439,15 @@ bool RelayDeskRuntime::updateChatMessageTransferState(
                                              update.GetPartId(),
                                              update.GetTransferId(),
                                              update.GetTransferState())) {
-                if (markFailed
-                    && message.GetDirection()
-                        == relaydesk::storage::MessageDirection::Outgoing) {
-                    message.SetDeliveryState(relaydesk::storage::DeliveryState::Failed);
+                if (message.GetDirection()
+                    == relaydesk::storage::MessageDirection::Outgoing) {
+                    if (markDeliveryFailed) {
+                        message.SetDeliveryState(
+                            relaydesk::storage::DeliveryState::Failed);
+                    } else if (markDeliverySent) {
+                        message.SetDeliveryState(
+                            relaydesk::storage::DeliveryState::Sent);
+                    }
                 }
                 recordToPersist = message;
                 break;
@@ -2452,10 +2465,15 @@ bool RelayDeskRuntime::updateChatMessageTransferState(
                                              update.GetPartId(),
                                              update.GetTransferId(),
                                              update.GetTransferState())) {
-                if (markFailed
-                    && message.GetDirection()
-                        == relaydesk::storage::MessageDirection::Outgoing) {
-                    message.SetDeliveryState(relaydesk::storage::DeliveryState::Failed);
+                if (message.GetDirection()
+                    == relaydesk::storage::MessageDirection::Outgoing) {
+                    if (markDeliveryFailed) {
+                        message.SetDeliveryState(
+                            relaydesk::storage::DeliveryState::Failed);
+                    } else if (markDeliverySent) {
+                        message.SetDeliveryState(
+                            relaydesk::storage::DeliveryState::Sent);
+                    }
                 }
                 recordToPersist = std::move(message);
                 break;

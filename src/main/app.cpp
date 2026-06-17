@@ -3973,12 +3973,38 @@ MessageFlowLayout makeMessageFlowLayout(
     return layout;
 }
 
+std::optional<relaydesk::storage::TransferState> messageTransferFooterState(
+    const relaydesk::storage::ChatMessageRecord& message)
+{
+    bool hasCancelledTransfer = false;
+    for (const auto& part : message.GetParts()) {
+        if (!part.GetTransferState().has_value()) {
+            continue;
+        }
+
+        const relaydesk::storage::TransferState transferState =
+            part.GetTransferState().value();
+        if (transferState == relaydesk::storage::TransferState::Rejected) {
+            return transferState;
+        }
+        if (transferState == relaydesk::storage::TransferState::Cancelled) {
+            hasCancelledTransfer = true;
+        }
+    }
+
+    if (hasCancelledTransfer) {
+        return relaydesk::storage::TransferState::Cancelled;
+    }
+    return std::nullopt;
+}
+
 bool shouldDrawFailedDeliveryStateInsideBubble(
     const relaydesk::storage::ChatMessageRecord& message,
     bool outgoing)
 {
     return outgoing
-        && message.GetDeliveryState() == relaydesk::storage::DeliveryState::Failed;
+        && (message.GetDeliveryState() == relaydesk::storage::DeliveryState::Failed
+            || messageTransferFooterState(message).has_value());
 }
 
 float messageDeliveryStateFooterHeight(
@@ -3996,6 +4022,10 @@ float messageDeliveryStateMinimumContentWidth(
 {
     if (!shouldDrawFailedDeliveryStateInsideBubble(message, outgoing)) {
         return 0.0f;
+    }
+
+    if (messageTransferFooterState(message).has_value()) {
+        return kFailedDeliveryStateTextWidth + kFailedDeliveryStateRightInset;
     }
 
     return kFailedDeliveryStateTextWidth
@@ -4866,6 +4896,33 @@ void drawRuntimeMessageDeliveryState(
     const relaydesk::storage::ChatMessageRecord& message,
     relaydesk::runtime::RelayDeskRuntime& runtime)
 {
+    const std::optional<relaydesk::storage::TransferState> transferFooterState =
+        messageTransferFooterState(message);
+    if (transferFooterState.has_value()) {
+        const float rowX = bubbleX + bubbleWidth - kFailedDeliveryStateTextWidth
+            - kFailedDeliveryStateRightInset;
+        rect(ui,
+             id + ".state.bg",
+             rowX,
+             statusY + 1.0f,
+             kFailedDeliveryStateTextWidth,
+             18.0f,
+             kDangerSoft,
+             6.0f,
+             kDanger);
+        text(ui,
+             id + ".state",
+             rowX,
+             statusY + 1.0f,
+             kFailedDeliveryStateTextWidth,
+             18.0f,
+             transferStateText(transferFooterState.value()),
+             11.0f,
+             kDanger,
+             eui::HorizontalAlign::Center);
+        return;
+    }
+
     const bool failed =
         message.GetDeliveryState() == relaydesk::storage::DeliveryState::Failed;
     if (!failed) {
