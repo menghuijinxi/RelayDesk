@@ -2,6 +2,6 @@
 
 namespace relaydesk::core {
 
-constexpr int kAppVersion = 5;
+extern const int kAppVersion;
 
 }

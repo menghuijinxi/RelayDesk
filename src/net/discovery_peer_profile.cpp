@@ -56,10 +56,24 @@ bool isNewerThanProfile(const DiscoveryAnnouncement& announcement,
     return announcement.GetTimestamp() >= profile.GetLastSeenAt();
 }
 
-bool isStaleForProfile(const DiscoveryAnnouncement& announcement,
-                       const relaydesk::storage::PeerProfile& profile)
+bool shouldIgnoreProfileUpdate(const DiscoveryAnnouncement& announcement,
+                               const relaydesk::storage::PeerProfile& profile)
 {
+    if (announcement.GetAppVersion() > profile.GetAppVersion()) {
+        return false;
+    }
+
     return announcement.GetTimestamp() <= profile.GetLastSeenAt();
+}
+
+std::string resolveLastSeenAt(const DiscoveryAnnouncement& announcement,
+                              const relaydesk::storage::PeerProfile& profile)
+{
+    if (announcement.GetTimestamp() < profile.GetLastSeenAt()) {
+        return profile.GetLastSeenAt();
+    }
+
+    return announcement.GetTimestamp();
 }
 
 void removeStaleProfilesForAnnouncement(
@@ -104,7 +118,7 @@ relaydesk::storage::PeerProfile upsertPeerProfileFromDiscovery(
 
     const relaydesk::storage::PeerProfile existingProfile =
         relaydesk::storage::loadPeerProfile(appPaths, announcement.GetDeviceId());
-    if (isStaleForProfile(announcement, existingProfile)) {
+    if (shouldIgnoreProfileUpdate(announcement, existingProfile)) {
         return existingProfile;
     }
 
@@ -113,6 +127,7 @@ relaydesk::storage::PeerProfile upsertPeerProfileFromDiscovery(
         announcement,
         existingProfile.GetFirstSeenAt(),
         mergeObservedAddress(existingProfile.GetLastAddresses(), observedAddress));
+    updatedProfile.SetLastSeenAt(resolveLastSeenAt(announcement, existingProfile));
     updatedProfile.SetUnreadMessageCount(existingProfile.GetUnreadMessageCount());
     relaydesk::storage::savePeerProfile(appPaths, updatedProfile);
     return updatedProfile;

@@ -392,6 +392,57 @@ protected:
         relaydesk::storage::TransferState::Pending;
 };
 
+class RelayDeskRuntimeOptions {
+public:
+    RelayDeskRuntimeOptions();
+
+    std::uint16_t GetTcpListenPort() const { return tcpListenPort_; }
+    std::uint16_t GetDiscoveryUdpPort() const { return discoveryUdpPort_; }
+    bool GetDiscoveryBroadcastEnabled() const
+    {
+        return discoveryBroadcastEnabled_;
+    }
+    bool GetDiscoveryAnnounceOnStart() const
+    {
+        return discoveryAnnounceOnStart_;
+    }
+    bool GetNetworkEnabled() const { return networkEnabled_; }
+    bool GetAsyncRefreshEnabled() const { return asyncRefreshEnabled_; }
+
+    void SetTcpListenPort(std::uint16_t tcpListenPort)
+    {
+        tcpListenPort_ = tcpListenPort;
+    }
+    void SetDiscoveryUdpPort(std::uint16_t discoveryUdpPort)
+    {
+        discoveryUdpPort_ = discoveryUdpPort;
+    }
+    void SetDiscoveryBroadcastEnabled(bool discoveryBroadcastEnabled)
+    {
+        discoveryBroadcastEnabled_ = discoveryBroadcastEnabled;
+    }
+    void SetDiscoveryAnnounceOnStart(bool discoveryAnnounceOnStart)
+    {
+        discoveryAnnounceOnStart_ = discoveryAnnounceOnStart;
+    }
+    void SetNetworkEnabled(bool networkEnabled)
+    {
+        networkEnabled_ = networkEnabled;
+    }
+    void SetAsyncRefreshEnabled(bool asyncRefreshEnabled)
+    {
+        asyncRefreshEnabled_ = asyncRefreshEnabled;
+    }
+
+protected:
+    std::uint16_t tcpListenPort_ = 0;
+    std::uint16_t discoveryUdpPort_ = 0;
+    bool discoveryBroadcastEnabled_ = true;
+    bool discoveryAnnounceOnStart_ = true;
+    bool networkEnabled_ = true;
+    bool asyncRefreshEnabled_ = true;
+};
+
 class RelayDeskRuntime {
 public:
     RelayDeskRuntime();
@@ -433,6 +484,8 @@ public:
     void dismissAppUpdatePrompt();
 
 protected:
+    explicit RelayDeskRuntime(RelayDeskRuntimeOptions options);
+
     void initialize();
     void refreshPeers();
     void enqueuePeerProfile(relaydesk::storage::PeerProfile profile,
@@ -509,6 +562,7 @@ protected:
     void logDiagnostic(const std::string& message) const noexcept;
 
     LocalUserSummary localUser_;
+    RelayDeskRuntimeOptions runtimeOptions_;
     std::vector<PeerListItem> peers_;
     std::vector<PendingPeerProfile> pendingPeerProfiles_;
     std::vector<relaydesk::storage::ChatMessageRecord> pendingChatMessages_;

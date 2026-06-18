@@ -132,6 +132,7 @@ if(RELAYDESK_HAS_EUI_NEO)
         src/main/app.cpp
         src/main/image_attachment_store.cpp
         src/main/app_runtime.cpp
+        src/core/app_version.cpp
         src/core/diagnostic_log.cpp
         src/core/time.cpp
         src/core/uuid.cpp
@@ -198,13 +199,11 @@ if(RELAYDESK_HAS_EUI_NEO)
         COMMAND ${CMAKE_COMMAND} -E make_directory
             $<TARGET_FILE_DIR:relaydesk>/assets
         COMMAND ${CMAKE_COMMAND} -E rm -f
+            "$<TARGET_FILE_DIR:relaydesk>/assets/icon.png"
+            "$<TARGET_FILE_DIR:relaydesk>/assets/icon.ico"
             "$<TARGET_FILE_DIR:relaydesk>/assets/Font Awesome 7 Free-Solid-900.otf"
             "$<TARGET_FILE_DIR:relaydesk>/assets/JingNanJunJunTi-JinNanJunJunTi-Bold-2.ttf"
             "$<TARGET_FILE_DIR:relaydesk>/assets/YouSheBiaoTiHei-2.ttf"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${CMAKE_SOURCE_DIR}/assets/icon.ico
-            ${CMAKE_SOURCE_DIR}/assets/icon.png
-            $<TARGET_FILE_DIR:relaydesk>/assets
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_SOURCE_DIR}/assets/third_party
             $<TARGET_FILE_DIR:relaydesk>/assets/third_party
@@ -267,6 +266,68 @@ if(WIN32)
 
     add_test(NAME relaydesk_image_attachment_store_tests
         COMMAND relaydesk_image_attachment_store_tests)
+endif()
+
+if(WIN32 AND RELAYDESK_HAS_EUI_NEO AND RELAYDESK_HAS_BOOST_ASIO)
+    add_executable(relaydesk_app_runtime_update_prompt_tests
+        tests/main/app_runtime_update_prompt_tests.cpp
+        src/main/app_runtime.cpp
+        src/main/image_attachment_store.cpp
+        src/core/app_version.cpp
+        src/core/diagnostic_log.cpp
+        src/core/time.cpp
+        src/core/uuid.cpp
+        src/platform/attachment_input_win.cpp
+        src/platform/computer_name_win.cpp
+        src/platform/text_encoding_win.cpp
+        src/platform/windows_install_id_win.cpp
+        src/net/boost_asio_tcp_peer_transport.cpp
+        src/net/boost_asio_udp_discovery_transport.cpp
+        src/net/discovery_local_announcement.cpp
+        src/net/discovery_message.cpp
+        src/net/discovery_peer_profile.cpp
+        src/net/discovery_processor.cpp
+        src/net/discovery_service.cpp
+        src/net/discovery_worker.cpp
+        src/net/peer_frame.cpp
+        src/net/peer_message.cpp
+        src/storage/app_paths.cpp
+        src/storage/app_paths_win.cpp
+        src/storage/history_store.cpp
+        src/storage/local_identity.cpp
+        src/storage/peer_profile.cpp
+        src/storage/sticker_store.cpp
+        src/storage/ui_preferences.cpp
+    )
+
+    target_include_directories(relaydesk_app_runtime_update_prompt_tests
+        PRIVATE src)
+    target_compile_features(relaydesk_app_runtime_update_prompt_tests
+        PRIVATE cxx_std_23)
+    target_compile_definitions(relaydesk_app_runtime_update_prompt_tests PRIVATE
+        RELAYDESK_HAS_BOOST_ASIO
+        NOMINMAX
+        UNICODE
+        _UNICODE
+        WIN32_LEAN_AND_MEAN
+    )
+    target_link_libraries(relaydesk_app_runtime_update_prompt_tests PRIVATE
+        eui::neo
+        relaydesk_boost_asio
+        nlohmann_json::nlohmann_json
+        shell32
+        windowscodecs
+        ole32
+        bcrypt
+    )
+
+    if(MSVC)
+        target_compile_options(relaydesk_app_runtime_update_prompt_tests
+            PRIVATE /W4 /permissive- /utf-8)
+    endif()
+
+    add_test(NAME relaydesk_app_runtime_update_prompt_tests
+        COMMAND relaydesk_app_runtime_update_prompt_tests)
 endif()
 
 add_executable(relaydesk_identity_tests
@@ -437,6 +498,7 @@ add_test(NAME relaydesk_peer_message_tests COMMAND relaydesk_peer_message_tests)
 
 add_executable(relaydesk_discovery_local_announcement_tests
     tests/net/discovery_local_announcement_tests.cpp
+    src/core/app_version.cpp
     src/core/time.cpp
     src/core/uuid.cpp
     src/net/discovery_local_announcement.cpp
@@ -558,6 +620,7 @@ if(RELAYDESK_HAS_BOOST_ASIO)
 
     add_executable(relaydesk_discovery_service_tests
         tests/net/discovery_service_tests.cpp
+        src/core/app_version.cpp
         src/core/diagnostic_log.cpp
         src/core/time.cpp
         src/core/uuid.cpp
@@ -592,8 +655,50 @@ if(RELAYDESK_HAS_BOOST_ASIO)
     add_test(NAME relaydesk_discovery_service_tests
              COMMAND relaydesk_discovery_service_tests)
 
+    add_executable(relaydesk_discovery_app_version_transmission_tests
+        tests/net/discovery_app_version_transmission_tests.cpp
+        src/core/app_version.cpp
+        src/core/diagnostic_log.cpp
+        src/core/time.cpp
+        src/core/uuid.cpp
+        src/net/boost_asio_udp_discovery_transport.cpp
+        src/net/discovery_local_announcement.cpp
+        src/net/discovery_message.cpp
+        src/net/discovery_peer_profile.cpp
+        src/net/discovery_processor.cpp
+        src/net/discovery_service.cpp
+        src/storage/app_paths.cpp
+        src/storage/local_identity.cpp
+        src/storage/peer_profile.cpp
+    )
+
+    target_include_directories(relaydesk_discovery_app_version_transmission_tests
+        PRIVATE src)
+    target_compile_features(relaydesk_discovery_app_version_transmission_tests
+        PRIVATE cxx_std_23)
+    target_link_libraries(relaydesk_discovery_app_version_transmission_tests
+        PRIVATE relaydesk_boost_asio nlohmann_json::nlohmann_json)
+
+    set(RELAYDESK_DISCOVERY_APP_VERSION_TEST_PATH
+        "${CMAKE_SOURCE_DIR}/tmp/tests/discovery_app_version")
+
+    target_compile_definitions(
+        relaydesk_discovery_app_version_transmission_tests PRIVATE
+        "RELAYDESK_DISCOVERY_APP_VERSION_TEST_WORK_DIR=\"${RELAYDESK_DISCOVERY_APP_VERSION_TEST_PATH}\""
+    )
+
+    if(MSVC)
+        target_compile_options(
+            relaydesk_discovery_app_version_transmission_tests
+            PRIVATE /W4 /permissive- /utf-8)
+    endif()
+
+    add_test(NAME relaydesk_discovery_app_version_transmission_tests
+             COMMAND relaydesk_discovery_app_version_transmission_tests)
+
     add_executable(relaydesk_discovery_worker_tests
         tests/net/discovery_worker_tests.cpp
+        src/core/app_version.cpp
         src/core/diagnostic_log.cpp
         src/core/time.cpp
         src/core/uuid.cpp
@@ -631,6 +736,7 @@ if(RELAYDESK_HAS_BOOST_ASIO)
 
     add_executable(relaydesk_discovery_process_smoke_tests
         tests/net/discovery_process_smoke_tests.cpp
+        src/core/app_version.cpp
         src/core/diagnostic_log.cpp
         src/core/time.cpp
         src/core/uuid.cpp

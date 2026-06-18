@@ -125,6 +125,10 @@ bool isStaleOnlineProfile(const PeerListItem& peer,
                           const relaydesk::storage::PeerProfile& profile,
                           bool online)
 {
+    if (profile.GetAppVersion() > peer.GetAppVersion()) {
+        return false;
+    }
+
     return online
         && !peer.GetLastSeenAt().empty()
         && !profile.GetLastSeenAt().empty()
@@ -203,15 +207,16 @@ std::string loadPeerLastConversationAt(
 }
 
 #if defined(RELAYDESK_HAS_BOOST_ASIO)
-relaydesk::net::DiscoveryWorkerConfig makeDiscoveryWorkerConfig()
+relaydesk::net::DiscoveryWorkerConfig makeDiscoveryWorkerConfig(
+    const RelayDeskRuntimeOptions& runtimeOptions)
 {
     relaydesk::net::DiscoveryWorkerConfig config;
     config.SetBroadcastInterval(2s);
     config.SetStartupBroadcastInterval(500ms);
     config.SetStartupBroadcastCount(8);
     config.SetPollTimeout(100ms);
-    config.SetBroadcastEnabled(true);
-    config.SetAnnounceOnStart(true);
+    config.SetBroadcastEnabled(runtimeOptions.GetDiscoveryBroadcastEnabled());
+    config.SetAnnounceOnStart(runtimeOptions.GetDiscoveryAnnounceOnStart());
     return config;
 }
 #endif
@@ -1407,6 +1412,22 @@ PendingTransferProgressUpdate makeTransferProgressUpdate(
     update.SetTransferredSize(transferredSize);
     return update;
 }
+
+PendingTransferUpdate makeCancelledIncomingTransferUpdate(
+    const relaydesk::storage::AppPaths& appPaths,
+    const PendingIncomingTransfer& transfer)
+{
+    PendingTransferUpdate update;
+    update.SetPeerDeviceId(transfer.GetSenderDeviceId());
+    update.SetMessageId(transfer.GetMessageId());
+    update.SetPartId(transfer.GetPartId());
+    update.SetTransferId(transfer.GetTransferId());
+    update.SetFileName(transfer.GetFileName());
+    update.SetFileSize(transfer.GetExpectedSize());
+    update.SetLocalPath(makeWorkRelativePath(appPaths, transfer.GetTempFilePath()));
+    update.SetTransferState(relaydesk::storage::TransferState::Cancelled);
+    return update;
+}
 #endif
 
 } // namespace
@@ -1762,7 +1783,21 @@ PendingPeerProfile::PendingPeerProfile(
 {
 }
 
+RelayDeskRuntimeOptions::RelayDeskRuntimeOptions()
+{
+#if defined(RELAYDESK_HAS_BOOST_ASIO)
+    tcpListenPort_ = relaydesk::net::kDefaultAdvertisedTcpPort;
+    discoveryUdpPort_ = relaydesk::net::kDefaultDiscoveryUdpPort;
+#endif
+}
+
 RelayDeskRuntime::RelayDeskRuntime()
+    : RelayDeskRuntime(RelayDeskRuntimeOptions{})
+{
+}
+
+RelayDeskRuntime::RelayDeskRuntime(RelayDeskRuntimeOptions options)
+    : runtimeOptions_(std::move(options))
 {
     initialize();
 }
@@ -1848,7 +1883,7 @@ std::optional<PeerListItem> RelayDeskRuntime::findPeerByDeviceId(
 void RelayDeskRuntime::maybeOfferAppUpdateFromPeer(const PeerListItem& peer)
 {
 #if defined(RELAYDESK_HAS_BOOST_ASIO)
-    if (!tcpPeerTransport_
+    if ((runtimeOptions_.GetNetworkEnabled() && !tcpPeerTransport_)
         || !peer.GetOnline()
         || peer.GetDeviceId().empty()
         || peer.GetDeviceId() == localUser_.GetDeviceId()
@@ -2573,7 +2608,7 @@ void RelayDeskRuntime::cancelSelectedPeerFileTransfer(const std::string& message
             return candidate.GetPartId() == partId;
         });
     if (part == parts.end()
-        || part->GetType() != relaydesk::storage::MessagePartType::File
+        || !isManualTransferInvitePart(*part)
         || !part->GetTransferId().has_value()
         || !part->GetTransferState().has_value()
         || !isCancellableFileTransferState(part->GetTransferState().value())) {
@@ -2588,12 +2623,26 @@ void RelayDeskRuntime::cancelSelectedPeerFileTransfer(const std::string& message
     }
 
     const std::string transferId = part->GetTransferId().value();
+    std::optional<std::filesystem::path> cancelledTempFilePath;
+    if (record.GetDirection() == relaydesk::storage::MessageDirection::Incoming) {
+        std::lock_guard lock(pendingTransferMutex_);
+        const auto transfer = pendingIncomingTransfers_.find(transferId);
+        if (transfer != pendingIncomingTransfers_.end()) {
+            cancelledTempFilePath = transfer->second.GetTempFilePath();
+        }
+    }
+
     const relaydesk::net::PeerFrame frame =
         relaydesk::net::makeTransferCancelFrame(
             makeTransferCancelMessage(record,
                                       *part,
                                       localUser_.GetDeviceId()));
 
+    if (cancelledTempFilePath.has_value()) {
+        const auto appPaths = relaydesk::storage::createAppPaths();
+        part->SetLocalPath(makeWorkRelativePath(appPaths,
+                                                cancelledTempFilePath.value()));
+    }
     part->SetTransferState(relaydesk::storage::TransferState::Cancelled);
     record.SetParts(std::move(parts));
     *message = record;
@@ -2824,57 +2873,63 @@ void RelayDeskRuntime::initialize()
                       + " display_name=" + identity.GetDisplayName());
 
 #if defined(RELAYDESK_HAS_BOOST_ASIO)
-        auto tcpTransport =
-            std::make_unique<relaydesk::net::BoostAsioTcpPeerTransport>(
-                relaydesk::net::kDefaultAdvertisedTcpPort);
-        tcpTransport->SetFrameCallback(
-            [this](relaydesk::net::PeerFrame frame,
-                   std::string,
-                   std::uint16_t) {
-                try {
-                    handleIncomingPeerFrame(std::move(frame));
-                } catch (const std::exception& error) {
-                    logDiagnostic(std::string("runtime.tcp.frame_error message=")
-                                  + error.what());
-                }
-            });
-        tcpTransport->SetErrorCallback(
-            [this](std::string message) {
-                logDiagnostic("runtime.tcp.error message=" + message);
-            });
-        tcpTransport->start();
-        const std::uint16_t tcpPort = tcpTransport->GetLocalPort();
-        tcpPeerTransport_ =
-            std::make_unique<TcpPeerTransportHandle>(std::move(tcpTransport));
-        logDiagnostic("runtime.tcp.started port=" + std::to_string(tcpPort));
+        if (runtimeOptions_.GetNetworkEnabled()) {
+            auto tcpTransport =
+                std::make_unique<relaydesk::net::BoostAsioTcpPeerTransport>(
+                    runtimeOptions_.GetTcpListenPort());
+            tcpTransport->SetFrameCallback(
+                [this](relaydesk::net::PeerFrame frame,
+                       std::string,
+                       std::uint16_t) {
+                    try {
+                        handleIncomingPeerFrame(std::move(frame));
+                    } catch (const std::exception& error) {
+                        logDiagnostic(
+                            std::string("runtime.tcp.frame_error message=")
+                            + error.what());
+                    }
+                });
+            tcpTransport->SetErrorCallback(
+                [this](std::string message) {
+                    logDiagnostic("runtime.tcp.error message=" + message);
+                });
+            tcpTransport->start();
+            const std::uint16_t tcpPort = tcpTransport->GetLocalPort();
+            tcpPeerTransport_ =
+                std::make_unique<TcpPeerTransportHandle>(std::move(tcpTransport));
+            logDiagnostic("runtime.tcp.started port=" + std::to_string(tcpPort));
 
-        relaydesk::net::DiscoveryServiceConfig serviceConfig;
-        serviceConfig.SetAdvertisedTcpPort(tcpPort);
-        serviceConfig.SetAppVersion(relaydesk::core::kAppVersion);
-        relaydesk::net::DiscoveryService discoveryService(
-            appPaths,
-            identity,
-            serviceConfig);
-        relaydesk::net::DiscoveryWorkerEvents workerEvents;
-        workerEvents.SetPeerStoredCallback(
-            [this](relaydesk::storage::PeerProfile profile,
-                   std::string announcementType) {
-                enqueuePeerProfile(
-                    std::move(profile),
-                    announcementType
-                        != relaydesk::net::kDiscoveryAnnouncementTypeOffline);
-            });
-        auto discoveryWorker = std::make_unique<relaydesk::net::DiscoveryWorker>(
-            std::move(discoveryService),
-            makeDiscoveryWorkerConfig(),
-            std::move(workerEvents));
-        discoveryWorker->start();
-        discoveryStarted_ = true;
-        discoveryUdpPort_ = discoveryWorker->GetLocalUdpPort();
-        logDiagnostic("runtime.discovery.started udp_port="
-                      + std::to_string(discoveryUdpPort_));
-        discoveryWorker_ =
-            std::make_unique<DiscoveryWorkerHandle>(std::move(discoveryWorker));
+            relaydesk::net::DiscoveryServiceConfig serviceConfig;
+            serviceConfig.SetDiscoveryUdpPort(
+                runtimeOptions_.GetDiscoveryUdpPort());
+            serviceConfig.SetAdvertisedTcpPort(tcpPort);
+            serviceConfig.SetAppVersion(relaydesk::core::kAppVersion);
+            relaydesk::net::DiscoveryService discoveryService(
+                appPaths,
+                identity,
+                serviceConfig);
+            relaydesk::net::DiscoveryWorkerEvents workerEvents;
+            workerEvents.SetPeerStoredCallback(
+                [this](relaydesk::storage::PeerProfile profile,
+                       std::string announcementType) {
+                    enqueuePeerProfile(
+                        std::move(profile),
+                        announcementType
+                            != relaydesk::net::kDiscoveryAnnouncementTypeOffline);
+                });
+            auto discoveryWorker =
+                std::make_unique<relaydesk::net::DiscoveryWorker>(
+                    std::move(discoveryService),
+                    makeDiscoveryWorkerConfig(runtimeOptions_),
+                    std::move(workerEvents));
+            discoveryWorker->start();
+            discoveryStarted_ = true;
+            discoveryUdpPort_ = discoveryWorker->GetLocalUdpPort();
+            logDiagnostic("runtime.discovery.started udp_port="
+                          + std::to_string(discoveryUdpPort_));
+            discoveryWorker_ =
+                std::make_unique<DiscoveryWorkerHandle>(std::move(discoveryWorker));
+        }
 #endif
 
         refreshPeers();
@@ -3198,12 +3253,27 @@ void RelayDeskRuntime::handleIncomingPeerFrame(relaydesk::net::PeerFrame frame)
     case relaydesk::net::PeerFrameType::TransferCancel: {
         const relaydesk::net::TransferCancelMessage cancel =
             relaydesk::net::parseTransferCancelFrame(frame);
+        std::optional<PendingIncomingTransfer> cancelledIncomingTransfer;
         {
             std::lock_guard lock(pendingTransferMutex_);
-            pendingIncomingTransfers_.erase(cancel.GetTransferId());
+            const auto transfer =
+                pendingIncomingTransfers_.find(cancel.GetTransferId());
+            if (transfer != pendingIncomingTransfers_.end()) {
+                cancelledIncomingTransfer = transfer->second;
+                pendingIncomingTransfers_.erase(transfer);
+            }
         }
         (void)::core::async::cancel(
             "relaydesk.transfer.send." + cancel.GetTransferId());
+
+        if (cancelledIncomingTransfer.has_value()) {
+            const auto appPaths = relaydesk::storage::createAppPaths();
+            enqueueTransferUpdate(
+                makeCancelledIncomingTransferUpdate(
+                    appPaths,
+                    cancelledIncomingTransfer.value()));
+            return;
+        }
 
         PendingTransferStateUpdate update;
         update.SetPeerDeviceId(cancel.GetCancellerDeviceId());
@@ -4187,6 +4257,10 @@ void RelayDeskRuntime::setStartupError(std::string errorMessage)
 
 void RelayDeskRuntime::requestUiRefresh()
 {
+    if (!runtimeOptions_.GetAsyncRefreshEnabled()) {
+        return;
+    }
+
     bool expected = false;
     if (!uiRefreshPending_.compare_exchange_strong(expected, true)) {
         return;
@@ -4207,6 +4281,10 @@ void RelayDeskRuntime::requestUiRefresh()
 
 void RelayDeskRuntime::requestPeerStatusRefresh()
 {
+    if (!runtimeOptions_.GetAsyncRefreshEnabled()) {
+        return;
+    }
+
     bool expected = false;
     if (!peerStatusRefreshPending_.compare_exchange_strong(expected, true)) {
         return;

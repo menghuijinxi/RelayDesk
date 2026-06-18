@@ -229,6 +229,45 @@ int ignoresStaleAnnouncementTimestamp()
                   "Persisted peer profile accepted stale announcement.");
 }
 
+int acceptsHigherAppVersionWithStaleTimestamp()
+{
+    const auto appPaths = makeAppPaths("stale-version-upgrade");
+    static_cast<void>(relaydesk::net::upsertPeerProfileFromDiscovery(
+        appPaths,
+        makeAnnouncement("2026-06-12T10:10:00Z"),
+        "192.168.1.42"));
+
+    auto update = makeAnnouncement("2026-06-12T10:05:00Z");
+    update.SetAppVersion(4);
+    const auto profile = relaydesk::net::upsertPeerProfileFromDiscovery(
+        appPaths,
+        update,
+        "192.168.1.50");
+
+    if (const int result = expect(profile.GetAppVersion() == 4,
+                                  "Stale higher app version was ignored.");
+        result != 0) {
+        return result;
+    }
+
+    if (const int result = expect(profile.GetLastSeenAt()
+                                      == "2026-06-12T10:10:00Z",
+                                  "Higher app version moved last seen backward.");
+        result != 0) {
+        return result;
+    }
+
+    const auto loaded = relaydesk::storage::loadPeerProfile(appPaths, "peer-device");
+    if (const int result = expect(loaded.GetAppVersion() == 4,
+                                  "Higher app version was not persisted.");
+        result != 0) {
+        return result;
+    }
+
+    return expect(loaded.GetLastAddresses()[0] == "192.168.1.50",
+                  "Higher app version did not refresh observed address.");
+}
+
 int removesStaleProfileForSameHostAndAddress()
 {
     const auto appPaths = makeAppPaths("stale-device-id");
@@ -292,6 +331,11 @@ int main()
     }
 
     if (const int result = ignoresStaleAnnouncementTimestamp(); result != 0) {
+        return result;
+    }
+
+    if (const int result = acceptsHigherAppVersionWithStaleTimestamp();
+        result != 0) {
         return result;
     }
 

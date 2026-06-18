@@ -2273,7 +2273,19 @@ std::optional<std::filesystem::path> resolveRenderableImagePath(
     }
 }
 
-std::optional<std::filesystem::path> resolveOpenableMessageFilePath(
+struct OpenableMessagePath {
+    std::filesystem::path path;
+    bool directory = false;
+};
+
+bool shouldShowOpenActionsForTransferState(
+    relaydesk::storage::TransferState transferState)
+{
+    return transferState == relaydesk::storage::TransferState::Completed
+        || transferState == relaydesk::storage::TransferState::Cancelled;
+}
+
+std::optional<OpenableMessagePath> resolveOpenableMessagePath(
     const relaydesk::storage::ChatMessagePart& part)
 {
     const bool folder = part.GetType() == relaydesk::storage::MessagePartType::Folder;
@@ -2288,17 +2300,17 @@ std::optional<std::filesystem::path> resolveOpenableMessageFilePath(
         const std::filesystem::path filePath =
             resolveWorkRelativePath(appPaths, part.GetLocalPath().value());
         std::error_code error;
-        const bool pathExists = folder
-            ? std::filesystem::is_directory(filePath, error)
-            : std::filesystem::is_regular_file(filePath, error);
-        if (!pathExists || error) {
-            return std::nullopt;
+        if (std::filesystem::is_directory(filePath, error) && !error) {
+            return OpenableMessagePath{filePath, true};
         }
-
-        return filePath;
+        error.clear();
+        if (std::filesystem::is_regular_file(filePath, error) && !error) {
+            return OpenableMessagePath{filePath, false};
+        }
     } catch (const std::exception&) {
-        return std::nullopt;
     }
+
+    return std::nullopt;
 }
 
 std::optional<std::filesystem::path> resolveMessageThumbnailPath(
@@ -4417,15 +4429,14 @@ void drawMessageFilePart(eui::Ui& ui,
     const std::optional<relaydesk::storage::TransferState> transferState =
         part.GetTransferState();
     if (transferState.has_value()
-        && transferState.value()
-            == relaydesk::storage::TransferState::Completed) {
-        const std::optional<std::filesystem::path> filePath =
-            resolveOpenableMessageFilePath(part);
-        if (!filePath.has_value()) {
+        && shouldShowOpenActionsForTransferState(transferState.value())) {
+        const std::optional<OpenableMessagePath> openablePath =
+            resolveOpenableMessagePath(part);
+        if (!openablePath.has_value()) {
             return;
         }
 
-        if (folder) {
+        if (openablePath->directory) {
             constexpr float openFolderButtonWidth = 82.0f;
             const float rowY = y + 62.0f;
             const float buttonX = x + width - openFolderButtonWidth - 8.0f;
@@ -4437,7 +4448,7 @@ void drawMessageFilePart(eui::Ui& ui,
                 openFolderButtonWidth,
                 "打开文件夹",
                 true,
-                [openPath = filePath.value()] {
+                [openPath = openablePath->path] {
                     shellOpenPath(openPath);
                 });
             return;
@@ -4457,7 +4468,7 @@ void drawMessageFilePart(eui::Ui& ui,
             openButtonWidth,
             "打开",
             true,
-            [openPath = filePath.value()] {
+            [openPath = openablePath->path] {
                 shellOpenPath(openPath);
             });
         buttonX += openButtonWidth + gap;
@@ -4469,7 +4480,7 @@ void drawMessageFilePart(eui::Ui& ui,
             revealButtonWidth,
             "打开文件夹",
             false,
-            [openPath = filePath.value()] {
+            [openPath = openablePath->path] {
                 shellRevealPath(openPath);
         });
         return;
@@ -6686,7 +6697,7 @@ const DslAppConfig& dslAppConfig()
         .title("RelayDesk")
         .pageId("relaydesk")
         .clearColor(kWindowBackground)
-        .iconPath("assets/icon.png")
+        .iconPath("")
         .textFont("C:/Windows/Fonts/msyh.ttc")
         .iconFont("C:/Windows/Fonts/segmdl2.ttf")
         .windowSize(1940, 1224)
