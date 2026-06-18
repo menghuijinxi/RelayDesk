@@ -1,5 +1,6 @@
 #include "main/app_runtime.h"
 
+#include "core/app_version.h"
 #include "core/diagnostic_log.h"
 #include "core/platform/async.h"
 #include "core/time.h"
@@ -39,6 +40,11 @@
 #include <utility>
 #include <vector>
 
+#if defined(_WIN32)
+#include <windows.h>
+#include <shellapi.h>
+#endif
+
 namespace relaydesk::runtime {
 namespace {
 
@@ -49,6 +55,10 @@ constexpr auto kPeerOnlineTimeout = 10s;
 constexpr auto kPeerStatusRefreshInterval = 1s;
 #if defined(RELAYDESK_HAS_BOOST_ASIO)
 constexpr std::uintmax_t kTransferChunkSize = 256u * 1024u;
+constexpr const char* kAppUpdateTempDirectoryName = "updates";
+constexpr const char* kAppUpdateTempFileName = "relaydesk-update.exe";
+constexpr const char* kAppUpdateScriptFileName = "apply-update.cmd";
+constexpr const char* kAppUpdateScriptLogFileName = "apply-update.log";
 constexpr std::array<char, 8> kFolderPackageMagic{
     'R',
     'D',
@@ -131,6 +141,7 @@ PeerListItem makePeerListItem(const relaydesk::storage::PeerProfile& profile,
     item.SetAddress(choosePeerAddress(profile));
     item.SetLastSeenAt(profile.GetLastSeenAt());
     item.SetTcpPort(profile.GetTcpPort());
+    item.SetAppVersion(profile.GetAppVersion());
     item.SetOnline(online);
     return item;
 }
@@ -705,6 +716,184 @@ std::filesystem::path makeIncomingDesiredFilePath(
         / filesystemPathFromUtf8String(sanitizeFileName(fileName));
 }
 
+std::filesystem::path makeAppUpdateDirectory(
+    const relaydesk::storage::AppPaths& appPaths,
+    const std::string& requestId)
+{
+    return appPaths.GetTempTransfersDirectory()
+        / kAppUpdateTempDirectoryName
+        / filesystemPathFromUtf8String(sanitizeFileName(requestId));
+}
+
+std::filesystem::path makeAppUpdateTempFilePath(
+    const relaydesk::storage::AppPaths& appPaths,
+    const std::string& requestId)
+{
+    return makeAppUpdateDirectory(appPaths, requestId)
+        / filesystemPathFromUtf8String(kAppUpdateTempFileName);
+}
+
+std::filesystem::path makeAppUpdateScriptFilePath(
+    const relaydesk::storage::AppPaths& appPaths,
+    const std::string& requestId)
+{
+    return makeAppUpdateDirectory(appPaths, requestId)
+        / filesystemPathFromUtf8String(kAppUpdateScriptFileName);
+}
+
+std::string appUpdatePackageFileName(
+    const relaydesk::storage::AppPaths& appPaths)
+{
+    const std::string executableFileName =
+        filesystemPathToUtf8String(appPaths.GetExecutablePath().filename());
+    if (executableFileName.empty()) {
+        return "relaydesk.exe";
+    }
+    return sanitizeFileName(executableFileName);
+}
+
+std::string escapedBatchValue(const std::string& value)
+{
+    std::string result;
+    result.reserve(value.size());
+    for (char character : value) {
+        if (character == '%') {
+            result += "%%";
+        } else {
+            result.push_back(character);
+        }
+    }
+    return result;
+}
+
+std::string batchPathFromScriptDirectory(
+    const std::filesystem::path& scriptDirectory,
+    const std::filesystem::path& path)
+{
+    std::error_code error;
+    const std::filesystem::path relativePath =
+        std::filesystem::relative(path, scriptDirectory, error);
+    if (!error && !relativePath.empty()) {
+        return "!SCRIPT_DIR!" + filesystemPathToUtf8String(relativePath);
+    }
+    return filesystemPathToUtf8String(path);
+}
+
+std::uint32_t currentProcessId()
+{
+#if defined(_WIN32)
+    return static_cast<std::uint32_t>(GetCurrentProcessId());
+#else
+    return 0;
+#endif
+}
+
+void writeAppUpdateScript(const std::filesystem::path& scriptPath,
+                          const std::filesystem::path& targetPath,
+                          const std::filesystem::path& updatePath,
+                          const std::filesystem::path& startDirectory,
+                          bool restartAfterApply)
+{
+    std::filesystem::create_directories(scriptPath.parent_path());
+    std::ofstream output(scriptPath, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        throw std::runtime_error("Failed to create app update script.");
+    }
+
+    const std::filesystem::path scriptDirectory = scriptPath.parent_path();
+    const std::filesystem::path logPath =
+        scriptDirectory /
+        filesystemPathFromUtf8String(kAppUpdateScriptLogFileName);
+    const std::string targetBatchPath =
+        batchPathFromScriptDirectory(scriptDirectory, targetPath);
+    const std::string updateBatchPath =
+        batchPathFromScriptDirectory(scriptDirectory, updatePath);
+    const std::string startDirectoryBatchPath =
+        batchPathFromScriptDirectory(scriptDirectory, startDirectory);
+    const std::string logBatchPath =
+        batchPathFromScriptDirectory(scriptDirectory, logPath);
+
+    const std::array<unsigned char, 3> bom{0xEF, 0xBB, 0xBF};
+    output.write(reinterpret_cast<const char*>(bom.data()),
+                 static_cast<std::streamsize>(bom.size()));
+
+    output << "@echo off\n";
+    output << "setlocal EnableExtensions DisableDelayedExpansion\n";
+    output << "chcp 65001 >nul\n";
+    output << "set \"SCRIPT_DIR=%~dp0\"\n";
+    output << "set \"PID=" << currentProcessId() << "\"\n";
+    output << "setlocal EnableDelayedExpansion\n";
+    output << "set \"TARGET="
+           << escapedBatchValue(targetBatchPath) << "\"\n";
+    output << "set \"UPDATE="
+           << escapedBatchValue(updateBatchPath) << "\"\n";
+    output << "set \"STARTDIR="
+           << escapedBatchValue(startDirectoryBatchPath) << "\"\n";
+    output << "set \"LOG="
+           << escapedBatchValue(logBatchPath) << "\"\n";
+    output << "> \"!LOG!\" echo [%date% %time%] RelayDesk update started\n";
+    output << ">> \"!LOG!\" echo script=%~f0\n";
+    output << ">> \"!LOG!\" echo target=!TARGET!\n";
+    output << ">> \"!LOG!\" echo update=!UPDATE!\n";
+    output << ">> \"!LOG!\" echo startdir=!STARTDIR!\n";
+    output << ">> \"!LOG!\" echo pid=!PID!\n";
+    output << "if not exist \"!UPDATE!\" (\n";
+    output << "  >> \"!LOG!\" echo update file missing\n";
+    output << "  exit /b 2\n";
+    output << ")\n";
+    output << "taskkill /pid !PID! /f >> \"!LOG!\" 2>&1\n";
+    output << "for /l %%i in (1,1,60) do (\n";
+    output << "  tasklist /fi \"PID eq !PID!\" | findstr /r /c:\"!PID!\" >nul\n";
+    output << "  if errorlevel 1 goto copy_update\n";
+    output << "  timeout /t 1 /nobreak >nul\n";
+    output << ")\n";
+    output << ">> \"!LOG!\" echo process did not exit\n";
+    output << "exit /b 3\n";
+    output << ":copy_update\n";
+    output << "for /l %%i in (1,1,60) do (\n";
+    output << "  copy /y \"!UPDATE!\" \"!TARGET!\" >> \"!LOG!\" 2>&1\n";
+    output << "  if not errorlevel 1 goto copy_done\n";
+    output << "  timeout /t 1 /nobreak >nul\n";
+    output << ")\n";
+    output << ">> \"!LOG!\" echo copy failed\n";
+    output << "exit /b 4\n";
+    output << ":copy_done\n";
+    output << ">> \"!LOG!\" echo copy succeeded\n";
+    if (restartAfterApply) {
+        output << "start \"\" /D \"!STARTDIR!\" \"!TARGET!\"\n";
+        output << "if errorlevel 1 (\n";
+        output << "  >> \"!LOG!\" echo restart failed\n";
+        output << "  exit /b 5\n";
+        output << ")\n";
+        output << ">> \"!LOG!\" echo restart requested\n";
+    } else {
+        output << ">> \"!LOG!\" echo restart skipped\n";
+    }
+    output << ">> \"!LOG!\" echo update script finished\n";
+    output << "exit /b 0\n";
+    if (!output) {
+        throw std::runtime_error("Failed to write app update script.");
+    }
+}
+
+bool launchAppUpdateScript(const std::filesystem::path& scriptPath)
+{
+#if defined(_WIN32)
+    const std::wstring script = scriptPath.wstring();
+    const std::wstring directory = scriptPath.parent_path().wstring();
+    const HINSTANCE result = ShellExecuteW(nullptr,
+                                           L"open",
+                                           script.c_str(),
+                                           nullptr,
+                                           directory.c_str(),
+                                           SW_HIDE);
+    return reinterpret_cast<std::intptr_t>(result) > 32;
+#else
+    (void)scriptPath;
+    return false;
+#endif
+}
+
 enum class FolderPackageEntryType : std::uint8_t {
     Directory = 1,
     File = 2,
@@ -1120,6 +1309,45 @@ relaydesk::net::TransferCompleteMessage makeTransferCompleteMessage(
     return message;
 }
 
+relaydesk::net::AppUpdateRequestMessage makeAppUpdateRequestMessage(
+    const std::string& requestId,
+    const std::string& requesterDeviceId,
+    int requestedAppVersion)
+{
+    relaydesk::net::AppUpdateRequestMessage message;
+    message.SetRequestId(requestId);
+    message.SetRequesterDeviceId(requesterDeviceId);
+    message.SetCurrentAppVersion(relaydesk::core::kAppVersion);
+    message.SetRequestedAppVersion(requestedAppVersion);
+    return message;
+}
+
+relaydesk::net::AppUpdateChunkMessage makeAppUpdateChunkMessage(
+    const std::string& requestId,
+    std::uintmax_t offset,
+    std::uintmax_t fileSize)
+{
+    relaydesk::net::AppUpdateChunkMessage message;
+    message.SetRequestId(requestId);
+    message.SetOffset(offset);
+    message.SetFileSize(fileSize);
+    return message;
+}
+
+relaydesk::net::AppUpdateCompleteMessage makeAppUpdateCompleteMessage(
+    const std::string& requestId,
+    int appVersion,
+    const std::string& fileName,
+    std::uintmax_t fileSize)
+{
+    relaydesk::net::AppUpdateCompleteMessage message;
+    message.SetRequestId(requestId);
+    message.SetAppVersion(appVersion);
+    message.SetFileName(fileName);
+    message.SetFileSize(fileSize);
+    return message;
+}
+
 relaydesk::net::TransferAcceptMessage makeTransferAcceptMessage(
     const relaydesk::storage::ChatMessageRecord& record,
     const relaydesk::storage::ChatMessagePart& part,
@@ -1372,6 +1600,81 @@ void sendRequestedFileTransferFrames(
 
     throw std::runtime_error("Accepted transfer part was not found.");
 }
+
+void sendAppUpdatePackageFrames(
+    TcpPeerTransportHandle& transport,
+    const PeerListItem& peer,
+    const relaydesk::net::AppUpdateRequestMessage& request,
+    const relaydesk::storage::AppPaths& appPaths,
+    const ::core::async::CancelToken& cancelToken)
+{
+    if (request.GetRequestedAppVersion() > relaydesk::core::kAppVersion) {
+        throw std::runtime_error("Requested app update version is not available.");
+    }
+    if (request.GetCurrentAppVersion() >= relaydesk::core::kAppVersion) {
+        return;
+    }
+    if (cancelToken.canceled()) {
+        return;
+    }
+
+    const std::filesystem::path sourcePath = appPaths.GetExecutablePath();
+    if (!std::filesystem::is_regular_file(sourcePath)) {
+        throw std::runtime_error("App update source executable does not exist.");
+    }
+
+    const std::string fileName = appUpdatePackageFileName(appPaths);
+    const std::uintmax_t fileSize = std::filesystem::file_size(sourcePath);
+    std::ifstream input(sourcePath, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("Failed to open app update source executable.");
+    }
+
+    std::vector<std::uint8_t> buffer(
+        static_cast<std::size_t>(kTransferChunkSize));
+    std::uintmax_t offset = 0;
+    while (input) {
+        if (cancelToken.canceled()) {
+            return;
+        }
+        input.read(reinterpret_cast<char*>(buffer.data()),
+                   static_cast<std::streamsize>(buffer.size()));
+        const std::streamsize readSize = input.gcount();
+        if (readSize <= 0) {
+            break;
+        }
+
+        std::vector<std::uint8_t> chunk(buffer.begin(),
+                                        buffer.begin() + readSize);
+        if (cancelToken.canceled()) {
+            return;
+        }
+        transport.sendFrameTo(
+            peer.GetAddress(),
+            peer.GetTcpPort(),
+            relaydesk::net::makeAppUpdateChunkFrame(
+                makeAppUpdateChunkMessage(request.GetRequestId(), offset, fileSize),
+                std::move(chunk)));
+        offset += static_cast<std::uintmax_t>(readSize);
+    }
+
+    if (offset != fileSize) {
+        throw std::runtime_error(
+            "App update source executable changed while sending.");
+    }
+    if (cancelToken.canceled()) {
+        return;
+    }
+
+    transport.sendFrameTo(
+        peer.GetAddress(),
+        peer.GetTcpPort(),
+        relaydesk::net::makeAppUpdateCompleteFrame(
+            makeAppUpdateCompleteMessage(request.GetRequestId(),
+                                         relaydesk::core::kAppVersion,
+                                         fileName,
+                                         fileSize)));
+}
 #endif
 
 void LocalUserSummary::SetDisplayName(std::string displayName)
@@ -1424,6 +1727,11 @@ void PeerListItem::SetTcpPort(std::uint16_t tcpPort)
     tcpPort_ = tcpPort;
 }
 
+void PeerListItem::SetAppVersion(int appVersion)
+{
+    appVersion_ = appVersion;
+}
+
 void PeerListItem::SetLastOnlineSignalAt(
     std::chrono::steady_clock::time_point signalAt)
 {
@@ -1448,7 +1756,10 @@ RelayDeskRuntime::RelayDeskRuntime()
     initialize();
 }
 
-RelayDeskRuntime::~RelayDeskRuntime() = default;
+RelayDeskRuntime::~RelayDeskRuntime()
+{
+    launchScheduledAppUpdateOnExit();
+}
 
 std::optional<PeerListItem> RelayDeskRuntime::GetSelectedPeer() const
 {
@@ -1463,6 +1774,407 @@ std::optional<PeerListItem> RelayDeskRuntime::GetSelectedPeer() const
     }
 
     return *selected;
+}
+
+std::optional<AppUpdatePrompt> RelayDeskRuntime::GetAppUpdatePrompt()
+{
+    std::lock_guard lock(pendingAppUpdateMutex_);
+    return appUpdatePrompt_;
+}
+
+std::optional<PeerListItem> RelayDeskRuntime::findPeerByDeviceId(
+    const std::string& peerDeviceId) const
+{
+    const auto existing = std::find_if(
+        peers_.begin(),
+        peers_.end(),
+        [&peerDeviceId](const PeerListItem& peer) {
+            return peer.GetDeviceId() == peerDeviceId;
+        });
+    if (existing != peers_.end()) {
+        return *existing;
+    }
+
+    try {
+        const auto appPaths = relaydesk::storage::createAppPaths();
+        return makePeerListItem(
+            relaydesk::storage::loadPeerProfile(appPaths, peerDeviceId),
+            false);
+    } catch (const std::exception& error) {
+        logDiagnostic("runtime.peer.lookup_failed device_id=" + peerDeviceId
+                      + " message=" + error.what());
+    }
+
+    return std::nullopt;
+}
+
+void RelayDeskRuntime::maybeOfferAppUpdateFromPeer(const PeerListItem& peer)
+{
+#if defined(RELAYDESK_HAS_BOOST_ASIO)
+    if (!tcpPeerTransport_
+        || !peer.GetOnline()
+        || peer.GetDeviceId().empty()
+        || peer.GetDeviceId() == localUser_.GetDeviceId()
+        || peer.GetAppVersion() <= relaydesk::core::kAppVersion
+        || peer.GetAddress().empty()
+        || peer.GetAddress() == "unknown"
+        || peer.GetTcpPort() == 0) {
+        return;
+    }
+
+    {
+        std::lock_guard lock(pendingAppUpdateMutex_);
+        const auto dismissedVersion =
+            dismissedAppUpdateVersions_.find(peer.GetDeviceId());
+        if (dismissedVersion != dismissedAppUpdateVersions_.end()
+            && dismissedVersion->second >= peer.GetAppVersion()) {
+            return;
+        }
+        const auto requestedVersion =
+            requestedAppUpdateVersions_.find(peer.GetDeviceId());
+        if (requestedVersion != requestedAppUpdateVersions_.end()
+            && requestedVersion->second >= peer.GetAppVersion()) {
+            return;
+        }
+        if (appUpdatePrompt_.has_value()
+            && appUpdatePrompt_->GetSourceDeviceId() == peer.GetDeviceId()
+            && appUpdatePrompt_->GetAppVersion() >= peer.GetAppVersion()) {
+            return;
+        }
+        if (appUpdatePrompt_.has_value()
+            && appUpdatePrompt_->GetState() == AppUpdatePromptState::Downloading) {
+            return;
+        }
+
+        AppUpdatePrompt prompt;
+        prompt.SetSourceDeviceId(peer.GetDeviceId());
+        prompt.SetSourceDisplayName(peer.GetDisplayName().empty()
+                                        ? peer.GetHostName()
+                                        : peer.GetDisplayName());
+        prompt.SetFileName("relaydesk.exe");
+        prompt.SetAppVersion(peer.GetAppVersion());
+        prompt.SetState(AppUpdatePromptState::Available);
+        appUpdatePrompt_ = std::move(prompt);
+    }
+
+    logDiagnostic("runtime.update.available device_id=" + peer.GetDeviceId()
+                  + " peer_app_version="
+                  + std::to_string(peer.GetAppVersion())
+                  + " local_app_version="
+                  + std::to_string(relaydesk::core::kAppVersion));
+    requestUiRefresh();
+#else
+    (void)peer;
+#endif
+}
+
+void RelayDeskRuntime::requestAppUpdateFromPeer(const PeerListItem& peer,
+                                                AppUpdateInstallMode installMode)
+{
+#if defined(RELAYDESK_HAS_BOOST_ASIO)
+    const std::string requestId = relaydesk::core::createUuidV4();
+    const int appVersion = peer.GetAppVersion();
+    try {
+        if (!tcpPeerTransport_
+            || !peer.GetOnline()
+            || peer.GetAddress().empty()
+            || peer.GetAddress() == "unknown"
+            || peer.GetTcpPort() == 0
+            || appVersion <= relaydesk::core::kAppVersion) {
+            throw std::runtime_error("App update source peer is not available.");
+        }
+
+        const auto appPaths = relaydesk::storage::createAppPaths();
+        const std::string fileName = appUpdatePackageFileName(appPaths);
+        const std::filesystem::path tempFilePath =
+            makeAppUpdateTempFilePath(appPaths, requestId);
+        std::filesystem::create_directories(tempFilePath.parent_path());
+        {
+            std::ofstream output(tempFilePath,
+                                 std::ios::binary | std::ios::trunc);
+            if (!output) {
+                throw std::runtime_error(
+                    "Failed to create incoming app update file.");
+            }
+        }
+
+        PendingIncomingAppUpdate update;
+        update.SetRequestId(requestId);
+        update.SetSourceDeviceId(peer.GetDeviceId());
+        update.SetAppVersion(appVersion);
+        update.SetFileName(fileName);
+        update.SetTempFilePath(tempFilePath);
+        update.SetInstallMode(installMode);
+        update.SetStartedAt(std::chrono::steady_clock::now());
+        {
+            std::lock_guard lock(pendingAppUpdateMutex_);
+            pendingIncomingAppUpdates_[requestId] = update;
+            requestedAppUpdateVersions_[peer.GetDeviceId()] = appVersion;
+            if (appUpdatePrompt_.has_value()
+                && appUpdatePrompt_->GetSourceDeviceId() == peer.GetDeviceId()
+                && appUpdatePrompt_->GetAppVersion() == appVersion) {
+                appUpdatePrompt_->SetState(AppUpdatePromptState::Downloading);
+                appUpdatePrompt_->SetInstallMode(installMode);
+                appUpdatePrompt_->SetFileName(fileName);
+                appUpdatePrompt_->SetExpectedSize(0);
+                appUpdatePrompt_->SetReceivedSize(0);
+                appUpdatePrompt_->SetBytesPerSecond(0.0);
+                appUpdatePrompt_->SetErrorMessage({});
+            }
+        }
+        requestUiRefresh();
+
+        const relaydesk::net::PeerFrame frame =
+            relaydesk::net::makeAppUpdateRequestFrame(
+                makeAppUpdateRequestMessage(requestId,
+                                            localUser_.GetDeviceId(),
+                                            appVersion));
+        const bool accepted = ::core::async::runOnce(
+            "relaydesk.update.request." + requestId,
+            [this, peer, frame] {
+                try {
+                    if (!tcpPeerTransport_) {
+                        return ::core::async::failure(
+                            "TCP peer transport is not available.");
+                    }
+                    tcpPeerTransport_->sendFrameTo(peer.GetAddress(),
+                                                   peer.GetTcpPort(),
+                                                   frame);
+                    return ::core::async::success();
+                } catch (const std::exception& error) {
+                    return ::core::async::failure(error.what());
+                }
+            },
+            [this,
+             requestId,
+             peerDeviceId = peer.GetDeviceId(),
+             appVersion](
+                const ::core::async::Result<void>& result) {
+                if (result.ok) {
+                    return;
+                }
+                {
+                    std::lock_guard lock(pendingAppUpdateMutex_);
+                    pendingIncomingAppUpdates_.erase(requestId);
+                    requestedAppUpdateVersions_.erase(peerDeviceId);
+                }
+                markAppUpdateFailed(peerDeviceId, appVersion, result.error);
+            });
+        if (!accepted) {
+            {
+                std::lock_guard lock(pendingAppUpdateMutex_);
+                pendingIncomingAppUpdates_.erase(requestId);
+                requestedAppUpdateVersions_.erase(peer.GetDeviceId());
+            }
+            markAppUpdateFailed(peer.GetDeviceId(),
+                                appVersion,
+                                "更新任务未能启动。");
+        }
+    } catch (const std::exception& error) {
+        {
+            std::lock_guard lock(pendingAppUpdateMutex_);
+            pendingIncomingAppUpdates_.erase(requestId);
+            requestedAppUpdateVersions_.erase(peer.GetDeviceId());
+        }
+        markAppUpdateFailed(peer.GetDeviceId(), appVersion, error.what());
+    }
+#else
+    (void)peer;
+    (void)installMode;
+#endif
+}
+
+void RelayDeskRuntime::sendAppUpdatePackageToPeer(
+    const PeerListItem& peer,
+    const relaydesk::net::AppUpdateRequestMessage& request)
+{
+#if defined(RELAYDESK_HAS_BOOST_ASIO)
+    if (peer.GetAddress().empty()
+        || peer.GetAddress() == "unknown"
+        || peer.GetTcpPort() == 0) {
+        logDiagnostic("runtime.update.send_failed request_id="
+                      + request.GetRequestId()
+                      + " message=peer_address_unavailable");
+        return;
+    }
+
+    const bool accepted = ::core::async::runOnce(
+        "relaydesk.update.send." + request.GetRequestId(),
+        [this, peer, request](const ::core::async::CancelToken& token) {
+            try {
+                if (!tcpPeerTransport_) {
+                    return ::core::async::failure(
+                        "TCP peer transport is not available.");
+                }
+                const auto appPaths = relaydesk::storage::createAppPaths();
+                sendAppUpdatePackageFrames(*tcpPeerTransport_,
+                                           peer,
+                                           request,
+                                           appPaths,
+                                           token);
+                return ::core::async::success();
+            } catch (const std::exception& error) {
+                return ::core::async::failure(error.what());
+            }
+        },
+        [this,
+         requestId = request.GetRequestId(),
+         peerDeviceId = peer.GetDeviceId()](
+            const ::core::async::Result<void>& result) {
+            if (result.ok) {
+                logDiagnostic("runtime.update.send_complete request_id="
+                              + requestId
+                              + " peer_device_id=" + peerDeviceId);
+                return;
+            }
+            logDiagnostic("runtime.update.send_failed request_id=" + requestId
+                          + " peer_device_id=" + peerDeviceId
+                          + " message=" + result.error);
+        });
+    if (!accepted) {
+        logDiagnostic("runtime.update.send_failed request_id="
+                      + request.GetRequestId()
+                      + " peer_device_id=" + peer.GetDeviceId()
+                      + " message=task_not_accepted");
+    }
+#else
+    (void)peer;
+    (void)request;
+#endif
+}
+
+void RelayDeskRuntime::completeDownloadedAppUpdate(
+    const PendingIncomingAppUpdate& update)
+{
+#if defined(RELAYDESK_HAS_BOOST_ASIO)
+    if (update.GetInstallMode() == AppUpdateInstallMode::InstallOnExit) {
+        {
+            std::lock_guard lock(pendingAppUpdateMutex_);
+            scheduledAppUpdate_ = update;
+            if (appUpdatePrompt_.has_value()
+                && appUpdatePrompt_->GetSourceDeviceId()
+                    == update.GetSourceDeviceId()
+                && appUpdatePrompt_->GetAppVersion() == update.GetAppVersion()) {
+                appUpdatePrompt_.reset();
+            }
+        }
+        logDiagnostic("runtime.update.scheduled_on_exit request_id="
+                      + update.GetRequestId()
+                      + " app_version="
+                      + std::to_string(update.GetAppVersion()));
+        requestUiRefresh();
+        return;
+    }
+
+    applyDownloadedAppUpdate(update, true);
+#else
+    (void)update;
+#endif
+}
+
+void RelayDeskRuntime::applyDownloadedAppUpdate(
+    const PendingIncomingAppUpdate& update,
+    bool restartAfterApply)
+{
+#if defined(RELAYDESK_HAS_BOOST_ASIO)
+    if (update.GetAppVersion() <= relaydesk::core::kAppVersion) {
+        logDiagnostic("runtime.update.apply_ignored request_id="
+                      + update.GetRequestId()
+                      + " app_version="
+                      + std::to_string(update.GetAppVersion()));
+        return;
+    }
+    if (update.GetExpectedSize() == 0
+        || !std::filesystem::is_regular_file(update.GetTempFilePath())
+        || std::filesystem::file_size(update.GetTempFilePath())
+            != update.GetExpectedSize()) {
+        throw std::runtime_error("Downloaded app update file is incomplete.");
+    }
+
+    const auto appPaths = relaydesk::storage::createAppPaths();
+    const std::filesystem::path scriptPath =
+        makeAppUpdateScriptFilePath(appPaths, update.GetRequestId());
+    writeAppUpdateScript(scriptPath,
+                         appPaths.GetExecutablePath(),
+                         update.GetTempFilePath(),
+                         appPaths.GetWorkDirectory(),
+                         restartAfterApply);
+    if (!launchAppUpdateScript(scriptPath)) {
+        throw std::runtime_error("Failed to launch app update script.");
+    }
+
+    logDiagnostic("runtime.update.apply_started request_id="
+                  + update.GetRequestId()
+                  + " app_version="
+                  + std::to_string(update.GetAppVersion())
+                  + " restart_after_apply="
+                  + std::to_string(restartAfterApply));
+#else
+    (void)update;
+    (void)restartAfterApply;
+#endif
+}
+
+void RelayDeskRuntime::launchScheduledAppUpdateOnExit() noexcept
+{
+#if defined(RELAYDESK_HAS_BOOST_ASIO)
+    std::optional<PendingIncomingAppUpdate> update;
+    {
+        std::lock_guard lock(pendingAppUpdateMutex_);
+        update = scheduledAppUpdate_;
+        scheduledAppUpdate_.reset();
+    }
+    if (!update.has_value()) {
+        return;
+    }
+
+    try {
+        applyDownloadedAppUpdate(update.value(), false);
+    } catch (const std::exception& error) {
+        logDiagnostic("runtime.update.scheduled_apply_failed request_id="
+                      + update->GetRequestId()
+                      + " message=" + error.what());
+    }
+#endif
+}
+
+void RelayDeskRuntime::markAppUpdateFailed(const std::string& sourceDeviceId,
+                                           int appVersion,
+                                           std::string errorMessage)
+{
+    std::vector<std::filesystem::path> tempDirectories;
+    {
+        std::lock_guard lock(pendingAppUpdateMutex_);
+        requestedAppUpdateVersions_.erase(sourceDeviceId);
+        for (auto iterator = pendingIncomingAppUpdates_.begin();
+             iterator != pendingIncomingAppUpdates_.end();) {
+            const bool sameSource =
+                iterator->second.GetSourceDeviceId() == sourceDeviceId;
+            const bool sameVersion = iterator->second.GetAppVersion() == appVersion;
+            if (sameSource && sameVersion) {
+                tempDirectories.push_back(
+                    iterator->second.GetTempFilePath().parent_path());
+                iterator = pendingIncomingAppUpdates_.erase(iterator);
+            } else {
+                ++iterator;
+            }
+        }
+
+        if (appUpdatePrompt_.has_value()
+            && appUpdatePrompt_->GetSourceDeviceId() == sourceDeviceId
+            && appUpdatePrompt_->GetAppVersion() == appVersion) {
+            appUpdatePrompt_->SetState(AppUpdatePromptState::Failed);
+            appUpdatePrompt_->SetErrorMessage(std::move(errorMessage));
+        }
+    }
+
+    for (const auto& directory : tempDirectories) {
+        std::error_code error;
+        std::filesystem::remove_all(directory, error);
+    }
+    logDiagnostic("runtime.update.failed device_id=" + sourceDeviceId
+                  + " app_version=" + std::to_string(appVersion));
+    requestUiRefresh();
 }
 
 void RelayDeskRuntime::refreshPeersIfNeeded()
@@ -1988,6 +2700,61 @@ void RelayDeskRuntime::sendTextMessageToSelectedPeer(std::string text)
     sendMessagePartsToSelectedPeer(std::move(parts));
 }
 
+void RelayDeskRuntime::startAppUpdate(AppUpdateInstallMode installMode)
+{
+    std::optional<AppUpdatePrompt> prompt;
+    {
+        std::lock_guard lock(pendingAppUpdateMutex_);
+        if (!appUpdatePrompt_.has_value()
+            || appUpdatePrompt_->GetState() == AppUpdatePromptState::Downloading) {
+            return;
+        }
+        prompt = appUpdatePrompt_;
+    }
+
+    const std::optional<PeerListItem> peer =
+        findPeerByDeviceId(prompt->GetSourceDeviceId());
+    if (!peer.has_value()) {
+        markAppUpdateFailed(prompt->GetSourceDeviceId(),
+                            prompt->GetAppVersion(),
+                            "更新来源设备不可用。");
+        return;
+    }
+
+    requestAppUpdateFromPeer(peer.value(), installMode);
+}
+
+void RelayDeskRuntime::dismissAppUpdatePrompt()
+{
+    std::vector<std::filesystem::path> tempDirectories;
+    {
+        std::lock_guard lock(pendingAppUpdateMutex_);
+        if (appUpdatePrompt_.has_value()) {
+            dismissedAppUpdateVersions_[appUpdatePrompt_->GetSourceDeviceId()] =
+                appUpdatePrompt_->GetAppVersion();
+            requestedAppUpdateVersions_.erase(appUpdatePrompt_->GetSourceDeviceId());
+            for (auto iterator = pendingIncomingAppUpdates_.begin();
+                 iterator != pendingIncomingAppUpdates_.end();) {
+                if (iterator->second.GetSourceDeviceId()
+                    == appUpdatePrompt_->GetSourceDeviceId()) {
+                    tempDirectories.push_back(
+                        iterator->second.GetTempFilePath().parent_path());
+                    iterator = pendingIncomingAppUpdates_.erase(iterator);
+                } else {
+                    ++iterator;
+                }
+            }
+        }
+        appUpdatePrompt_.reset();
+    }
+
+    for (const auto& directory : tempDirectories) {
+        std::error_code error;
+        std::filesystem::remove_all(directory, error);
+    }
+    requestUiRefresh();
+}
+
 void RelayDeskRuntime::initialize()
 {
     try {
@@ -2044,6 +2811,7 @@ void RelayDeskRuntime::initialize()
 
         relaydesk::net::DiscoveryServiceConfig serviceConfig;
         serviceConfig.SetAdvertisedTcpPort(tcpPort);
+        serviceConfig.SetAppVersion(relaydesk::core::kAppVersion);
         relaydesk::net::DiscoveryService discoveryService(
             appPaths,
             identity,
@@ -2154,6 +2922,160 @@ void RelayDeskRuntime::handleIncomingPeerFrame(relaydesk::net::PeerFrame frame)
         enqueueIncomingChatMessage(makeIncomingRecordForLocalDevice(
             relaydesk::net::parseChatMessageFrame(frame)));
         return;
+    case relaydesk::net::PeerFrameType::AppUpdateRequest: {
+        const relaydesk::net::AppUpdateRequestMessage request =
+            relaydesk::net::parseAppUpdateRequestFrame(frame);
+        if (request.GetRequestedAppVersion() > relaydesk::core::kAppVersion) {
+            logDiagnostic("runtime.update.request_ignored request_id="
+                          + request.GetRequestId()
+                          + " reason=requested_version_unavailable");
+            return;
+        }
+        if (request.GetCurrentAppVersion() >= relaydesk::core::kAppVersion) {
+            logDiagnostic("runtime.update.request_ignored request_id="
+                          + request.GetRequestId()
+                          + " reason=requester_not_outdated");
+            return;
+        }
+
+        const std::optional<PeerListItem> peer =
+            findPeerByDeviceId(request.GetRequesterDeviceId());
+        if (!peer.has_value()) {
+            logDiagnostic("runtime.update.request_ignored request_id="
+                          + request.GetRequestId()
+                          + " reason=peer_not_found");
+            return;
+        }
+
+        sendAppUpdatePackageToPeer(peer.value(), request);
+        return;
+    }
+    case relaydesk::net::PeerFrameType::AppUpdateChunk: {
+        const relaydesk::net::AppUpdateChunkMessage chunk =
+            relaydesk::net::parseAppUpdateChunkFrame(frame);
+        PendingIncomingAppUpdate update;
+        try {
+            {
+                std::lock_guard lock(pendingAppUpdateMutex_);
+                const auto existing =
+                    pendingIncomingAppUpdates_.find(chunk.GetRequestId());
+                if (existing == pendingIncomingAppUpdates_.end()) {
+                    throw std::runtime_error(
+                        "Incoming app update chunk has no request.");
+                }
+                if (existing->second.GetReceivedSize() != chunk.GetOffset()) {
+                    throw std::runtime_error(
+                        "Incoming app update chunk offset is not sequential.");
+                }
+                if (existing->second.GetExpectedSize() != 0
+                    && existing->second.GetExpectedSize() != chunk.GetFileSize()) {
+                    throw std::runtime_error(
+                        "Incoming app update chunk file size changed.");
+                }
+                update = existing->second;
+                update.SetExpectedSize(chunk.GetFileSize());
+            }
+
+            std::ofstream output(
+                update.GetTempFilePath(),
+                std::ios::binary | std::ios::app);
+            if (!output) {
+                throw std::runtime_error("Failed to write incoming app update chunk.");
+            }
+            const auto& body = frame.GetBody();
+            output.write(reinterpret_cast<const char*>(body.data()),
+                         static_cast<std::streamsize>(body.size()));
+            if (!output) {
+                throw std::runtime_error("Failed to append incoming app update chunk.");
+            }
+
+            const std::uintmax_t receivedSize =
+                update.GetReceivedSize() + body.size();
+            if (receivedSize > chunk.GetFileSize()) {
+                throw std::runtime_error(
+                    "Incoming app update chunk exceeds expected size.");
+            }
+            {
+                std::lock_guard lock(pendingAppUpdateMutex_);
+                const auto existing =
+                    pendingIncomingAppUpdates_.find(chunk.GetRequestId());
+                if (existing != pendingIncomingAppUpdates_.end()) {
+                    existing->second.SetExpectedSize(chunk.GetFileSize());
+                    existing->second.SetReceivedSize(receivedSize);
+                    const auto startedAt = existing->second.GetStartedAt();
+                    const double elapsedSeconds =
+                        std::chrono::duration<double>(
+                            std::chrono::steady_clock::now() - startedAt)
+                            .count();
+                    const double bytesPerSecond =
+                        elapsedSeconds > 0.0
+                            ? static_cast<double>(receivedSize) / elapsedSeconds
+                            : 0.0;
+                    if (appUpdatePrompt_.has_value()
+                        && appUpdatePrompt_->GetSourceDeviceId()
+                            == existing->second.GetSourceDeviceId()
+                        && appUpdatePrompt_->GetAppVersion()
+                            == existing->second.GetAppVersion()) {
+                        appUpdatePrompt_->SetState(
+                            AppUpdatePromptState::Downloading);
+                        appUpdatePrompt_->SetFileName(
+                            existing->second.GetFileName());
+                        appUpdatePrompt_->SetExpectedSize(chunk.GetFileSize());
+                        appUpdatePrompt_->SetReceivedSize(receivedSize);
+                        appUpdatePrompt_->SetBytesPerSecond(bytesPerSecond);
+                    }
+                }
+            }
+            requestUiRefresh();
+            logDiagnostic("runtime.update.chunk_received request_id="
+                          + chunk.GetRequestId()
+                          + " received_size=" + std::to_string(receivedSize));
+        } catch (const std::exception& error) {
+            if (!update.GetSourceDeviceId().empty()) {
+                markAppUpdateFailed(update.GetSourceDeviceId(),
+                                    update.GetAppVersion(),
+                                    error.what());
+            }
+            throw;
+        }
+        return;
+    }
+    case relaydesk::net::PeerFrameType::AppUpdateComplete: {
+        const relaydesk::net::AppUpdateCompleteMessage complete =
+            relaydesk::net::parseAppUpdateCompleteFrame(frame);
+        PendingIncomingAppUpdate update;
+        {
+            std::lock_guard lock(pendingAppUpdateMutex_);
+            const auto existing =
+                pendingIncomingAppUpdates_.find(complete.GetRequestId());
+            if (existing == pendingIncomingAppUpdates_.end()) {
+                throw std::runtime_error("Incoming app update complete has no request.");
+            }
+            if (existing->second.GetReceivedSize() != complete.GetFileSize()) {
+                throw std::runtime_error("Incoming app update size does not match request.");
+            }
+            update = existing->second;
+            update.SetAppVersion(complete.GetAppVersion());
+            update.SetFileName(complete.GetFileName());
+            update.SetExpectedSize(complete.GetFileSize());
+            pendingIncomingAppUpdates_.erase(existing);
+            requestedAppUpdateVersions_.erase(update.GetSourceDeviceId());
+        }
+
+        try {
+            if (update.GetReceivedSize() != complete.GetFileSize()) {
+                throw std::runtime_error("Incoming app update payload is incomplete.");
+            }
+
+            completeDownloadedAppUpdate(update);
+        } catch (const std::exception& error) {
+            markAppUpdateFailed(update.GetSourceDeviceId(),
+                                update.GetAppVersion(),
+                                error.what());
+            throw;
+        }
+        return;
+    }
     case relaydesk::net::PeerFrameType::TransferOffer: {
         const relaydesk::net::TransferOfferMessage offer =
             relaydesk::net::parseTransferOfferFrame(frame);
@@ -3031,9 +3953,12 @@ void RelayDeskRuntime::applyPeerProfile(
                       + profile.GetDeviceId()
                       + " address=" + item.GetAddress()
                       + " online=" + std::to_string(online)
+                      + " app_version="
+                      + std::to_string(item.GetAppVersion())
                       + " last_seen=" + item.GetLastSeenAt()
                       + " stale_removed="
                       + std::to_string(stalePeerCount));
+        maybeOfferAppUpdateFromPeer(item);
         return;
     }
 
@@ -3045,10 +3970,12 @@ void RelayDeskRuntime::applyPeerProfile(
                   + profile.GetDeviceId()
                   + " address=" + item.GetAddress()
                   + " online=" + std::to_string(online)
+                  + " app_version=" + std::to_string(item.GetAppVersion())
                   + " was_online=" + std::to_string(wasOnline)
                   + " incoming_last_seen=" + item.GetLastSeenAt()
                   + " previous_last_seen=" + previousLastSeenAt
                   + " stale_removed=" + std::to_string(stalePeerCount));
+    maybeOfferAppUpdateFromPeer(item);
 }
 
 void RelayDeskRuntime::refreshPeerOnlineStates()

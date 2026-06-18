@@ -1,5 +1,6 @@
 #include "net/discovery_local_announcement.h"
 
+#include "core/app_version.h"
 #include "net/discovery_message.h"
 #include "storage/local_identity.h"
 
@@ -64,14 +65,23 @@ int createsAnnouncementFromLocalIdentity()
         return result;
     }
 
+    if (const int result = expect(
+            announcement.GetAppVersion() == relaydesk::core::kAppVersion,
+            "Announcement app version mismatch.");
+        result != 0) {
+        return result;
+    }
+
     if (const int result = expect(announcement.GetCapabilities().size() == 2,
                                   "Announcement capability count mismatch.");
         result != 0) {
         return result;
     }
 
-    const auto payload = relaydesk::net::serializeDiscoveryAnnouncement(announcement);
-    const auto parsed = relaydesk::net::parseDiscoveryAnnouncement(payload);
+    const std::string payload =
+        relaydesk::net::serializeDiscoveryAnnouncement(announcement);
+    const relaydesk::net::DiscoveryAnnouncement parsed =
+        relaydesk::net::parseDiscoveryAnnouncement(payload);
     return expect(parsed.GetTimestamp() == "2026-06-12T12:00:00Z",
                   "Serialized announcement timestamp mismatch.");
 }

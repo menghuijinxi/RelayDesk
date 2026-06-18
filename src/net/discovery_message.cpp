@@ -32,6 +32,7 @@ void validateAnnouncement(const DiscoveryAnnouncement& announcement)
         || announcement.GetHostName().empty()
         || announcement.GetDisplayName().empty()
         || announcement.GetTcpPort() < kMinTcpPort
+        || announcement.GetAppVersion() < 0
         || announcement.GetTimestamp().empty()) {
         throw std::runtime_error("Discovery announcement contains invalid fields.");
     }
@@ -63,6 +64,23 @@ std::uint16_t readRequiredTcpPort(const nlohmann::json& value)
     return static_cast<std::uint16_t>(tcpPort);
 }
 
+int readOptionalAppVersion(const nlohmann::json& value)
+{
+    if (!value.contains("app_version")) {
+        return 0;
+    }
+
+    if (!value["app_version"].is_number_integer()) {
+        throw std::runtime_error("Discovery announcement app_version is invalid.");
+    }
+
+    const int appVersion = value["app_version"].get<int>();
+    if (appVersion < 0) {
+        throw std::runtime_error("Discovery announcement app_version is invalid.");
+    }
+    return appVersion;
+}
+
 std::vector<std::string> readCapabilities(const nlohmann::json& value)
 {
     if (!value.contains("capabilities") || !value["capabilities"].is_array()) {
@@ -90,6 +108,7 @@ nlohmann::json toJson(const DiscoveryAnnouncement& announcement)
         {"host_name", announcement.GetHostName()},
         {"display_name", announcement.GetDisplayName()},
         {"tcp_port", announcement.GetTcpPort()},
+        {"app_version", announcement.GetAppVersion()},
         {"capabilities", announcement.GetCapabilities()},
         {"timestamp", announcement.GetTimestamp()},
     };
@@ -110,6 +129,7 @@ DiscoveryAnnouncement fromJson(const nlohmann::json& value)
     announcement.SetHostName(readRequiredString(value, "host_name"));
     announcement.SetDisplayName(readRequiredString(value, "display_name"));
     announcement.SetTcpPort(readRequiredTcpPort(value));
+    announcement.SetAppVersion(readOptionalAppVersion(value));
     announcement.SetCapabilities(readCapabilities(value));
     announcement.SetTimestamp(readRequiredString(value, "timestamp"));
     validateAnnouncement(announcement);

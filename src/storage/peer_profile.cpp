@@ -47,6 +47,7 @@ void validatePeerProfile(const PeerProfile& profile)
         || profile.GetHostName().empty()
         || profile.GetDisplayName().empty()
         || profile.GetTcpPort() < kMinTcpPort
+        || profile.GetAppVersion() < 0
         || profile.GetFirstSeenAt().empty()
         || profile.GetLastSeenAt().empty()) {
         throw std::runtime_error("Peer profile contains invalid required fields.");
@@ -78,6 +79,23 @@ std::uint16_t readRequiredTcpPort(const nlohmann::json& value)
     }
 
     return static_cast<std::uint16_t>(tcpPort);
+}
+
+int readOptionalAppVersion(const nlohmann::json& value)
+{
+    if (!value.contains("app_version")) {
+        return 0;
+    }
+
+    if (!value["app_version"].is_number_integer()) {
+        throw std::runtime_error("Peer profile app_version is invalid.");
+    }
+
+    const int appVersion = value["app_version"].get<int>();
+    if (appVersion < 0) {
+        throw std::runtime_error("Peer profile app_version is invalid.");
+    }
+    return appVersion;
 }
 
 std::vector<std::string> readStringList(const nlohmann::json& value,
@@ -121,6 +139,7 @@ nlohmann::json toJson(const PeerProfile& profile)
         {"display_name", profile.GetDisplayName()},
         {"last_addresses", profile.GetLastAddresses()},
         {"tcp_port", profile.GetTcpPort()},
+        {"app_version", profile.GetAppVersion()},
         {"capabilities", profile.GetCapabilities()},
         {"first_seen_at", profile.GetFirstSeenAt()},
         {"last_seen_at", profile.GetLastSeenAt()},
@@ -140,6 +159,7 @@ PeerProfile fromJson(const nlohmann::json& value)
     profile.SetDisplayName(readRequiredString(value, "display_name"));
     profile.SetLastAddresses(readStringList(value, "last_addresses"));
     profile.SetTcpPort(readRequiredTcpPort(value));
+    profile.SetAppVersion(readOptionalAppVersion(value));
     profile.SetCapabilities(readStringList(value, "capabilities"));
     profile.SetFirstSeenAt(readRequiredString(value, "first_seen_at"));
     profile.SetLastSeenAt(readRequiredString(value, "last_seen_at"));

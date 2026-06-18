@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/app_version.h"
 #include "net/boost_asio_udp_discovery_transport.h"
 #include "storage/app_paths.h"
 #include "storage/local_identity.h"
@@ -21,6 +22,7 @@ class DiscoveryServiceConfig {
 public:
     std::uint16_t GetDiscoveryUdpPort() const { return discoveryUdpPort_; }
     std::uint16_t GetAdvertisedTcpPort() const { return advertisedTcpPort_; }
+    int GetAppVersion() const { return appVersion_; }
     const std::vector<std::string>& GetCapabilities() const { return capabilities_; }
 
     void SetDiscoveryUdpPort(std::uint16_t discoveryUdpPort)
@@ -31,6 +33,7 @@ public:
     {
         advertisedTcpPort_ = advertisedTcpPort;
     }
+    void SetAppVersion(int appVersion) { appVersion_ = appVersion; }
     void SetCapabilities(std::vector<std::string> capabilities)
     {
         capabilities_ = std::move(capabilities);
@@ -39,6 +42,7 @@ public:
 protected:
     std::uint16_t discoveryUdpPort_ = kDefaultDiscoveryUdpPort;
     std::uint16_t advertisedTcpPort_ = kDefaultAdvertisedTcpPort;
+    int appVersion_ = relaydesk::core::kAppVersion;
     std::vector<std::string> capabilities_{"text", "file"};
 };
 

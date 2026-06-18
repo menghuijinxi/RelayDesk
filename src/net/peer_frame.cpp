@@ -144,6 +144,12 @@ std::uint16_t toWireValue(PeerFrameType type)
         return 11;
     case PeerFrameType::Heartbeat:
         return 12;
+    case PeerFrameType::AppUpdateRequest:
+        return 13;
+    case PeerFrameType::AppUpdateChunk:
+        return 14;
+    case PeerFrameType::AppUpdateComplete:
+        return 15;
     }
 
     throw std::runtime_error("Unsupported peer frame type.");
@@ -176,6 +182,12 @@ PeerFrameType peerFrameTypeFromWireValue(std::uint16_t value)
         return PeerFrameType::TransferCancel;
     case 12:
         return PeerFrameType::Heartbeat;
+    case 13:
+        return PeerFrameType::AppUpdateRequest;
+    case 14:
+        return PeerFrameType::AppUpdateChunk;
+    case 15:
+        return PeerFrameType::AppUpdateComplete;
     default:
         throw std::runtime_error("Unsupported peer frame type value.");
     }

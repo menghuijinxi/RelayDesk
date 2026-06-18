@@ -60,6 +60,10 @@ void validateConfig(const DiscoveryServiceConfig& config)
         throw std::invalid_argument("Discovery advertised TCP port cannot be zero.");
     }
 
+    if (config.GetAppVersion() < 0) {
+        throw std::invalid_argument("Discovery app version cannot be negative.");
+    }
+
     for (const auto& capability : config.GetCapabilities()) {
         if (capability.empty()) {
             throw std::invalid_argument("Discovery capability cannot be empty.");
@@ -151,6 +155,8 @@ DiscoveryService::DiscoveryService(relaydesk::storage::AppPaths appPaths,
                       + std::to_string(config_.GetDiscoveryUdpPort())
                       + " advertised_tcp_port="
                       + std::to_string(config_.GetAdvertisedTcpPort())
+                      + " app_version="
+                      + std::to_string(config_.GetAppVersion())
                       + " device_id=" + localIdentity_.GetDeviceId()
                       + " host_name=" + localIdentity_.GetHostName()
                       + " display_name=" + localIdentity_.GetDisplayName());
@@ -318,6 +324,7 @@ std::string DiscoveryService::makeAnnouncementPayload(
         config_.GetCapabilities(),
         relaydesk::core::currentUtcTimestamp());
     announcement.SetType(std::move(announcementType));
+    announcement.SetAppVersion(config_.GetAppVersion());
     return serializeDiscoveryAnnouncement(announcement);
 }
 

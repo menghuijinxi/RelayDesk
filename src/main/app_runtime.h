@@ -16,6 +16,7 @@
 #include <vector>
 
 namespace relaydesk::net {
+class AppUpdateRequestMessage;
 class PeerFrame;
 }
 
@@ -23,6 +24,17 @@ namespace relaydesk::runtime {
 
 class DiscoveryWorkerHandle;
 class TcpPeerTransportHandle;
+
+enum class AppUpdateInstallMode {
+    RestartNow,
+    InstallOnExit,
+};
+
+enum class AppUpdatePromptState {
+    Available,
+    Downloading,
+    Failed,
+};
 
 class LocalUserSummary {
 public:
@@ -52,6 +64,7 @@ public:
         return lastConversationAt_;
     }
     std::uint16_t GetTcpPort() const { return tcpPort_; }
+    int GetAppVersion() const { return appVersion_; }
     std::chrono::steady_clock::time_point GetLastOnlineSignalAt() const
     {
         return lastOnlineSignalAt_;
@@ -65,6 +78,7 @@ public:
     void SetLastSeenAt(std::string lastSeenAt);
     void SetLastConversationAt(std::string lastConversationAt);
     void SetTcpPort(std::uint16_t tcpPort);
+    void SetAppVersion(int appVersion);
     void SetLastOnlineSignalAt(std::chrono::steady_clock::time_point signalAt);
     void SetOnline(bool online);
 
@@ -76,6 +90,7 @@ protected:
     std::string lastSeenAt_;
     std::string lastConversationAt_;
     std::uint16_t tcpPort_ = 0;
+    int appVersion_ = 0;
     std::chrono::steady_clock::time_point lastOnlineSignalAt_{};
     bool online_ = false;
 };
@@ -90,6 +105,58 @@ public:
 protected:
     relaydesk::storage::PeerProfile profile_;
     bool online_ = false;
+};
+
+class AppUpdatePrompt {
+public:
+    const std::string& GetSourceDeviceId() const { return sourceDeviceId_; }
+    const std::string& GetSourceDisplayName() const { return sourceDisplayName_; }
+    const std::string& GetFileName() const { return fileName_; }
+    int GetAppVersion() const { return appVersion_; }
+    AppUpdatePromptState GetState() const { return state_; }
+    AppUpdateInstallMode GetInstallMode() const { return installMode_; }
+    std::uintmax_t GetExpectedSize() const { return expectedSize_; }
+    std::uintmax_t GetReceivedSize() const { return receivedSize_; }
+    double GetBytesPerSecond() const { return bytesPerSecond_; }
+    const std::string& GetErrorMessage() const { return errorMessage_; }
+
+    void SetSourceDeviceId(std::string sourceDeviceId)
+    {
+        sourceDeviceId_ = std::move(sourceDeviceId);
+    }
+    void SetSourceDisplayName(std::string sourceDisplayName)
+    {
+        sourceDisplayName_ = std::move(sourceDisplayName);
+    }
+    void SetFileName(std::string fileName) { fileName_ = std::move(fileName); }
+    void SetAppVersion(int appVersion) { appVersion_ = appVersion; }
+    void SetState(AppUpdatePromptState state) { state_ = state; }
+    void SetInstallMode(AppUpdateInstallMode installMode)
+    {
+        installMode_ = installMode;
+    }
+    void SetExpectedSize(std::uintmax_t expectedSize) { expectedSize_ = expectedSize; }
+    void SetReceivedSize(std::uintmax_t receivedSize) { receivedSize_ = receivedSize; }
+    void SetBytesPerSecond(double bytesPerSecond)
+    {
+        bytesPerSecond_ = bytesPerSecond;
+    }
+    void SetErrorMessage(std::string errorMessage)
+    {
+        errorMessage_ = std::move(errorMessage);
+    }
+
+protected:
+    std::string sourceDeviceId_;
+    std::string sourceDisplayName_;
+    std::string fileName_;
+    int appVersion_ = 0;
+    AppUpdatePromptState state_ = AppUpdatePromptState::Available;
+    AppUpdateInstallMode installMode_ = AppUpdateInstallMode::RestartNow;
+    std::uintmax_t expectedSize_ = 0;
+    std::uintmax_t receivedSize_ = 0;
+    double bytesPerSecond_ = 0.0;
+    std::string errorMessage_;
 };
 
 class PendingIncomingTransfer {
@@ -142,6 +209,52 @@ protected:
     std::filesystem::path finalFilePath_;
     bool imageTransfer_ = false;
     bool folderTransfer_ = false;
+};
+
+class PendingIncomingAppUpdate {
+public:
+    const std::string& GetRequestId() const { return requestId_; }
+    const std::string& GetSourceDeviceId() const { return sourceDeviceId_; }
+    int GetAppVersion() const { return appVersion_; }
+    const std::string& GetFileName() const { return fileName_; }
+    std::uintmax_t GetExpectedSize() const { return expectedSize_; }
+    std::uintmax_t GetReceivedSize() const { return receivedSize_; }
+    const std::filesystem::path& GetTempFilePath() const { return tempFilePath_; }
+    AppUpdateInstallMode GetInstallMode() const { return installMode_; }
+    std::chrono::steady_clock::time_point GetStartedAt() const { return startedAt_; }
+
+    void SetRequestId(std::string requestId) { requestId_ = std::move(requestId); }
+    void SetSourceDeviceId(std::string sourceDeviceId)
+    {
+        sourceDeviceId_ = std::move(sourceDeviceId);
+    }
+    void SetAppVersion(int appVersion) { appVersion_ = appVersion; }
+    void SetFileName(std::string fileName) { fileName_ = std::move(fileName); }
+    void SetExpectedSize(std::uintmax_t expectedSize) { expectedSize_ = expectedSize; }
+    void SetReceivedSize(std::uintmax_t receivedSize) { receivedSize_ = receivedSize; }
+    void SetTempFilePath(std::filesystem::path tempFilePath)
+    {
+        tempFilePath_ = std::move(tempFilePath);
+    }
+    void SetInstallMode(AppUpdateInstallMode installMode)
+    {
+        installMode_ = installMode;
+    }
+    void SetStartedAt(std::chrono::steady_clock::time_point startedAt)
+    {
+        startedAt_ = startedAt;
+    }
+
+protected:
+    std::string requestId_;
+    std::string sourceDeviceId_;
+    int appVersion_ = 0;
+    std::string fileName_;
+    std::uintmax_t expectedSize_ = 0;
+    std::uintmax_t receivedSize_ = 0;
+    std::filesystem::path tempFilePath_;
+    AppUpdateInstallMode installMode_ = AppUpdateInstallMode::RestartNow;
+    std::chrono::steady_clock::time_point startedAt_{};
 };
 
 class PendingOutgoingTransferRequest {
@@ -297,6 +410,7 @@ public:
     bool GetStorageAvailable() const { return storageAvailable_; }
     bool GetDiscoveryStarted() const { return discoveryStarted_; }
     std::uint16_t GetDiscoveryUdpPort() const { return discoveryUdpPort_; }
+    std::optional<AppUpdatePrompt> GetAppUpdatePrompt();
 
     void refreshPeersIfNeeded();
     void selectPeer(std::string deviceId);
@@ -311,6 +425,8 @@ public:
     void cancelSelectedPeerFileTransfer(const std::string& messageId,
                                         const std::string& partId);
     void sendTextMessageToSelectedPeer(std::string text);
+    void startAppUpdate(AppUpdateInstallMode installMode);
+    void dismissAppUpdatePrompt();
 
 protected:
     void initialize();
@@ -321,6 +437,21 @@ protected:
     void applyPeerProfile(const relaydesk::storage::PeerProfile& profile,
                           bool online,
                           std::chrono::steady_clock::time_point now);
+    void maybeOfferAppUpdateFromPeer(const PeerListItem& peer);
+    void requestAppUpdateFromPeer(const PeerListItem& peer,
+                                  AppUpdateInstallMode installMode);
+    void sendAppUpdatePackageToPeer(
+        const PeerListItem& peer,
+        const relaydesk::net::AppUpdateRequestMessage& request);
+    void completeDownloadedAppUpdate(const PendingIncomingAppUpdate& update);
+    void applyDownloadedAppUpdate(const PendingIncomingAppUpdate& update,
+                                  bool restartAfterApply);
+    void launchScheduledAppUpdateOnExit() noexcept;
+    void markAppUpdateFailed(const std::string& sourceDeviceId,
+                             int appVersion,
+                             std::string errorMessage);
+    std::optional<PeerListItem> findPeerByDeviceId(
+        const std::string& peerDeviceId) const;
     void refreshPeerOnlineStates();
     std::string loadPeerLastConversationAtOrEmpty(
         const relaydesk::storage::AppPaths& appPaths,
@@ -379,6 +510,12 @@ protected:
     std::vector<PendingTransferProgressUpdate> pendingTransferProgressUpdates_;
     std::unordered_map<std::string, PendingIncomingTransfer>
         pendingIncomingTransfers_;
+    std::unordered_map<std::string, PendingIncomingAppUpdate>
+        pendingIncomingAppUpdates_;
+    std::unordered_map<std::string, int> requestedAppUpdateVersions_;
+    std::unordered_map<std::string, int> dismissedAppUpdateVersions_;
+    std::optional<AppUpdatePrompt> appUpdatePrompt_;
+    std::optional<PendingIncomingAppUpdate> scheduledAppUpdate_;
     std::vector<relaydesk::storage::ChatMessageRecord> selectedPeerMessages_;
     std::string selectedPeerDeviceId_;
     std::string startupErrorMessage_;
@@ -391,6 +528,7 @@ protected:
     std::mutex pendingTransferStateUpdateMutex_;
     std::mutex pendingTransferProgressUpdateMutex_;
     std::mutex pendingTransferMutex_;
+    std::mutex pendingAppUpdateMutex_;
     std::atomic_bool uiRefreshPending_ = false;
     std::atomic_bool peerStatusRefreshPending_ = false;
     bool storageAvailable_ = false;

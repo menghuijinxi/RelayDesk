@@ -14,6 +14,7 @@ DiscoveryWorker::DiscoveryWorker(DiscoveryService discoveryService,
                                  DiscoveryWorkerConfig workerConfig,
                                  DiscoveryWorkerEvents events)
     : discoveryService_(std::move(discoveryService)),
+      localUdpPort_(discoveryService_.GetLocalUdpPort()),
       workerConfig_(workerConfig),
       events_(std::move(events))
 {
@@ -27,7 +28,7 @@ DiscoveryWorker::~DiscoveryWorker()
 
 std::uint16_t DiscoveryWorker::GetLocalUdpPort() const
 {
-    return discoveryService_.GetLocalUdpPort();
+    return localUdpPort_;
 }
 
 bool DiscoveryWorker::IsRunning() const

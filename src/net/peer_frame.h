@@ -25,6 +25,9 @@ enum class PeerFrameType : std::uint16_t {
     TransferComplete = 10,
     TransferCancel = 11,
     Heartbeat = 12,
+    AppUpdateRequest = 13,
+    AppUpdateChunk = 14,
+    AppUpdateComplete = 15,
 };
 
 class PeerFrame {

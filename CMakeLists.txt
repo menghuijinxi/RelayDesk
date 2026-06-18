@@ -175,6 +175,10 @@ if(RELAYDESK_HAS_EUI_NEO)
 
     if(MSVC)
         target_compile_options(relaydesk PRIVATE /W4 /permissive- /utf-8)
+        # MSVC 14.51 can hit an internal compiler error in <filesystem> while
+        # optimizing this large translation unit in Release builds.
+        set_source_files_properties(src/main/app_runtime.cpp PROPERTIES
+            COMPILE_OPTIONS "$<$<CONFIG:Release>:/Od>;$<$<CONFIG:Release>:/Ob0>")
     endif()
 
     if(RELAYDESK_HAS_BOOST_ASIO)
@@ -236,8 +240,13 @@ if(WIN32)
     target_include_directories(relaydesk_image_attachment_store_tests PRIVATE src)
     target_compile_features(relaydesk_image_attachment_store_tests PRIVATE cxx_std_23)
 
+    set(RELAYDESK_IMAGE_TEST_WORK_DIR
+        "${CMAKE_SOURCE_DIR}/tmp/tests/image_attachment_store")
+    set(RELAYDESK_IMAGE_TEST_WORK_DIR_DEFINE
+        "RELAYDESK_IMAGE_ATTACHMENT_STORE_TEST_WORK_DIR=\"${RELAYDESK_IMAGE_TEST_WORK_DIR}\"")
+
     target_compile_definitions(relaydesk_image_attachment_store_tests PRIVATE
-        RELAYDESK_IMAGE_ATTACHMENT_STORE_TEST_WORK_DIR="${CMAKE_SOURCE_DIR}/tmp/tests/image_attachment_store"
+        ${RELAYDESK_IMAGE_TEST_WORK_DIR_DEFINE}
         NOMINMAX
         UNICODE
         _UNICODE

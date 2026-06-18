@@ -160,6 +160,7 @@ protected:
     void recordError(std::string errorMessage);
 
     DiscoveryService discoveryService_;
+    std::uint16_t localUdpPort_ = 0;
     DiscoveryWorkerConfig workerConfig_;
     DiscoveryWorkerEvents events_;
     mutable std::mutex mutex_;

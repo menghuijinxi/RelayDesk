@@ -1,5 +1,6 @@
 #include "eui_neo.h"
 
+#include "core/app_version.h"
 #include "core/render/text.h"
 #include "core/platform/platform.h"
 #include "core/uuid.h"
@@ -971,6 +972,58 @@ std::string formatFileSize(std::uintmax_t fileSize)
     }
     output << ' ' << units[unitIndex];
     return output.str();
+}
+
+std::string formatTransferRate(double bytesPerSecond)
+{
+    if (bytesPerSecond <= 0.0) {
+        return "计算速度中";
+    }
+
+    return formatFileSize(static_cast<std::uintmax_t>(bytesPerSecond)) + "/s";
+}
+
+std::string formatRemainingTime(double seconds)
+{
+    if (seconds <= 1.0) {
+        return "剩余 1 秒";
+    }
+
+    const int roundedSeconds = static_cast<int>(std::ceil(seconds));
+    if (roundedSeconds < 60) {
+        return "剩余 " + std::to_string(roundedSeconds) + " 秒";
+    }
+
+    const int minutes = roundedSeconds / 60;
+    const int secondsPart = roundedSeconds % 60;
+    if (secondsPart == 0) {
+        return "剩余 " + std::to_string(minutes) + " 分钟";
+    }
+    return "剩余 " + std::to_string(minutes) + " 分 "
+        + std::to_string(secondsPart) + " 秒";
+}
+
+std::string appUpdateDownloadDetail(
+    const relaydesk::runtime::AppUpdatePrompt& prompt)
+{
+    const std::uintmax_t receivedSize = prompt.GetReceivedSize();
+    const std::uintmax_t expectedSize = prompt.GetExpectedSize();
+    std::string detail = formatTransferRate(prompt.GetBytesPerSecond());
+    if (expectedSize > 0) {
+        detail += " · " + formatFileSize(receivedSize) + "/"
+            + formatFileSize(expectedSize);
+        const double bytesPerSecond = prompt.GetBytesPerSecond();
+        if (prompt.GetState() == relaydesk::runtime::AppUpdatePromptState::Downloading
+            && bytesPerSecond > 0.0
+            && receivedSize < expectedSize) {
+            const double remainingSeconds =
+                static_cast<double>(expectedSize - receivedSize) / bytesPerSecond;
+            detail += "，" + formatRemainingTime(remainingSeconds);
+        }
+    } else {
+        detail += " · 正在准备更新包";
+    }
+    return detail;
 }
 
 std::string fileTypeTag(const std::string& fileName)
@@ -6164,6 +6217,9 @@ void drawSettingsUpdatePage(eui::Ui& ui, float x, float y, float width)
     const float rowY = y + 86.0f;
     const float labelW = std::min(180.0f, width * 0.34f);
     const float fieldX = x + labelW + 26.0f;
+    const float fieldW = std::max(260.0f, width - labelW - 26.0f);
+    const std::string versionText =
+        "当前版本号：" + std::to_string(relaydesk::core::kAppVersion);
 
     drawSettingsRowLabel(ui, "settings.update.check.label", x, rowY, labelW,
                          "软件更新", "后续接入版本检查。");
@@ -6178,9 +6234,10 @@ void drawSettingsUpdatePage(eui::Ui& ui, float x, float y, float width)
                        [&status] {
                            status = "检查更新功能占位，等待接入更新服务";
                        });
-    text(ui, "settings.update.status", fieldX, rowY + 52.0f,
-         std::max(260.0f, width - labelW - 26.0f), 22.0f, status, 12.0f,
-         kMutedText);
+    text(ui, "settings.update.version", fieldX, rowY + 52.0f, fieldW, 22.0f,
+         versionText, 12.0f, kMutedText);
+    text(ui, "settings.update.status", fieldX, rowY + 76.0f, fieldW, 22.0f,
+         status, 12.0f, kMutedText);
 }
 
 void drawSettingsContent(eui::Ui& ui,
@@ -6266,6 +6323,180 @@ void drawSettingsPage(eui::Ui& ui,
          32.0f, 0xE711, kText);
 }
 
+void drawAppUpdateDownloadBlock(
+    eui::Ui& ui,
+    const relaydesk::runtime::AppUpdatePrompt& prompt,
+    float x,
+    float y,
+    float width)
+{
+    const std::string fileName =
+        prompt.GetFileName().empty() ? "relaydesk.exe" : prompt.GetFileName();
+    const float iconSize = 34.0f;
+    const float textX = x + iconSize + 14.0f;
+    const float textW = std::max(1.0f, width - iconSize - 14.0f);
+    const float progress =
+        prompt.GetExpectedSize() > 0
+            ? std::clamp(
+                static_cast<float>(
+                    static_cast<double>(prompt.GetReceivedSize())
+                    / static_cast<double>(prompt.GetExpectedSize())),
+                0.0f,
+                1.0f)
+            : 0.0f;
+    const bool failed =
+        prompt.GetState() == relaydesk::runtime::AppUpdatePromptState::Failed;
+
+    rect(ui, "app.update.file.icon.bg", x, y + 4.0f, iconSize, iconSize,
+         {0.060f, 0.070f, 0.078f, 1.0f}, 7.0f);
+    rect(ui, "app.update.file.icon.mark", x + iconSize - 12.0f, y + 19.0f,
+         9.0f, 9.0f, failed ? kDanger : kGreen, 5.0f);
+    icon(ui, "app.update.file.icon", x + 1.0f, y + 5.0f, iconSize - 2.0f,
+         0xE895, {1.0f, 1.0f, 1.0f, 1.0f});
+    text(ui, "app.update.file.name", textX, y, textW, 26.0f, fileName, 15.0f,
+         kText);
+    text(ui, "app.update.file.detail", textX, y + 30.0f, textW, 22.0f,
+         appUpdateDownloadDetail(prompt), 12.0f, kMutedText);
+
+    const float trackY = y + 61.0f;
+    rect(ui, "app.update.file.progress.track", textX, trackY, textW, 4.0f,
+         {0.900f, 0.910f, 0.920f, 1.0f}, 2.0f);
+    rect(ui, "app.update.file.progress.fill", textX, trackY, textW * progress,
+         4.0f, failed ? kDanger : kText, 2.0f);
+}
+
+void drawAppUpdatePromptOverlay(eui::Ui& ui,
+                                float width,
+                                float height,
+                                relaydesk::runtime::RelayDeskRuntime& runtime)
+{
+    const std::optional<relaydesk::runtime::AppUpdatePrompt> prompt =
+        runtime.GetAppUpdatePrompt();
+    if (!prompt.has_value()) {
+        return;
+    }
+
+    const auto state = prompt->GetState();
+    const bool downloading =
+        state == relaydesk::runtime::AppUpdatePromptState::Downloading;
+    const bool failed = state == relaydesk::runtime::AppUpdatePromptState::Failed;
+    const float panelWidth = std::min(width - 48.0f, 540.0f);
+    const float panelHeight = failed ? 288.0f : (downloading ? 214.0f : 238.0f);
+    const float panelX = std::max(24.0f, (width - panelWidth) * 0.5f);
+    const float panelY = std::max(24.0f, (height - panelHeight) * 0.5f);
+    const float contentX = panelX + 26.0f;
+    const float contentW = panelWidth - 52.0f;
+    const std::string sourceName =
+        prompt->GetSourceDisplayName().empty()
+            ? "附近设备"
+            : prompt->GetSourceDisplayName();
+    const std::string versionText =
+        "当前版本 " + std::to_string(relaydesk::core::kAppVersion)
+        + "，可更新到 " + std::to_string(prompt->GetAppVersion());
+
+    ui.stack("app.update.prompt.overlay")
+        .position(0.0f, 0.0f)
+        .size(width, height)
+        .zIndex(1300)
+        .content([&] {
+            ui.rect("app.update.prompt.backdrop")
+                .position(0.0f, 0.0f)
+                .size(width, height)
+                .color({0.0f, 0.0f, 0.0f, 0.38f})
+                .onClick([] {})
+                .build();
+            rect(ui, "app.update.prompt.panel", panelX, panelY, panelWidth,
+                 panelHeight, kPanelBackground, 8.0f, kBorder);
+            ui.rect("app.update.prompt.panel.hit")
+                .position(panelX, panelY)
+                .size(panelWidth, panelHeight)
+                .color({0.0f, 0.0f, 0.0f, 0.0f})
+                .onClick([] {})
+                .build();
+
+            if (downloading) {
+                text(ui, "app.update.prompt.title", contentX, panelY + 22.0f,
+                     contentW, 28.0f, "正在下载更新", 19.0f, kText);
+                drawAppUpdateDownloadBlock(ui, prompt.value(), contentX,
+                                           panelY + 72.0f, contentW);
+                return;
+            }
+
+            if (failed) {
+                text(ui, "app.update.prompt.title", contentX, panelY + 22.0f,
+                     contentW, 28.0f, "更新失败", 19.0f, kText);
+                drawAppUpdateDownloadBlock(ui, prompt.value(), contentX,
+                                           panelY + 70.0f, contentW);
+                paragraphText(ui,
+                              "app.update.prompt.error",
+                              contentX,
+                              panelY + 150.0f,
+                              contentW,
+                              48.0f,
+                              prompt->GetErrorMessage().empty()
+                                  ? "更新没有完成，可以关闭这次提示后稍后重试。"
+                                  : prompt->GetErrorMessage(),
+                              13.0f,
+                              20.0f,
+                              kDanger);
+                drawSettingsButton(ui,
+                                   "app.update.prompt.close",
+                                   panelX + panelWidth - 126.0f,
+                                   panelY + panelHeight - 58.0f,
+                                   100.0f,
+                                   38.0f,
+                                   "关闭",
+                                   false,
+                                   [&runtime] {
+                                       runtime.dismissAppUpdatePrompt();
+                                   });
+                return;
+            }
+
+            text(ui, "app.update.prompt.title", contentX, panelY + 22.0f,
+                 contentW, 28.0f, "发现新版本", 19.0f, kText);
+            paragraphText(ui,
+                          "app.update.prompt.message",
+                          contentX,
+                          panelY + 62.0f,
+                          contentW,
+                          60.0f,
+                          sourceName + " 提供了更新后的 RelayDesk。",
+                          14.0f,
+                          22.0f,
+                          kMutedText);
+            text(ui, "app.update.prompt.version", contentX, panelY + 116.0f,
+                 contentW, 24.0f, versionText, 13.0f, kText);
+            drawSettingsButton(ui,
+                               "app.update.prompt.defer",
+                               panelX + panelWidth - 304.0f,
+                               panelY + panelHeight - 58.0f,
+                               132.0f,
+                               38.0f,
+                               "关闭后更新",
+                               false,
+                               [&runtime] {
+                                   runtime.startAppUpdate(
+                                       relaydesk::runtime::AppUpdateInstallMode::
+                                           InstallOnExit);
+                               });
+            drawSettingsButton(ui,
+                               "app.update.prompt.restart",
+                               panelX + panelWidth - 158.0f,
+                               panelY + panelHeight - 58.0f,
+                               132.0f,
+                               38.0f,
+                               "更新并重启",
+                               true,
+                               [&runtime] {
+                                   runtime.startAppUpdate(
+                                       relaydesk::runtime::AppUpdateInstallMode::
+                                           RestartNow);
+                               });
+        })
+        .build();
+}
+
 void drawRelayDesk(eui::Ui& ui,
                    const eui::Screen& screen,
                    relaydesk::runtime::RelayDeskRuntime& runtime)
@@ -6298,6 +6529,7 @@ void drawRelayDesk(eui::Ui& ui,
                          layout.contentHeight,
                          runtime);
         drawImagePreviewOverlay(ui, layout.width, layout.height);
+        drawAppUpdatePromptOverlay(ui, layout.width, layout.height, runtime);
         return;
     }
 
@@ -6318,6 +6550,7 @@ void drawRelayDesk(eui::Ui& ui,
                         selectedPeer);
 
     drawImagePreviewOverlay(ui, layout.width, layout.height);
+    drawAppUpdatePromptOverlay(ui, layout.width, layout.height, runtime);
 }
 
 } // namespace

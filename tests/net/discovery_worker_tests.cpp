@@ -187,6 +187,12 @@ int startsAndStopsWorker()
         result != 0) {
         return result;
     }
+    if (const int result = expect(worker.GetLocalUdpPort() != 0,
+                                  "Discovery worker local port was not cached.");
+        result != 0) {
+        worker.stop();
+        return result;
+    }
 
     worker.start();
     worker.stop();

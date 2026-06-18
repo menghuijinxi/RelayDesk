@@ -19,6 +19,7 @@ public:
     const std::string& GetHostName() const { return hostName_; }
     const std::string& GetDisplayName() const { return displayName_; }
     std::uint16_t GetTcpPort() const { return tcpPort_; }
+    int GetAppVersion() const { return appVersion_; }
     const std::vector<std::string>& GetCapabilities() const { return capabilities_; }
     const std::string& GetTimestamp() const { return timestamp_; }
 
@@ -31,6 +32,7 @@ public:
         displayName_ = std::move(displayName);
     }
     void SetTcpPort(std::uint16_t tcpPort) { tcpPort_ = tcpPort; }
+    void SetAppVersion(int appVersion) { appVersion_ = appVersion; }
     void SetCapabilities(std::vector<std::string> capabilities)
     {
         capabilities_ = std::move(capabilities);
@@ -44,6 +46,7 @@ protected:
     std::string hostName_;
     std::string displayName_;
     std::uint16_t tcpPort_ = 0;
+    int appVersion_ = 0;
     std::vector<std::string> capabilities_;
     std::string timestamp_;
 };

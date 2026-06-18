@@ -55,6 +55,7 @@ relaydesk::net::DiscoveryServiceConfig makeTestConfig()
     relaydesk::net::DiscoveryServiceConfig config;
     config.SetDiscoveryUdpPort(0);
     config.SetAdvertisedTcpPort(39171);
+    config.SetAppVersion(9);
     config.SetCapabilities({"text", "file"});
     return config;
 }
@@ -115,10 +116,21 @@ int sendsAnnouncementAndStoresPeer()
         return check;
     }
 
+    if (const int check = expect(profile.GetAppVersion() == 9,
+                                 "Stored discovery peer app version mismatch.");
+        check != 0) {
+        return check;
+    }
+
     const auto loaded = relaydesk::storage::loadPeerProfile(receiverPaths,
                                                             "sender-device");
-    return expect(loaded.GetLastAddresses()[0] == "127.0.0.1",
-                  "Stored discovery peer observed address mismatch.");
+    if (const int check = expect(loaded.GetLastAddresses()[0] == "127.0.0.1",
+                                 "Stored discovery peer observed address mismatch.");
+        check != 0) {
+        return check;
+    }
+    return expect(loaded.GetAppVersion() == 9,
+                  "Stored discovery peer app version was not persisted.");
 }
 
 int sendsOfflineAnnouncement()

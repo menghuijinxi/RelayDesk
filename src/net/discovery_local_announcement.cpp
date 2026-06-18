@@ -1,5 +1,7 @@
 #include "net/discovery_local_announcement.h"
 
+#include "core/app_version.h"
+
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -48,6 +50,7 @@ DiscoveryAnnouncement makeLocalDiscoveryAnnouncement(
     announcement.SetHostName(identity.GetHostName());
     announcement.SetDisplayName(identity.GetDisplayName());
     announcement.SetTcpPort(tcpPort);
+    announcement.SetAppVersion(relaydesk::core::kAppVersion);
     announcement.SetCapabilities(std::move(capabilities));
     announcement.SetTimestamp(timestamp);
     return announcement;

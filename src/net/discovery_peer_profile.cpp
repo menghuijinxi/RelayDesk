@@ -37,6 +37,7 @@ relaydesk::storage::PeerProfile makeBaseProfile(
     profile.SetDisplayName(announcement.GetDisplayName());
     profile.SetLastAddresses(addresses);
     profile.SetTcpPort(announcement.GetTcpPort());
+    profile.SetAppVersion(announcement.GetAppVersion());
     profile.SetCapabilities(announcement.GetCapabilities());
     profile.SetFirstSeenAt(firstSeenAt);
     profile.SetLastSeenAt(announcement.GetTimestamp());

@@ -235,6 +235,35 @@ relaydesk::net::TransferCompleteMessage makeTransferComplete()
     return message;
 }
 
+relaydesk::net::AppUpdateRequestMessage makeAppUpdateRequest()
+{
+    relaydesk::net::AppUpdateRequestMessage message;
+    message.SetRequestId("update-request-1");
+    message.SetRequesterDeviceId("peer-device");
+    message.SetCurrentAppVersion(1);
+    message.SetRequestedAppVersion(2);
+    return message;
+}
+
+relaydesk::net::AppUpdateChunkMessage makeAppUpdateChunk()
+{
+    relaydesk::net::AppUpdateChunkMessage message;
+    message.SetRequestId("update-request-1");
+    message.SetOffset(4);
+    message.SetFileSize(8);
+    return message;
+}
+
+relaydesk::net::AppUpdateCompleteMessage makeAppUpdateComplete()
+{
+    relaydesk::net::AppUpdateCompleteMessage message;
+    message.SetRequestId("update-request-1");
+    message.SetAppVersion(2);
+    message.SetFileName("relaydesk.exe");
+    message.SetFileSize(8);
+    return message;
+}
+
 int roundTripsTransferOfferFrame()
 {
     const relaydesk::net::PeerFrame frame =
@@ -441,6 +470,90 @@ int roundTripsTransferCompleteFrame()
                   "Decoded transfer complete file size mismatch.");
 }
 
+int roundTripsAppUpdateRequestFrame()
+{
+    const relaydesk::net::PeerFrame frame =
+        relaydesk::net::makeAppUpdateRequestFrame(makeAppUpdateRequest());
+    if (const int check = expect(
+            frame.GetType() == relaydesk::net::PeerFrameType::AppUpdateRequest,
+            "App update request frame type mismatch.");
+        check != 0) {
+        return check;
+    }
+
+    const relaydesk::net::AppUpdateRequestMessage decoded =
+        relaydesk::net::parseAppUpdateRequestFrame(
+            relaydesk::net::decodePeerFrame(relaydesk::net::encodePeerFrame(frame)));
+    if (const int check = expect(decoded.GetRequestId() == "update-request-1",
+                                 "Decoded app update request ID mismatch.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(decoded.GetRequesterDeviceId() == "peer-device",
+                                 "Decoded app update requester mismatch.");
+        check != 0) {
+        return check;
+    }
+    return expect(decoded.GetRequestedAppVersion() == 2,
+                  "Decoded app update requested version mismatch.");
+}
+
+int roundTripsAppUpdateChunkFrame()
+{
+    const std::vector<std::uint8_t> body{0x01, 0x02, 0x03, 0x04};
+    const relaydesk::net::PeerFrame frame =
+        relaydesk::net::makeAppUpdateChunkFrame(makeAppUpdateChunk(), body);
+    if (const int check = expect(
+            frame.GetType() == relaydesk::net::PeerFrameType::AppUpdateChunk,
+            "App update chunk frame type mismatch.");
+        check != 0) {
+        return check;
+    }
+
+    const relaydesk::net::PeerFrame decodedFrame =
+        relaydesk::net::decodePeerFrame(relaydesk::net::encodePeerFrame(frame));
+    const relaydesk::net::AppUpdateChunkMessage decoded =
+        relaydesk::net::parseAppUpdateChunkFrame(decodedFrame);
+    if (const int check = expect(decoded.GetOffset() == 4,
+                                 "Decoded app update chunk offset mismatch.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(decoded.GetFileSize() == 8,
+                                 "Decoded app update chunk file size mismatch.");
+        check != 0) {
+        return check;
+    }
+    return expect(decodedFrame.GetBody() == body,
+                  "Decoded app update chunk body mismatch.");
+}
+
+int roundTripsAppUpdateCompleteFrame()
+{
+    const relaydesk::net::PeerFrame frame =
+        relaydesk::net::makeAppUpdateCompleteFrame(makeAppUpdateComplete());
+    const relaydesk::net::AppUpdateCompleteMessage decoded =
+        relaydesk::net::parseAppUpdateCompleteFrame(
+            relaydesk::net::decodePeerFrame(relaydesk::net::encodePeerFrame(frame)));
+    if (const int check = expect(decoded.GetRequestId() == "update-request-1",
+                                 "Decoded app update complete ID mismatch.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(decoded.GetAppVersion() == 2,
+                                 "Decoded app update complete version mismatch.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(decoded.GetFileName() == "relaydesk.exe",
+                                 "Decoded app update complete file name mismatch.");
+        check != 0) {
+        return check;
+    }
+    return expect(decoded.GetFileSize() == 8,
+                  "Decoded app update complete file size mismatch.");
+}
+
 } // namespace
 
 int main()
@@ -479,6 +592,15 @@ int main()
         return result;
     }
     if (const int result = roundTripsTransferCompleteFrame(); result != 0) {
+        return result;
+    }
+    if (const int result = roundTripsAppUpdateRequestFrame(); result != 0) {
+        return result;
+    }
+    if (const int result = roundTripsAppUpdateChunkFrame(); result != 0) {
+        return result;
+    }
+    if (const int result = roundTripsAppUpdateCompleteFrame(); result != 0) {
         return result;
     }
 

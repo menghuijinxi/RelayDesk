@@ -40,6 +40,7 @@ relaydesk::net::DiscoveryAnnouncement makeAnnouncement(const std::string& timest
     announcement.SetHostName("DESKTOP-OFFICE-12");
     announcement.SetDisplayName("Alice-PC");
     announcement.SetTcpPort(39171);
+    announcement.SetAppVersion(3);
     announcement.SetCapabilities({"text", "emoji", "file"});
     announcement.SetTimestamp(timestamp);
     return announcement;
@@ -83,9 +84,20 @@ int createsPeerProfileFromDiscovery()
         return result;
     }
 
+    if (const int result = expect(profile.GetAppVersion() == 3,
+                                  "Created peer app version mismatch.");
+        result != 0) {
+        return result;
+    }
+
     const auto loaded = relaydesk::storage::loadPeerProfile(appPaths, "peer-device");
-    return expect(loaded.GetDisplayName() == "Alice-PC",
-                  "Created peer profile was not persisted.");
+    if (const int result = expect(loaded.GetDisplayName() == "Alice-PC",
+                                  "Created peer profile was not persisted.");
+        result != 0) {
+        return result;
+    }
+    return expect(loaded.GetAppVersion() == 3,
+                  "Created peer app version was not persisted.");
 }
 
 int updatesPeerProfileAndPreservesFirstSeen()

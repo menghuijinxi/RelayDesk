@@ -18,6 +18,9 @@ constexpr const char* kPeerMessageTypeTransferReject = "transfer_reject";
 constexpr const char* kPeerMessageTypeTransferCancel = "transfer_cancel";
 constexpr const char* kPeerMessageTypeTransferChunk = "transfer_chunk";
 constexpr const char* kPeerMessageTypeTransferComplete = "transfer_complete";
+constexpr const char* kPeerMessageTypeAppUpdateRequest = "app_update_request";
+constexpr const char* kPeerMessageTypeAppUpdateChunk = "app_update_chunk";
+constexpr const char* kPeerMessageTypeAppUpdateComplete = "app_update_complete";
 
 enum class TransferSaveStrategy {
     Unique,
@@ -180,6 +183,69 @@ protected:
     std::optional<std::string> sha256_;
 };
 
+class AppUpdateRequestMessage {
+public:
+    const std::string& GetRequestId() const { return requestId_; }
+    const std::string& GetRequesterDeviceId() const { return requesterDeviceId_; }
+    int GetCurrentAppVersion() const { return currentAppVersion_; }
+    int GetRequestedAppVersion() const { return requestedAppVersion_; }
+
+    void SetRequestId(std::string requestId) { requestId_ = std::move(requestId); }
+    void SetRequesterDeviceId(std::string requesterDeviceId)
+    {
+        requesterDeviceId_ = std::move(requesterDeviceId);
+    }
+    void SetCurrentAppVersion(int currentAppVersion)
+    {
+        currentAppVersion_ = currentAppVersion;
+    }
+    void SetRequestedAppVersion(int requestedAppVersion)
+    {
+        requestedAppVersion_ = requestedAppVersion;
+    }
+
+protected:
+    std::string requestId_;
+    std::string requesterDeviceId_;
+    int currentAppVersion_ = 0;
+    int requestedAppVersion_ = 0;
+};
+
+class AppUpdateChunkMessage {
+public:
+    const std::string& GetRequestId() const { return requestId_; }
+    std::uintmax_t GetOffset() const { return offset_; }
+    std::uintmax_t GetFileSize() const { return fileSize_; }
+
+    void SetRequestId(std::string requestId) { requestId_ = std::move(requestId); }
+    void SetOffset(std::uintmax_t offset) { offset_ = offset; }
+    void SetFileSize(std::uintmax_t fileSize) { fileSize_ = fileSize; }
+
+protected:
+    std::string requestId_;
+    std::uintmax_t offset_ = 0;
+    std::uintmax_t fileSize_ = 0;
+};
+
+class AppUpdateCompleteMessage {
+public:
+    const std::string& GetRequestId() const { return requestId_; }
+    int GetAppVersion() const { return appVersion_; }
+    const std::string& GetFileName() const { return fileName_; }
+    std::uintmax_t GetFileSize() const { return fileSize_; }
+
+    void SetRequestId(std::string requestId) { requestId_ = std::move(requestId); }
+    void SetAppVersion(int appVersion) { appVersion_ = appVersion; }
+    void SetFileName(std::string fileName) { fileName_ = std::move(fileName); }
+    void SetFileSize(std::uintmax_t fileSize) { fileSize_ = fileSize; }
+
+protected:
+    std::string requestId_;
+    int appVersion_ = 0;
+    std::string fileName_;
+    std::uintmax_t fileSize_ = 0;
+};
+
 std::string serializePeerChatMessageHeader(
     const relaydesk::storage::ChatMessageRecord& record);
 relaydesk::storage::ChatMessageRecord parsePeerChatMessageHeader(
@@ -213,5 +279,18 @@ std::string serializeTransferCompleteHeader(const TransferCompleteMessage& messa
 TransferCompleteMessage parseTransferCompleteHeader(const std::string& payload);
 PeerFrame makeTransferCompleteFrame(const TransferCompleteMessage& message);
 TransferCompleteMessage parseTransferCompleteFrame(const PeerFrame& frame);
+std::string serializeAppUpdateRequestHeader(const AppUpdateRequestMessage& message);
+AppUpdateRequestMessage parseAppUpdateRequestHeader(const std::string& payload);
+PeerFrame makeAppUpdateRequestFrame(const AppUpdateRequestMessage& message);
+AppUpdateRequestMessage parseAppUpdateRequestFrame(const PeerFrame& frame);
+std::string serializeAppUpdateChunkHeader(const AppUpdateChunkMessage& message);
+AppUpdateChunkMessage parseAppUpdateChunkHeader(const std::string& payload);
+PeerFrame makeAppUpdateChunkFrame(AppUpdateChunkMessage message,
+                                  std::vector<std::uint8_t> body);
+AppUpdateChunkMessage parseAppUpdateChunkFrame(const PeerFrame& frame);
+std::string serializeAppUpdateCompleteHeader(const AppUpdateCompleteMessage& message);
+AppUpdateCompleteMessage parseAppUpdateCompleteHeader(const std::string& payload);
+PeerFrame makeAppUpdateCompleteFrame(const AppUpdateCompleteMessage& message);
+AppUpdateCompleteMessage parseAppUpdateCompleteFrame(const PeerFrame& frame);
 
 }

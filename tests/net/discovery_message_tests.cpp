@@ -29,6 +29,7 @@ relaydesk::net::DiscoveryAnnouncement makeAnnouncement()
     announcement.SetHostName("DESKTOP-OFFICE-12");
     announcement.SetDisplayName("中文用户");
     announcement.SetTcpPort(39171);
+    announcement.SetAppVersion(42);
     announcement.SetCapabilities({"text", "emoji", "file", "folder"});
     announcement.SetTimestamp("2026-06-12T10:00:00Z");
     return announcement;
@@ -69,6 +70,12 @@ int roundTripsAnnouncement()
         return result;
     }
 
+    if (const int result = expect(parsed.GetAppVersion() == 42,
+                                  "Discovery app version did not round-trip.");
+        result != 0) {
+        return result;
+    }
+
     return expect(parsed.GetCapabilities().size() == 4,
                   "Discovery capabilities did not round-trip.");
 }
@@ -96,8 +103,25 @@ int serializesExpectedJsonFields()
         return result;
     }
 
+    if (const int result = expect(value.value("app_version", 0) == 42,
+                                  "Discovery app version field mismatch.");
+        result != 0) {
+        return result;
+    }
+
     return expect(value.value("display_name", "") == "中文用户",
                   "Discovery display name field mismatch.");
+}
+
+int acceptsLegacyAnnouncementWithoutAppVersion()
+{
+    nlohmann::json value = nlohmann::json::parse(
+        relaydesk::net::serializeDiscoveryAnnouncement(makeAnnouncement()));
+    value.erase("app_version");
+
+    const auto parsed = relaydesk::net::parseDiscoveryAnnouncement(value.dump());
+    return expect(parsed.GetAppVersion() == 0,
+                  "Legacy discovery app version should default to zero.");
 }
 
 int rejectsInvalidJson()
@@ -165,6 +189,11 @@ int main()
     }
 
     if (const int result = serializesExpectedJsonFields(); result != 0) {
+        return result;
+    }
+
+    if (const int result = acceptsLegacyAnnouncementWithoutAppVersion();
+        result != 0) {
         return result;
     }
 

@@ -150,6 +150,35 @@ int rejectsPayloadLengthMismatch()
         "Truncated peer frame payload was accepted.");
 }
 
+int roundTripsAppUpdateFrameTypes()
+{
+    if (const int check = expect(
+            relaydesk::net::peerFrameTypeFromWireValue(13)
+                == relaydesk::net::PeerFrameType::AppUpdateRequest,
+            "App update request frame type value mismatch.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(
+            relaydesk::net::peerFrameTypeFromWireValue(14)
+                == relaydesk::net::PeerFrameType::AppUpdateChunk,
+            "App update chunk frame type value mismatch.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(
+            relaydesk::net::peerFrameTypeFromWireValue(15)
+                == relaydesk::net::PeerFrameType::AppUpdateComplete,
+            "App update complete frame type value mismatch.");
+        check != 0) {
+        return check;
+    }
+
+    return expect(relaydesk::net::toWireValue(
+                      relaydesk::net::PeerFrameType::AppUpdateComplete) == 15,
+                  "App update complete wire value mismatch.");
+}
+
 } // namespace
 
 int main()
@@ -168,6 +197,9 @@ int main()
         return result;
     }
     if (const int result = rejectsPayloadLengthMismatch(); result != 0) {
+        return result;
+    }
+    if (const int result = roundTripsAppUpdateFrameTypes(); result != 0) {
         return result;
     }
 

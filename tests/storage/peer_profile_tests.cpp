@@ -56,6 +56,7 @@ relaydesk::storage::PeerProfile makeProfile(const std::string& deviceId)
     profile.SetDisplayName("Alice-PC");
     profile.SetLastAddresses({"192.168.1.42", "fe80::42"});
     profile.SetTcpPort(39171);
+    profile.SetAppVersion(7);
     profile.SetCapabilities({"text", "emoji", "file", "folder"});
     profile.SetFirstSeenAt("2026-06-12T10:00:00Z");
     profile.SetLastSeenAt("2026-06-12T10:05:00Z");
@@ -100,8 +101,39 @@ int savesAndLoadsPeerProfile()
         return result;
     }
 
+    if (const int result = expect(loaded.GetAppVersion() == 7,
+                                  "Peer app version did not round-trip.");
+        result != 0) {
+        return result;
+    }
+
     return expect(loaded.GetCapabilities().size() == 4,
                   "Peer capabilities did not round-trip.");
+}
+
+int loadsLegacyPeerProfileWithoutAppVersion()
+{
+    const auto appPaths = makeAppPaths("legacy-version");
+    const std::filesystem::path profilePath =
+        relaydesk::storage::getPeerProfileFilePath(appPaths, "peer-device-legacy");
+    writeJsonFile(
+        profilePath,
+        nlohmann::json{
+            {"schema_version", 1},
+            {"device_id", "peer-device-legacy"},
+            {"host_name", "DESKTOP-OFFICE-12"},
+            {"display_name", "Alice-PC"},
+            {"last_addresses", {"192.168.1.42"}},
+            {"tcp_port", 39171},
+            {"capabilities", {"text"}},
+            {"first_seen_at", "2026-06-12T10:00:00Z"},
+            {"last_seen_at", "2026-06-12T10:05:00Z"},
+        });
+
+    const auto loaded =
+        relaydesk::storage::loadPeerProfile(appPaths, "peer-device-legacy");
+    return expect(loaded.GetAppVersion() == 0,
+                  "Legacy peer app version should default to zero.");
 }
 
 int updatesExistingPeerProfile()
@@ -223,6 +255,10 @@ int main()
     std::filesystem::remove_all(testRoot());
 
     if (const int result = savesAndLoadsPeerProfile(); result != 0) {
+        return result;
+    }
+
+    if (const int result = loadsLegacyPeerProfileWithoutAppVersion(); result != 0) {
         return result;
     }
 
