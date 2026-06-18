@@ -148,6 +148,7 @@ public:
 
     void start();
     void stop();
+    void updateLocalIdentity(relaydesk::storage::LocalIdentity localIdentity);
 
 protected:
     void run(std::stop_token stopToken);

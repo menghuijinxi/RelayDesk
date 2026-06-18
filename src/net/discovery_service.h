@@ -8,6 +8,8 @@
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
@@ -101,6 +103,7 @@ public:
     void sendReplyTo(const std::string& address, std::uint16_t port);
     void sendOfflineTo(const std::string& address, std::uint16_t port);
     DiscoveryServicePollResult pollOnce(std::chrono::milliseconds timeout);
+    void updateLocalIdentity(relaydesk::storage::LocalIdentity localIdentity);
     void logDiagnostic(std::string message) const;
     void close();
 
@@ -111,6 +114,7 @@ protected:
     relaydesk::storage::LocalIdentity localIdentity_;
     DiscoveryServiceConfig config_;
     BoostAsioUdpDiscoveryTransport transport_;
+    mutable std::unique_ptr<std::mutex> mutex_{std::make_unique<std::mutex>()};
 };
 
 }

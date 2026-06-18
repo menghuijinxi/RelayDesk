@@ -1419,6 +1419,11 @@ public:
     {
     }
 
+    void updateLocalIdentity(relaydesk::storage::LocalIdentity localIdentity)
+    {
+        worker_->updateLocalIdentity(std::move(localIdentity));
+    }
+
 protected:
     std::unique_ptr<relaydesk::net::DiscoveryWorker> worker_;
 #endif
@@ -1780,6 +1785,32 @@ std::optional<AppUpdatePrompt> RelayDeskRuntime::GetAppUpdatePrompt()
 {
     std::lock_guard lock(pendingAppUpdateMutex_);
     return appUpdatePrompt_;
+}
+
+void RelayDeskRuntime::updateLocalDisplayName(std::string displayName)
+{
+    if (!storageAvailable_) {
+        throw std::runtime_error("Local storage is not available.");
+    }
+    if (isBlankText(displayName)) {
+        throw std::invalid_argument("Local display name cannot be blank.");
+    }
+
+    const auto appPaths = relaydesk::storage::createAppPaths();
+    const relaydesk::storage::LocalIdentity identity =
+        relaydesk::storage::updateLocalDisplayName(appPaths, displayName);
+    localUser_.SetDisplayName(identity.GetDisplayName());
+    localUser_.SetHostName(identity.GetHostName());
+    localUser_.SetDeviceId(identity.GetDeviceId());
+#if defined(RELAYDESK_HAS_BOOST_ASIO)
+    if (discoveryWorker_) {
+        discoveryWorker_->updateLocalIdentity(identity);
+    }
+#endif
+    logDiagnostic("runtime.identity.display_name_updated device_id="
+                  + identity.GetDeviceId()
+                  + " display_name=" + identity.GetDisplayName());
+    requestUiRefresh();
 }
 
 std::optional<PeerListItem> RelayDeskRuntime::findPeerByDeviceId(

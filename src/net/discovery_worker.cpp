@@ -85,6 +85,12 @@ void DiscoveryWorker::stop()
     discoveryService_.logDiagnostic("worker.stop.closed");
 }
 
+void DiscoveryWorker::updateLocalIdentity(
+    relaydesk::storage::LocalIdentity localIdentity)
+{
+    discoveryService_.updateLocalIdentity(std::move(localIdentity));
+}
+
 void DiscoveryWorker::run(std::stop_token stopToken)
 {
     discoveryService_.logDiagnostic(

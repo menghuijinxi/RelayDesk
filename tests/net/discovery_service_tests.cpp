@@ -133,6 +133,39 @@ int sendsAnnouncementAndStoresPeer()
                   "Stored discovery peer app version was not persisted.");
 }
 
+int sendsAnnouncementAfterIdentityUpdate()
+{
+    relaydesk::net::DiscoveryService sender(
+        makeAppPaths("identity-update-sender"),
+        makeIdentity("sender-device", "Old-Sender"),
+        makeTestConfig());
+    relaydesk::net::DiscoveryService receiver(
+        makeAppPaths("identity-update-receiver"),
+        makeIdentity("receiver-device", "Receiver-PC"),
+        makeTestConfig());
+
+    sender.updateLocalIdentity(makeIdentity("sender-device", "New-Sender"));
+    sender.sendAnnouncementTo("127.0.0.1", receiver.GetLocalUdpPort());
+    const auto result = receiver.pollOnce(500ms);
+
+    if (const int check = expect(
+            result.GetAction()
+                == relaydesk::net::DiscoveryServicePollAction::StoredPeer,
+            "Updated identity announcement was not stored.");
+        check != 0) {
+        return check;
+    }
+
+    if (const int check = expect(result.HasPeerProfile(),
+                                 "Updated identity result should include profile.");
+        check != 0) {
+        return check;
+    }
+
+    return expect(result.GetPeerProfile()->GetDisplayName() == "New-Sender",
+                  "Updated identity display name was not announced.");
+}
+
 int sendsOfflineAnnouncement()
 {
     relaydesk::net::DiscoveryService sender(
@@ -246,6 +279,10 @@ int main()
     }
 
     if (const int result = sendsAnnouncementAndStoresPeer(); result != 0) {
+        return result;
+    }
+
+    if (const int result = sendsAnnouncementAfterIdentityUpdate(); result != 0) {
         return result;
     }
 

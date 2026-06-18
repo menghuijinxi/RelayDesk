@@ -412,6 +412,7 @@ public:
     std::uint16_t GetDiscoveryUdpPort() const { return discoveryUdpPort_; }
     std::optional<AppUpdatePrompt> GetAppUpdatePrompt();
 
+    void updateLocalDisplayName(std::string displayName);
     void refreshPeersIfNeeded();
     void selectPeer(std::string deviceId);
     void sendMessagePartsToSelectedPeer(

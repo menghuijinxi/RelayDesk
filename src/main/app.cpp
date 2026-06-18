@@ -5810,6 +5810,26 @@ std::string localDisplayName(
         : localUser.GetDisplayName();
 }
 
+std::string trimAsciiWhitespace(std::string value)
+{
+    const auto first = std::find_if(
+        value.begin(),
+        value.end(),
+        [](unsigned char ch) {
+            return std::isspace(ch) == 0;
+        });
+    const auto last = std::find_if(
+        value.rbegin(),
+        value.rend(),
+        [](unsigned char ch) {
+            return std::isspace(ch) == 0;
+        }).base();
+    if (first >= last) {
+        return {};
+    }
+    return std::string(first, last);
+}
+
 float settingsFieldWidth(float contentWidth)
 {
     return std::min(380.0f, std::max(240.0f, contentWidth * 0.56f));
@@ -5979,32 +5999,95 @@ void drawSettingsProfilePage(eui::Ui& ui,
                              float x,
                              float y,
                              float width,
-                             const relaydesk::runtime::RelayDeskRuntime& runtime)
+                             relaydesk::runtime::RelayDeskRuntime& runtime)
 {
     bool& initialized = ui.state<bool>("settings.profile.initialized");
     std::string& userName = ui.state<std::string>("settings.profile.username");
-    if (!initialized) {
-        userName = localDisplayName(runtime);
+    std::string& savedUserName =
+        ui.state<std::string>("settings.profile.saved_username");
+    std::string& status = ui.state<std::string>("settings.profile.status");
+    bool& statusIsError = ui.state<bool>("settings.profile.status_error");
+    const std::string currentUserName = localDisplayName(runtime);
+    if (!initialized || savedUserName != currentUserName) {
+        userName = currentUserName;
+        savedUserName = currentUserName;
+        status.clear();
+        statusIsError = false;
         initialized = true;
+    }
+    if (userName != savedUserName && statusIsError) {
+        status.clear();
+        statusIsError = false;
+    }
+    if (userName != savedUserName && !statusIsError) {
+        status = "有未保存的修改";
     }
 
     drawSettingsTitle(ui, "settings.profile.header", x, y, width,
-                      "个人资料", "用户名和头像先保存在设置界面占位状态中。");
+                      "个人资料", "用户名会保存到本机身份，并用于局域网心跳广播。");
     const float rowY = y + 86.0f;
     const float labelW = std::min(180.0f, width * 0.34f);
     const float fieldX = x + labelW + 26.0f;
-    const float fieldW = settingsFieldWidth(width - labelW - 26.0f);
+    const float fieldAreaW = std::max(1.0f, width - labelW - 26.0f);
+    const float saveButtonW = 76.0f;
+    const bool inlineActions = fieldAreaW >= 340.0f;
+    const float baseFieldW =
+        std::min(settingsFieldWidth(fieldAreaW), fieldAreaW);
+    const float fieldW = inlineActions
+        ? std::min(baseFieldW, fieldAreaW - saveButtonW - 12.0f)
+        : baseFieldW;
+    const float saveButtonX = inlineActions ? fieldX + fieldW + 12.0f : fieldX;
+    const float saveButtonY = inlineActions ? rowY + 1.0f : rowY + 50.0f;
+    const float statusY = inlineActions ? rowY + 50.0f : rowY + 92.0f;
+    const float separatorY = inlineActions ? rowY + 78.0f : rowY + 120.0f;
 
     drawSettingsRowLabel(ui, "settings.profile.name.label", x, rowY, labelW,
-                         "用户名", "后续接入本机身份配置。");
+                         "用户名", "保存后立即更新本机显示名。");
     drawSettingsInput(ui, "settings.profile.name.input", fieldX, rowY, fieldW,
                       userName, "输入用户名");
-    rect(ui, "settings.profile.name.line", x, rowY + 70.0f, width, 1.0f,
-         kBorder);
+    drawSettingsButton(ui,
+                       "settings.profile.name.save",
+                       saveButtonX,
+                       saveButtonY,
+                       saveButtonW,
+                       38.0f,
+                       "保存",
+                       true,
+                       [&runtime,
+                        &userName,
+                        &savedUserName,
+                        &status,
+                        &statusIsError] {
+                           const std::string nextName =
+                               trimAsciiWhitespace(userName);
+                           if (nextName.empty()) {
+                               status = "用户名不能为空";
+                               statusIsError = true;
+                               return;
+                           }
 
-    const float avatarY = rowY + 96.0f;
+                           try {
+                               runtime.updateLocalDisplayName(nextName);
+                               userName = localDisplayName(runtime);
+                               savedUserName = userName;
+                               status = "已保存";
+                               statusIsError = false;
+                           } catch (const std::exception& error) {
+                               status = std::string("保存失败：") + error.what();
+                               statusIsError = true;
+                           }
+                       });
+    if (!status.empty()) {
+        const Color statusColor =
+            statusIsError ? kDanger : (status == "已保存" ? kTeal : kMutedText);
+        text(ui, "settings.profile.name.status", fieldX, statusY, fieldAreaW,
+             22.0f, status, 12.0f, statusColor);
+    }
+    rect(ui, "settings.profile.name.line", x, separatorY, width, 1.0f, kBorder);
+
+    const float avatarY = separatorY + 26.0f;
     drawSettingsRowLabel(ui, "settings.profile.avatar.label", x, avatarY, labelW,
-                         "头像", "先使用头像占位，不读取图片。");
+                         "头像", "头像修改暂未接入。");
     avatar(ui, "settings.profile.avatar", fieldX, avatarY - 2.0f, 58.0f,
            userName.empty() ? "RelayDesk" : userName);
     drawSettingsButton(ui,
@@ -6015,7 +6098,10 @@ void drawSettingsProfilePage(eui::Ui& ui,
                        36.0f,
                        "更换头像",
                        false,
-                       [] {});
+                       [&status, &statusIsError] {
+                           status = "头像修改暂未接入";
+                           statusIsError = false;
+                       });
 }
 
 void drawSettingsAppearancePage(eui::Ui& ui,
@@ -6246,7 +6332,7 @@ void drawSettingsContent(eui::Ui& ui,
                          float width,
                          float height,
                          int selectedCategory,
-                         const relaydesk::runtime::RelayDeskRuntime& runtime)
+                         relaydesk::runtime::RelayDeskRuntime& runtime)
 {
     rect(ui, "settings.content.bg", x, y, width, height,
          {1.0f, 1.0f, 1.0f, 1.0f});
@@ -6307,7 +6393,8 @@ void drawSettingsPage(eui::Ui& ui,
              static_cast<std::size_t>(selectedCategory)].title,
          20.0f, kText);
     text(ui, "settings.header.detail", contentX + 34.0f, y + 50.0f,
-         contentW - 96.0f, 22.0f, "设置项暂未写入真实配置", 13.0f, kMutedText);
+         contentW - 96.0f, 22.0f, "设置项会按当前页面的接入状态保存",
+         13.0f, kMutedText);
     ui.rect("settings.close.hit")
         .position(contentX + contentW - 58.0f, y + 16.0f)
         .size(42.0f, 42.0f)

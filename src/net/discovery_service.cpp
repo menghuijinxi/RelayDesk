@@ -7,6 +7,7 @@
 #include "net/discovery_processor.h"
 
 #include <filesystem>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -281,9 +282,14 @@ DiscoveryServicePollResult DiscoveryService::pollOnce(
                   + " device_id=" + announcement.GetDeviceId()
                   + " host_name=" + announcement.GetHostName()
                   + " display_name=" + announcement.GetDisplayName());
+    std::string localDeviceId;
+    {
+        std::lock_guard lock(*mutex_);
+        localDeviceId = localIdentity_.GetDeviceId();
+    }
     const DiscoveryProcessResult processResult =
         processDiscoveryAnnouncement(appPaths_,
-                                     localIdentity_.GetDeviceId(),
+                                     localDeviceId,
                                      announcement,
                                      packet->GetObservedAddress());
     const DiscoveryServicePollResult result =
@@ -297,6 +303,21 @@ DiscoveryServicePollResult DiscoveryService::pollOnce(
                   + std::to_string(processResult.GetPeerCreated())
                   + " from=" + endpointText(packet.value()));
     return result;
+}
+
+void DiscoveryService::updateLocalIdentity(
+    relaydesk::storage::LocalIdentity localIdentity)
+{
+    const std::string deviceId = localIdentity.GetDeviceId();
+    const std::string hostName = localIdentity.GetHostName();
+    const std::string displayName = localIdentity.GetDisplayName();
+    {
+        std::lock_guard lock(*mutex_);
+        localIdentity_ = std::move(localIdentity);
+    }
+    logDiagnostic("service.identity.updated device_id=" + deviceId
+                  + " host_name=" + hostName
+                  + " display_name=" + displayName);
 }
 
 void DiscoveryService::close()
@@ -318,8 +339,12 @@ void DiscoveryService::logDiagnostic(std::string message) const
 std::string DiscoveryService::makeAnnouncementPayload(
     std::string announcementType) const
 {
+    const relaydesk::storage::LocalIdentity localIdentity = [this] {
+        std::lock_guard lock(*mutex_);
+        return localIdentity_;
+    }();
     DiscoveryAnnouncement announcement = makeLocalDiscoveryAnnouncement(
-        localIdentity_,
+        localIdentity,
         config_.GetAdvertisedTcpPort(),
         config_.GetCapabilities(),
         relaydesk::core::currentUtcTimestamp());
