@@ -19,6 +19,7 @@ public:
     const std::vector<std::string>& GetLastAddresses() const { return lastAddresses_; }
     std::uint16_t GetTcpPort() const { return tcpPort_; }
     int GetAppVersion() const { return appVersion_; }
+    int GetUnreadMessageCount() const { return unreadMessageCount_; }
     const std::vector<std::string>& GetCapabilities() const { return capabilities_; }
     const std::string& GetFirstSeenAt() const { return firstSeenAt_; }
     const std::string& GetLastSeenAt() const { return lastSeenAt_; }
@@ -35,6 +36,10 @@ public:
     }
     void SetTcpPort(std::uint16_t tcpPort) { tcpPort_ = tcpPort; }
     void SetAppVersion(int appVersion) { appVersion_ = appVersion; }
+    void SetUnreadMessageCount(int unreadMessageCount)
+    {
+        unreadMessageCount_ = unreadMessageCount;
+    }
     void SetCapabilities(std::vector<std::string> capabilities)
     {
         capabilities_ = std::move(capabilities);
@@ -56,6 +61,7 @@ protected:
     std::vector<std::string> lastAddresses_;
     std::uint16_t tcpPort_ = 0;
     int appVersion_ = 0;
+    int unreadMessageCount_ = 0;
     std::vector<std::string> capabilities_;
     std::string firstSeenAt_;
     std::string lastSeenAt_;

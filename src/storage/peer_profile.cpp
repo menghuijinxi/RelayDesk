@@ -48,6 +48,7 @@ void validatePeerProfile(const PeerProfile& profile)
         || profile.GetDisplayName().empty()
         || profile.GetTcpPort() < kMinTcpPort
         || profile.GetAppVersion() < 0
+        || profile.GetUnreadMessageCount() < 0
         || profile.GetFirstSeenAt().empty()
         || profile.GetLastSeenAt().empty()) {
         throw std::runtime_error("Peer profile contains invalid required fields.");
@@ -98,6 +99,23 @@ int readOptionalAppVersion(const nlohmann::json& value)
     return appVersion;
 }
 
+int readOptionalUnreadMessageCount(const nlohmann::json& value)
+{
+    if (!value.contains("unread_count")) {
+        return 0;
+    }
+
+    if (!value["unread_count"].is_number_integer()) {
+        throw std::runtime_error("Peer profile unread_count is invalid.");
+    }
+
+    const int unreadMessageCount = value["unread_count"].get<int>();
+    if (unreadMessageCount < 0) {
+        throw std::runtime_error("Peer profile unread_count is invalid.");
+    }
+    return unreadMessageCount;
+}
+
 std::vector<std::string> readStringList(const nlohmann::json& value,
                                         const char* fieldName)
 {
@@ -140,6 +158,7 @@ nlohmann::json toJson(const PeerProfile& profile)
         {"last_addresses", profile.GetLastAddresses()},
         {"tcp_port", profile.GetTcpPort()},
         {"app_version", profile.GetAppVersion()},
+        {"unread_count", profile.GetUnreadMessageCount()},
         {"capabilities", profile.GetCapabilities()},
         {"first_seen_at", profile.GetFirstSeenAt()},
         {"last_seen_at", profile.GetLastSeenAt()},
@@ -160,6 +179,7 @@ PeerProfile fromJson(const nlohmann::json& value)
     profile.SetLastAddresses(readStringList(value, "last_addresses"));
     profile.SetTcpPort(readRequiredTcpPort(value));
     profile.SetAppVersion(readOptionalAppVersion(value));
+    profile.SetUnreadMessageCount(readOptionalUnreadMessageCount(value));
     profile.SetCapabilities(readStringList(value, "capabilities"));
     profile.SetFirstSeenAt(readRequiredString(value, "first_seen_at"));
     profile.SetLastSeenAt(readRequiredString(value, "last_seen_at"));

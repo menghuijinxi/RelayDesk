@@ -63,6 +63,7 @@ public:
     {
         return lastConversationAt_;
     }
+    int GetUnreadMessageCount() const { return unreadMessageCount_; }
     std::uint16_t GetTcpPort() const { return tcpPort_; }
     int GetAppVersion() const { return appVersion_; }
     std::chrono::steady_clock::time_point GetLastOnlineSignalAt() const
@@ -77,6 +78,7 @@ public:
     void SetAddress(std::string address);
     void SetLastSeenAt(std::string lastSeenAt);
     void SetLastConversationAt(std::string lastConversationAt);
+    void SetUnreadMessageCount(int unreadMessageCount);
     void SetTcpPort(std::uint16_t tcpPort);
     void SetAppVersion(int appVersion);
     void SetLastOnlineSignalAt(std::chrono::steady_clock::time_point signalAt);
@@ -89,6 +91,7 @@ protected:
     std::string address_;
     std::string lastSeenAt_;
     std::string lastConversationAt_;
+    int unreadMessageCount_ = 0;
     std::uint16_t tcpPort_ = 0;
     int appVersion_ = 0;
     std::chrono::steady_clock::time_point lastOnlineSignalAt_{};
@@ -460,6 +463,10 @@ protected:
     void sortPeers();
     void updatePeerLastConversationAt(const std::string& peerDeviceId,
                                       const std::string& lastConversationAt);
+    void incrementPeerUnreadMessageCount(const std::string& peerDeviceId);
+    void clearPeerUnreadMessageCount(const std::string& peerDeviceId);
+    void savePeerUnreadMessageCount(const std::string& peerDeviceId,
+                                    int unreadMessageCount);
     void syncSelectedPeer();
     void setSelectedPeerDeviceId(std::string deviceId);
     void loadSelectedPeerMessages();

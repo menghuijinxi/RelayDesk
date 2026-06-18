@@ -175,9 +175,9 @@ if(RELAYDESK_HAS_EUI_NEO)
 
     if(MSVC)
         target_compile_options(relaydesk PRIVATE /W4 /permissive- /utf-8)
-        # MSVC 14.51 can hit an internal compiler error in <filesystem> while
-        # optimizing this large translation unit in Release builds.
-        set_source_files_properties(src/main/app_runtime.cpp PROPERTIES
+        # MSVC 14.51 can hit internal compiler errors while optimizing these
+        # large UI/runtime translation units in Release builds.
+        set_source_files_properties(src/main/app.cpp src/main/app_runtime.cpp PROPERTIES
             COMPILE_OPTIONS "$<$<CONFIG:Release>:/Od>;$<$<CONFIG:Release>:/Ob0>")
     endif()
 

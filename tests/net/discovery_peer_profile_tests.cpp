@@ -107,6 +107,10 @@ int updatesPeerProfileAndPreservesFirstSeen()
         appPaths,
         makeAnnouncement("2026-06-12T10:00:00Z"),
         "192.168.1.42"));
+    auto existingProfile =
+        relaydesk::storage::loadPeerProfile(appPaths, "peer-device");
+    existingProfile.SetUnreadMessageCount(3);
+    relaydesk::storage::savePeerProfile(appPaths, existingProfile);
 
     auto update = makeAnnouncement("2026-06-12T10:15:00Z");
     update.SetDisplayName("Alice-Renamed");
@@ -143,6 +147,12 @@ int updatesPeerProfileAndPreservesFirstSeen()
 
     if (const int result = expect(profile.GetLastAddresses().size() == 2,
                                   "Updated peer address count mismatch.");
+        result != 0) {
+        return result;
+    }
+
+    if (const int result = expect(profile.GetUnreadMessageCount() == 3,
+                                  "Updated peer unread count should be preserved.");
         result != 0) {
         return result;
     }

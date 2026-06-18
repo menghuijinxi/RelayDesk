@@ -57,6 +57,7 @@ relaydesk::storage::PeerProfile makeProfile(const std::string& deviceId)
     profile.SetLastAddresses({"192.168.1.42", "fe80::42"});
     profile.SetTcpPort(39171);
     profile.SetAppVersion(7);
+    profile.SetUnreadMessageCount(2);
     profile.SetCapabilities({"text", "emoji", "file", "folder"});
     profile.SetFirstSeenAt("2026-06-12T10:00:00Z");
     profile.SetLastSeenAt("2026-06-12T10:05:00Z");
@@ -107,6 +108,12 @@ int savesAndLoadsPeerProfile()
         return result;
     }
 
+    if (const int result = expect(loaded.GetUnreadMessageCount() == 2,
+                                  "Peer unread count did not round-trip.");
+        result != 0) {
+        return result;
+    }
+
     return expect(loaded.GetCapabilities().size() == 4,
                   "Peer capabilities did not round-trip.");
 }
@@ -132,8 +139,14 @@ int loadsLegacyPeerProfileWithoutAppVersion()
 
     const auto loaded =
         relaydesk::storage::loadPeerProfile(appPaths, "peer-device-legacy");
-    return expect(loaded.GetAppVersion() == 0,
-                  "Legacy peer app version should default to zero.");
+    if (const int result = expect(loaded.GetAppVersion() == 0,
+                                  "Legacy peer app version should default to zero.");
+        result != 0) {
+        return result;
+    }
+
+    return expect(loaded.GetUnreadMessageCount() == 0,
+                  "Legacy peer unread count should default to zero.");
 }
 
 int updatesExistingPeerProfile()
@@ -248,6 +261,37 @@ int rejectsUnsafePeerDeviceId()
     return fail("Unsafe peer device ID was accepted.");
 }
 
+int rejectsInvalidUnreadMessageCount()
+{
+    const auto appPaths = makeAppPaths("invalid-unread");
+    const std::filesystem::path profilePath =
+        relaydesk::storage::getPeerProfileFilePath(appPaths, "peer-device-5");
+    writeJsonFile(
+        profilePath,
+        nlohmann::json{
+            {"schema_version", 1},
+            {"device_id", "peer-device-5"},
+            {"host_name", "DESKTOP-OFFICE-12"},
+            {"display_name", "Alice-PC"},
+            {"last_addresses", {"192.168.1.42"}},
+            {"tcp_port", 39171},
+            {"app_version", 7},
+            {"unread_count", -1},
+            {"capabilities", {"text"}},
+            {"first_seen_at", "2026-06-12T10:00:00Z"},
+            {"last_seen_at", "2026-06-12T10:05:00Z"},
+        });
+
+    try {
+        static_cast<void>(relaydesk::storage::loadPeerProfile(appPaths,
+                                                              "peer-device-5"));
+    } catch (const std::exception&) {
+        return 0;
+    }
+
+    return fail("Invalid peer unread count was accepted.");
+}
+
 } // namespace
 
 int main()
@@ -279,6 +323,10 @@ int main()
     }
 
     if (const int result = rejectsUnsafePeerDeviceId(); result != 0) {
+        return result;
+    }
+
+    if (const int result = rejectsInvalidUnreadMessageCount(); result != 0) {
         return result;
     }
 

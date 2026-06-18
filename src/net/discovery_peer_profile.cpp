@@ -113,6 +113,7 @@ relaydesk::storage::PeerProfile upsertPeerProfileFromDiscovery(
         announcement,
         existingProfile.GetFirstSeenAt(),
         mergeObservedAddress(existingProfile.GetLastAddresses(), observedAddress));
+    updatedProfile.SetUnreadMessageCount(existingProfile.GetUnreadMessageCount());
     relaydesk::storage::savePeerProfile(appPaths, updatedProfile);
     return updatedProfile;
 }

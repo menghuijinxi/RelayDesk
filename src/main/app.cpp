@@ -187,6 +187,7 @@ struct PeerPreview {
     std::string address;
     bool online;
     bool selected;
+    int unreadCount;
 };
 
 struct TransferPreview {
@@ -3707,6 +3708,36 @@ void peerRow(eui::Ui& ui,
          15.0f);
     text(ui, id + ".ip", x + 88.0f, y + 23.0f, width - 110.0f, 22.0f, peer.address,
          13.0f, kMutedText);
+
+    if (peer.unreadCount > 0) {
+        const std::string unreadText =
+            peer.unreadCount > 99 ? "99+" : std::to_string(peer.unreadCount);
+        const float badgeWidth = unreadText.size() >= 3
+            ? 30.0f
+            : (unreadText.size() == 2 ? 26.0f : 22.0f);
+        const float badgeHeight = 22.0f;
+        const float badgeX = x + 66.0f;
+        const float badgeY = y - 7.0f;
+        rect(ui,
+             id + ".unread.bg",
+             badgeX,
+             badgeY,
+             badgeWidth,
+             badgeHeight,
+             Color{0.980f, 0.290f, 0.320f, 1.0f},
+             badgeHeight * 0.5f,
+             Color{1.0f, 1.0f, 1.0f, 1.0f});
+        text(ui,
+             id + ".unread.text",
+             badgeX,
+             badgeY + 2.0f,
+             badgeWidth,
+             16.0f,
+             unreadText,
+             11.0f,
+             Color{1.0f, 1.0f, 1.0f, 1.0f},
+             eui::HorizontalAlign::Center);
+    }
 }
 
 void messageBubble(eui::Ui& ui,
@@ -4794,6 +4825,7 @@ std::vector<PeerPreview> makePeerPreviews(
             peer.GetAddress(),
             peer.GetOnline(),
             peer.GetDeviceId() == selectedDeviceId,
+            peer.GetUnreadMessageCount(),
         });
     }
     return result;
@@ -4885,14 +4917,17 @@ void drawPeerList(eui::Ui& ui, float x, float width, float height)
          "在线 (5)", 15.0f);
 
     const std::array peers{
-        PeerPreview{"demo-alex", "Alex-PC", "192.168.1.24", true, true},
-        PeerPreview{"demo-desktop", "DESKTOP-J8K2TQ", "192.168.1.31", true, false},
-        PeerPreview{"demo-laptop", "LAPTOP-9F3V2M", "192.168.1.42", true, false},
-        PeerPreview{"demo-server", "DEV-SERVER", "192.168.1.10", true, false},
-        PeerPreview{"demo-mark", "MARK-PC", "192.168.1.77", true, false},
-        PeerPreview{"demo-finance", "FINANCE-PC", "192.168.1.15", false, false},
-        PeerPreview{"demo-hr", "HR-LAPTOP", "192.168.1.28", false, false},
-        PeerPreview{"demo-old", "OLD-PC", "192.168.1.55", false, false},
+        PeerPreview{"demo-alex", "Alex-PC", "192.168.1.24", true, true, 0},
+        PeerPreview{
+            "demo-desktop", "DESKTOP-J8K2TQ", "192.168.1.31", true, false, 0},
+        PeerPreview{
+            "demo-laptop", "LAPTOP-9F3V2M", "192.168.1.42", true, false, 0},
+        PeerPreview{"demo-server", "DEV-SERVER", "192.168.1.10", true, false, 0},
+        PeerPreview{"demo-mark", "MARK-PC", "192.168.1.77", true, false, 0},
+        PeerPreview{
+            "demo-finance", "FINANCE-PC", "192.168.1.15", false, false, 0},
+        PeerPreview{"demo-hr", "HR-LAPTOP", "192.168.1.28", false, false, 0},
+        PeerPreview{"demo-old", "OLD-PC", "192.168.1.55", false, false, 0},
     };
 
     const float rowGap = height < 740.0f ? 59.0f : 72.0f;

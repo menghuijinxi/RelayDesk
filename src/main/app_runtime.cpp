@@ -140,6 +140,7 @@ PeerListItem makePeerListItem(const relaydesk::storage::PeerProfile& profile,
     item.SetHostName(profile.GetHostName());
     item.SetAddress(choosePeerAddress(profile));
     item.SetLastSeenAt(profile.GetLastSeenAt());
+    item.SetUnreadMessageCount(profile.GetUnreadMessageCount());
     item.SetTcpPort(profile.GetTcpPort());
     item.SetAppVersion(profile.GetAppVersion());
     item.SetOnline(online);
@@ -1727,6 +1728,11 @@ void PeerListItem::SetLastConversationAt(std::string lastConversationAt)
     lastConversationAt_ = std::move(lastConversationAt);
 }
 
+void PeerListItem::SetUnreadMessageCount(int unreadMessageCount)
+{
+    unreadMessageCount_ = unreadMessageCount;
+}
+
 void PeerListItem::SetTcpPort(std::uint16_t tcpPort)
 {
     tcpPort_ = tcpPort;
@@ -2241,6 +2247,8 @@ void RelayDeskRuntime::selectPeer(std::string deviceId)
     }
 
     setSelectedPeerDeviceId(std::move(deviceId));
+    clearPeerUnreadMessageCount(selected->GetDeviceId());
+    requestUiRefresh();
 }
 
 void RelayDeskRuntime::sendMessagePartsToSelectedPeer(
@@ -3655,6 +3663,9 @@ void RelayDeskRuntime::appendSelectedPeerMessage(
     relaydesk::storage::appendChatMessage(appPaths, peerDeviceId, record);
     if (peerDeviceId == selectedPeerDeviceId_) {
         selectedPeerMessages_.push_back(record);
+    } else if (record.GetDirection()
+               == relaydesk::storage::MessageDirection::Incoming) {
+        incrementPeerUnreadMessageCount(peerDeviceId);
     }
     updatePeerLastConversationAt(peerDeviceId, record.GetCreatedAt());
 }
@@ -4081,9 +4092,78 @@ void RelayDeskRuntime::updatePeerLastConversationAt(
     sortPeers();
 }
 
+void RelayDeskRuntime::incrementPeerUnreadMessageCount(
+    const std::string& peerDeviceId)
+{
+    const auto peer = std::find_if(
+        peers_.begin(),
+        peers_.end(),
+        [&peerDeviceId](const PeerListItem& item) {
+            return item.GetDeviceId() == peerDeviceId;
+        });
+    const int unreadMessageCount = peer == peers_.end()
+        ? 1
+        : peer->GetUnreadMessageCount() + 1;
+    savePeerUnreadMessageCount(peerDeviceId, unreadMessageCount);
+}
+
+void RelayDeskRuntime::clearPeerUnreadMessageCount(
+    const std::string& peerDeviceId)
+{
+    if (peerDeviceId.empty()) {
+        return;
+    }
+
+    const auto peer = std::find_if(
+        peers_.begin(),
+        peers_.end(),
+        [&peerDeviceId](const PeerListItem& item) {
+            return item.GetDeviceId() == peerDeviceId;
+        });
+    if (peer != peers_.end() && peer->GetUnreadMessageCount() == 0) {
+        return;
+    }
+
+    savePeerUnreadMessageCount(peerDeviceId, 0);
+}
+
+void RelayDeskRuntime::savePeerUnreadMessageCount(
+    const std::string& peerDeviceId,
+    int unreadMessageCount)
+{
+    if (peerDeviceId.empty() || unreadMessageCount < 0 || !storageAvailable_) {
+        return;
+    }
+
+    const auto peer = std::find_if(
+        peers_.begin(),
+        peers_.end(),
+        [&peerDeviceId](const PeerListItem& item) {
+            return item.GetDeviceId() == peerDeviceId;
+        });
+    if (peer != peers_.end()) {
+        peer->SetUnreadMessageCount(unreadMessageCount);
+    }
+
+    try {
+        const auto appPaths = relaydesk::storage::createAppPaths();
+        relaydesk::storage::PeerProfile profile =
+            relaydesk::storage::loadPeerProfile(appPaths, peerDeviceId);
+        if (profile.GetUnreadMessageCount() == unreadMessageCount) {
+            return;
+        }
+        profile.SetUnreadMessageCount(unreadMessageCount);
+        relaydesk::storage::savePeerProfile(appPaths, profile);
+    } catch (const std::exception& error) {
+        logDiagnostic("runtime.peer.unread_save_failed device_id="
+                      + peerDeviceId
+                      + " message=" + error.what());
+    }
+}
+
 void RelayDeskRuntime::syncSelectedPeer()
 {
-    if (peers_.empty()) {
+    if (peers_.empty() || selectedPeerDeviceId_.empty()) {
         setSelectedPeerDeviceId({});
         return;
     }
@@ -4095,7 +4175,7 @@ void RelayDeskRuntime::syncSelectedPeer()
             return peer.GetDeviceId() == selectedPeerDeviceId_;
         });
     if (selected == peers_.end()) {
-        setSelectedPeerDeviceId(peers_.front().GetDeviceId());
+        setSelectedPeerDeviceId({});
     }
 }
 
