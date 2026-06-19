@@ -54,7 +54,7 @@ constexpr const char* kDiscoveryLogFileName = "discovery.log";
 constexpr auto kPeerOnlineTimeout = 10s;
 constexpr auto kPeerStatusRefreshInterval = 1s;
 #if defined(RELAYDESK_HAS_BOOST_ASIO)
-constexpr std::uintmax_t kTransferChunkSize = 256u * 1024u;
+constexpr std::uintmax_t kTransferChunkSize = 1024u * 1024u;
 constexpr const char* kAppUpdateTempDirectoryName = "updates";
 constexpr const char* kAppUpdateTempFileName = "relaydesk-update.exe";
 constexpr const char* kAppUpdateScriptFileName = "apply-update.cmd";
@@ -1472,6 +1472,18 @@ public:
         transport_->sendFrameTo(address, port, frame);
     }
 
+    void sendFramesTo(
+        const std::string& address,
+        std::uint16_t port,
+        const relaydesk::net::TcpPeerFrameProducer& frameProducer,
+        const relaydesk::net::TcpPeerFrameSentCallback& frameSentCallback = {})
+    {
+        transport_->sendFramesTo(address,
+                                 port,
+                                 frameProducer,
+                                 frameSentCallback);
+    }
+
 protected:
     std::unique_ptr<relaydesk::net::BoostAsioTcpPeerTransport> transport_;
 #endif
@@ -1514,65 +1526,77 @@ void sendTransferPartFrames(
 
     const std::string fileName = chooseTransferFileName(part, localPath);
     const std::uintmax_t fileSize = std::filesystem::file_size(payloadPath);
-    if (cancelToken.canceled()) {
-        return;
-    }
-    transport.sendFrameTo(
-        peer.GetAddress(),
-        peer.GetTcpPort(),
-        relaydesk::net::makeTransferOfferFrame(
-            makeTransferOfferMessage(record, part, fileName, fileSize)));
-
     std::ifstream input(payloadPath, std::ios::binary);
     if (!input) {
         throw std::runtime_error("Failed to open transfer source file.");
+    }
+    if (cancelToken.canceled()) {
+        return;
     }
 
     std::vector<std::uint8_t> buffer(
         static_cast<std::size_t>(kTransferChunkSize));
     std::uintmax_t offset = 0;
-    while (input) {
-        if (cancelToken.canceled()) {
-            return;
-        }
-        input.read(reinterpret_cast<char*>(buffer.data()),
-                   static_cast<std::streamsize>(buffer.size()));
-        const std::streamsize readSize = input.gcount();
-        if (readSize <= 0) {
-            break;
-        }
-
-        std::vector<std::uint8_t> chunk(
-            buffer.begin(),
-            buffer.begin() + readSize);
-        if (cancelToken.canceled()) {
-            return;
-        }
-        transport.sendFrameTo(
-            peer.GetAddress(),
-            peer.GetTcpPort(),
-            relaydesk::net::makeTransferChunkFrame(
-                makeTransferChunkMessage(record, part, offset),
-                std::move(chunk)));
-        offset += static_cast<std::uintmax_t>(readSize);
-        onProgress(record.GetMessageId(),
-                   part.GetPartId(),
-                   part.GetTransferId().value(),
-                   offset);
-    }
-
-    if (offset != fileSize) {
-        throw std::runtime_error("Transfer source file changed while sending.");
-    }
-    if (cancelToken.canceled()) {
-        return;
-    }
-
-    transport.sendFrameTo(
+    std::optional<std::uintmax_t> sentChunkOffset;
+    bool offerFrameSent = false;
+    bool completeFrameSent = false;
+    transport.sendFramesTo(
         peer.GetAddress(),
         peer.GetTcpPort(),
-        relaydesk::net::makeTransferCompleteFrame(
-            makeTransferCompleteMessage(record, part, fileSize)));
+        [&]() -> std::optional<relaydesk::net::PeerFrame> {
+            if (cancelToken.canceled()) {
+                return std::nullopt;
+            }
+            if (!offerFrameSent) {
+                offerFrameSent = true;
+                return relaydesk::net::makeTransferOfferFrame(
+                    makeTransferOfferMessage(record, part, fileName, fileSize));
+            }
+            if (input) {
+                input.read(reinterpret_cast<char*>(buffer.data()),
+                           static_cast<std::streamsize>(buffer.size()));
+                const std::streamsize readSize = input.gcount();
+                if (readSize > 0) {
+                    std::vector<std::uint8_t> chunk(
+                        buffer.begin(),
+                        buffer.begin() + readSize);
+                    const std::uintmax_t chunkOffset = offset;
+                    offset += static_cast<std::uintmax_t>(readSize);
+                    sentChunkOffset = offset;
+                    return relaydesk::net::makeTransferChunkFrame(
+                        makeTransferChunkMessage(record, part, chunkOffset),
+                        std::move(chunk));
+                }
+            }
+
+            if (offset != fileSize) {
+                throw std::runtime_error(
+                    "Transfer source file changed while sending.");
+            }
+            if (completeFrameSent) {
+                return std::nullopt;
+            }
+            completeFrameSent = true;
+            return relaydesk::net::makeTransferCompleteFrame(
+                makeTransferCompleteMessage(record, part, fileSize));
+        },
+        [&]() {
+            if (!sentChunkOffset.has_value()) {
+                return;
+            }
+            onProgress(record.GetMessageId(),
+                       part.GetPartId(),
+                       part.GetTransferId().value(),
+                       sentChunkOffset.value());
+            sentChunkOffset.reset();
+        });
+
+    if (offset != fileSize) {
+        if (cancelToken.canceled()) {
+            return;
+        }
+        throw std::runtime_error("Transfer source file changed while sending.");
+    }
 }
 
 void sendImmediateTransferFrames(
@@ -1660,47 +1684,54 @@ void sendAppUpdatePackageFrames(
     std::vector<std::uint8_t> buffer(
         static_cast<std::size_t>(kTransferChunkSize));
     std::uintmax_t offset = 0;
-    while (input) {
-        if (cancelToken.canceled()) {
-            return;
-        }
-        input.read(reinterpret_cast<char*>(buffer.data()),
-                   static_cast<std::streamsize>(buffer.size()));
-        const std::streamsize readSize = input.gcount();
-        if (readSize <= 0) {
-            break;
-        }
+    bool completeFrameSent = false;
+    transport.sendFramesTo(
+        peer.GetAddress(),
+        peer.GetTcpPort(),
+        [&]() -> std::optional<relaydesk::net::PeerFrame> {
+            if (cancelToken.canceled()) {
+                return std::nullopt;
+            }
+            if (input) {
+                input.read(reinterpret_cast<char*>(buffer.data()),
+                           static_cast<std::streamsize>(buffer.size()));
+                const std::streamsize readSize = input.gcount();
+                if (readSize > 0) {
+                    std::vector<std::uint8_t> chunk(
+                        buffer.begin(),
+                        buffer.begin() + readSize);
+                    const std::uintmax_t chunkOffset = offset;
+                    offset += static_cast<std::uintmax_t>(readSize);
+                    return relaydesk::net::makeAppUpdateChunkFrame(
+                        makeAppUpdateChunkMessage(request.GetRequestId(),
+                                                  chunkOffset,
+                                                  fileSize),
+                        std::move(chunk));
+                }
+            }
 
-        std::vector<std::uint8_t> chunk(buffer.begin(),
-                                        buffer.begin() + readSize);
-        if (cancelToken.canceled()) {
-            return;
-        }
-        transport.sendFrameTo(
-            peer.GetAddress(),
-            peer.GetTcpPort(),
-            relaydesk::net::makeAppUpdateChunkFrame(
-                makeAppUpdateChunkMessage(request.GetRequestId(), offset, fileSize),
-                std::move(chunk)));
-        offset += static_cast<std::uintmax_t>(readSize);
-    }
+            if (offset != fileSize) {
+                throw std::runtime_error(
+                    "App update source executable changed while sending.");
+            }
+            if (completeFrameSent) {
+                return std::nullopt;
+            }
+            completeFrameSent = true;
+            return relaydesk::net::makeAppUpdateCompleteFrame(
+                makeAppUpdateCompleteMessage(request.GetRequestId(),
+                                             relaydesk::core::kAppVersion,
+                                             fileName,
+                                             fileSize));
+        });
 
     if (offset != fileSize) {
+        if (cancelToken.canceled()) {
+            return;
+        }
         throw std::runtime_error(
             "App update source executable changed while sending.");
     }
-    if (cancelToken.canceled()) {
-        return;
-    }
-
-    transport.sendFrameTo(
-        peer.GetAddress(),
-        peer.GetTcpPort(),
-        relaydesk::net::makeAppUpdateCompleteFrame(
-            makeAppUpdateCompleteMessage(request.GetRequestId(),
-                                         relaydesk::core::kAppVersion,
-                                         fileName,
-                                         fileSize)));
 }
 #endif
 

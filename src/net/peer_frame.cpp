@@ -18,6 +18,14 @@ void appendUint16(std::vector<std::uint8_t>& bytes, std::uint16_t value)
     bytes.push_back(static_cast<std::uint8_t>(value & 0xFFu));
 }
 
+void appendUint16(std::array<std::uint8_t, kPeerFrameHeaderSize>& bytes,
+                  std::size_t& offset,
+                  std::uint16_t value)
+{
+    bytes[offset++] = static_cast<std::uint8_t>((value >> 8) & 0xFFu);
+    bytes[offset++] = static_cast<std::uint8_t>(value & 0xFFu);
+}
+
 void appendUint32(std::vector<std::uint8_t>& bytes, std::uint32_t value)
 {
     bytes.push_back(static_cast<std::uint8_t>((value >> 24) & 0xFFu));
@@ -26,10 +34,30 @@ void appendUint32(std::vector<std::uint8_t>& bytes, std::uint32_t value)
     bytes.push_back(static_cast<std::uint8_t>(value & 0xFFu));
 }
 
+void appendUint32(std::array<std::uint8_t, kPeerFrameHeaderSize>& bytes,
+                  std::size_t& offset,
+                  std::uint32_t value)
+{
+    bytes[offset++] = static_cast<std::uint8_t>((value >> 24) & 0xFFu);
+    bytes[offset++] = static_cast<std::uint8_t>((value >> 16) & 0xFFu);
+    bytes[offset++] = static_cast<std::uint8_t>((value >> 8) & 0xFFu);
+    bytes[offset++] = static_cast<std::uint8_t>(value & 0xFFu);
+}
+
 void appendUint64(std::vector<std::uint8_t>& bytes, std::uint64_t value)
 {
     for (int shift = 56; shift >= 0; shift -= 8) {
         bytes.push_back(static_cast<std::uint8_t>((value >> shift) & 0xFFu));
+    }
+}
+
+void appendUint64(std::array<std::uint8_t, kPeerFrameHeaderSize>& bytes,
+                  std::size_t& offset,
+                  std::uint64_t value)
+{
+    for (int shift = 56; shift >= 0; shift -= 8) {
+        bytes[offset++] =
+            static_cast<std::uint8_t>((value >> shift) & 0xFFu);
     }
 }
 
@@ -195,20 +223,36 @@ PeerFrameType peerFrameTypeFromWireValue(std::uint16_t value)
 
 std::vector<std::uint8_t> encodePeerFrame(const PeerFrame& frame)
 {
-    validateFrameForEncoding(frame);
-
     std::vector<std::uint8_t> bytes;
     bytes.reserve(kPeerFrameHeaderSize
                   + frame.GetHeader().size()
                   + frame.GetBody().size());
-    bytes.insert(bytes.end(), kMagic.begin(), kMagic.end());
-    appendUint16(bytes, frame.GetVersion());
-    appendUint16(bytes, toWireValue(frame.GetType()));
-    appendUint32(bytes, frame.GetFlags());
-    appendUint32(bytes, static_cast<std::uint32_t>(frame.GetHeader().size()));
-    appendUint64(bytes, static_cast<std::uint64_t>(frame.GetBody().size()));
+    const std::array<std::uint8_t, kPeerFrameHeaderSize> header =
+        encodePeerFrameHeader(frame);
+    bytes.insert(bytes.end(), header.begin(), header.end());
     bytes.insert(bytes.end(), frame.GetHeader().begin(), frame.GetHeader().end());
     bytes.insert(bytes.end(), frame.GetBody().begin(), frame.GetBody().end());
+    return bytes;
+}
+
+std::array<std::uint8_t, kPeerFrameHeaderSize> encodePeerFrameHeader(
+    const PeerFrame& frame)
+{
+    validateFrameForEncoding(frame);
+
+    std::array<std::uint8_t, kPeerFrameHeaderSize> bytes{};
+    std::size_t offset = 0;
+    std::copy(kMagic.begin(), kMagic.end(), bytes.begin());
+    offset += kMagic.size();
+    appendUint16(bytes, offset, frame.GetVersion());
+    appendUint16(bytes, offset, toWireValue(frame.GetType()));
+    appendUint32(bytes, offset, frame.GetFlags());
+    appendUint32(bytes,
+                 offset,
+                 static_cast<std::uint32_t>(frame.GetHeader().size()));
+    appendUint64(bytes,
+                 offset,
+                 static_cast<std::uint64_t>(frame.GetBody().size()));
     return bytes;
 }
 

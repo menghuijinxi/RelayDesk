@@ -20,6 +20,7 @@ public:
     std::mutex mutex;
     std::condition_variable condition;
     std::optional<relaydesk::net::PeerFrame> frame;
+    std::vector<relaydesk::net::PeerFrame> frames;
     std::string remoteAddress;
     std::uint16_t remotePort = 0;
     std::vector<std::string> errors;
@@ -93,6 +94,14 @@ bool waitForFrameOrError(ReceivedFrameState& state)
     std::unique_lock lock(state.mutex);
     return state.condition.wait_for(lock, 2s, [&state] {
         return state.frame.has_value() || !state.errors.empty();
+    });
+}
+
+bool waitForFrameCountOrError(ReceivedFrameState& state, std::size_t count)
+{
+    std::unique_lock lock(state.mutex);
+    return state.condition.wait_for(lock, 2s, [&state, count] {
+        return state.frames.size() >= count || !state.errors.empty();
     });
 }
 
@@ -239,6 +248,86 @@ int sendsAndReceivesTransferChunkFrame()
                   "Received TCP chunk body mismatch.");
 }
 
+int sendsAndReceivesMultipleFramesOverOneConnection()
+{
+    ReceivedFrameState state;
+    relaydesk::net::BoostAsioTcpPeerTransport receiver(0);
+    receiver.SetFrameCallback(
+        [&state](relaydesk::net::PeerFrame frame,
+                 std::string remoteAddress,
+                 std::uint16_t remotePort) {
+            {
+                std::lock_guard lock(state.mutex);
+                state.frames.push_back(std::move(frame));
+                state.remoteAddress = std::move(remoteAddress);
+                state.remotePort = remotePort;
+            }
+            state.condition.notify_all();
+        });
+    receiver.SetErrorCallback(
+        [&state](std::string message) {
+            {
+                std::lock_guard lock(state.mutex);
+                state.errors.push_back(std::move(message));
+            }
+            state.condition.notify_all();
+        });
+    receiver.start();
+
+    int nextFrame = 0;
+    relaydesk::net::BoostAsioTcpPeerTransport sender(0);
+    sender.sendFramesTo(
+        "127.0.0.1",
+        receiver.GetLocalPort(),
+        [&nextFrame]() -> std::optional<relaydesk::net::PeerFrame> {
+            ++nextFrame;
+            if (nextFrame == 1) {
+                return relaydesk::net::makeChatMessageFrame(makeChatRecord());
+            }
+            if (nextFrame == 2) {
+                const std::vector<std::uint8_t> body{0x05, 0x06};
+                return relaydesk::net::makeTransferChunkFrame(
+                    makeTransferChunk(),
+                    body);
+            }
+            return std::nullopt;
+        });
+
+    const bool received = waitForFrameCountOrError(state, 2);
+    receiver.stop();
+
+    if (const int check = expect(received,
+                                 "TCP peer transport did not receive both frames.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(state.errors.empty(),
+                                 "TCP peer transport reported a multi-frame error.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(state.frames.size() == 2,
+                                 "TCP peer transport multi-frame count mismatch.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(state.frames[0].GetType()
+                                     == relaydesk::net::PeerFrameType::ChatMessage,
+                                 "First multi-frame type mismatch.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(state.frames[1].GetType()
+                                     == relaydesk::net::PeerFrameType::TransferChunk,
+                                 "Second multi-frame type mismatch.");
+        check != 0) {
+        return check;
+    }
+
+    return expect(!state.remoteAddress.empty() && state.remotePort > 0,
+                  "TCP peer transport multi-frame endpoint was missing.");
+}
+
 } // namespace
 
 int main()
@@ -247,7 +336,10 @@ int main()
         if (const int result = sendsAndReceivesChatMessageFrame(); result != 0) {
             return result;
         }
-        return sendsAndReceivesTransferChunkFrame();
+        if (const int result = sendsAndReceivesTransferChunkFrame(); result != 0) {
+            return result;
+        }
+        return sendsAndReceivesMultipleFramesOverOneConnection();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

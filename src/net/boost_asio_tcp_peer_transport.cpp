@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
@@ -22,6 +23,7 @@ using namespace std::chrono_literals;
 
 constexpr std::uint16_t kMinTcpPort = 1;
 constexpr auto kAcceptPollInterval = 5ms;
+constexpr int kPeerTcpBufferSize = 4 * 1024 * 1024;
 
 void throwNetworkError(const char* action, const boost::system::error_code& error)
 {
@@ -52,13 +54,33 @@ void readExact(tcp::socket& socket, boost::asio::mutable_buffer buffer)
     }
 }
 
-void writeAll(tcp::socket& socket, const std::vector<std::uint8_t>& bytes)
+void writeFrame(tcp::socket& socket, const PeerFrame& frame)
 {
+    const std::array<std::uint8_t, kPeerFrameHeaderSize> header =
+        encodePeerFrameHeader(frame);
+    const std::array<boost::asio::const_buffer, 3> buffers{{
+        boost::asio::buffer(header),
+        boost::asio::buffer(frame.GetHeader()),
+        boost::asio::buffer(frame.GetBody()),
+    }};
+
     boost::system::error_code error;
-    boost::asio::write(socket, boost::asio::buffer(bytes), error);
+    boost::asio::write(socket, buffers, error);
     if (error) {
         throwNetworkError("Failed to write peer TCP frame", error);
     }
+}
+
+void configureSocketForFrameTransfer(tcp::socket& socket)
+{
+    boost::system::error_code ignoredError;
+    socket.set_option(tcp::no_delay(true), ignoredError);
+    socket.set_option(
+        boost::asio::socket_base::send_buffer_size(kPeerTcpBufferSize),
+        ignoredError);
+    socket.set_option(
+        boost::asio::socket_base::receive_buffer_size(kPeerTcpBufferSize),
+        ignoredError);
 }
 
 bool isExpectedAcceptStopError(const boost::system::error_code& error)
@@ -157,6 +179,23 @@ public:
                      std::uint16_t port,
                      const PeerFrame& frame)
     {
+        bool sent = false;
+        sendFramesTo(address, port, [&frame, sent]() mutable
+            -> std::optional<PeerFrame> {
+            if (sent) {
+                return std::nullopt;
+            }
+            sent = true;
+            return frame;
+        });
+    }
+
+    void sendFramesTo(
+        const std::string& address,
+        std::uint16_t port,
+        const TcpPeerFrameProducer& frameProducer,
+        const TcpPeerFrameSentCallback& frameSentCallback = {})
+    {
         boost::asio::io_context clientIoContext;
         tcp::socket socket(clientIoContext);
         boost::system::error_code error;
@@ -164,8 +203,18 @@ public:
         if (error) {
             throwNetworkError("Failed to connect peer TCP socket", error);
         }
+        configureSocketForFrameTransfer(socket);
 
-        writeAll(socket, encodePeerFrame(frame));
+        while (true) {
+            std::optional<PeerFrame> frame = frameProducer();
+            if (!frame.has_value()) {
+                break;
+            }
+            writeFrame(socket, frame.value());
+            if (frameSentCallback) {
+                frameSentCallback();
+            }
+        }
         socket.shutdown(tcp::socket::shutdown_both, error);
         socket.close(error);
     }
@@ -190,7 +239,8 @@ protected:
                     throwNetworkError("Failed to accept peer TCP socket", error);
                 }
 
-                receiveFrame(std::move(socket));
+                configureSocketForFrameTransfer(socket);
+                receiveFrames(std::move(socket));
             } catch (const std::exception& error) {
                 if (!stopping_.load()) {
                     notifyError(error.what());
@@ -199,23 +249,33 @@ protected:
         }
     }
 
-    void receiveFrame(tcp::socket socket)
+    void receiveFrames(tcp::socket socket)
     {
-        std::array<std::uint8_t, kPeerFrameHeaderSize> headerBytes{};
-        readExact(socket, boost::asio::buffer(headerBytes));
-
-        const PeerFrameHeader header = decodePeerFrameHeader(headerBytes);
-        std::vector<std::uint8_t> payload(peerFramePayloadSize(header));
-        if (!payload.empty()) {
-            readExact(socket, boost::asio::buffer(payload));
-        }
-
-        const PeerFrame frame = decodePeerFrame(header, payload);
         boost::system::error_code error;
         const auto endpoint = socket.remote_endpoint(error);
-        notifyFrame(frame,
-                    error ? std::string{} : endpoint.address().to_string(),
-                    error ? 0 : endpoint.port());
+        const std::string remoteAddress =
+            error ? std::string{} : endpoint.address().to_string();
+        const std::uint16_t remotePort = error ? 0 : endpoint.port();
+
+        while (!stopping_.load()) {
+            std::array<std::uint8_t, kPeerFrameHeaderSize> headerBytes{};
+            boost::asio::read(socket, boost::asio::buffer(headerBytes), error);
+            if (error == boost::asio::error::eof
+                || error == boost::asio::error::connection_reset) {
+                return;
+            }
+            if (error) {
+                throwNetworkError("Failed to read peer TCP frame", error);
+            }
+
+            const PeerFrameHeader header = decodePeerFrameHeader(headerBytes);
+            std::vector<std::uint8_t> payload(peerFramePayloadSize(header));
+            if (!payload.empty()) {
+                readExact(socket, boost::asio::buffer(payload));
+            }
+
+            notifyFrame(decodePeerFrame(header, payload), remoteAddress, remotePort);
+        }
     }
 
     void notifyFrame(PeerFrame frame,
@@ -302,6 +362,15 @@ void BoostAsioTcpPeerTransport::sendFrameTo(const std::string& address,
                                             const PeerFrame& frame)
 {
     impl_->sendFrameTo(address, port, frame);
+}
+
+void BoostAsioTcpPeerTransport::sendFramesTo(
+    const std::string& address,
+    std::uint16_t port,
+    const TcpPeerFrameProducer& frameProducer,
+    const TcpPeerFrameSentCallback& frameSentCallback)
+{
+    impl_->sendFramesTo(address, port, frameProducer, frameSentCallback);
 }
 
 }

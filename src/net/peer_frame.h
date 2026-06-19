@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -82,6 +83,8 @@ protected:
 
 std::uint16_t toWireValue(PeerFrameType type);
 PeerFrameType peerFrameTypeFromWireValue(std::uint16_t value);
+std::array<std::uint8_t, kPeerFrameHeaderSize> encodePeerFrameHeader(
+    const PeerFrame& frame);
 std::vector<std::uint8_t> encodePeerFrame(const PeerFrame& frame);
 PeerFrameHeader decodePeerFrameHeader(std::span<const std::uint8_t> bytes);
 std::size_t peerFramePayloadSize(const PeerFrameHeader& header);
