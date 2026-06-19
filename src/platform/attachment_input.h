@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace relaydesk::platform {
@@ -19,6 +20,9 @@ std::optional<std::filesystem::path> createImageThumbnail(
     const std::filesystem::path& sourcePath,
     const std::filesystem::path& targetPath,
     unsigned int maxSide);
+std::optional<std::filesystem::path> selectSavePathFromDialog(
+    const std::filesystem::path& initialDirectory,
+    const std::string& suggestedFileName);
 bool isPasteShortcutDown();
 bool consumeBackspacePressed();
 

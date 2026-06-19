@@ -2355,6 +2355,69 @@ void RelayDeskRuntime::acceptSelectedPeerFileTransfer(const std::string& message
                                                       bool overwriteExisting)
 {
 #if defined(RELAYDESK_HAS_BOOST_ASIO)
+    const auto message = std::find_if(
+        selectedPeerMessages_.begin(),
+        selectedPeerMessages_.end(),
+        [&messageId](const relaydesk::storage::ChatMessageRecord& record) {
+            return record.GetMessageId() == messageId;
+        });
+    if (message == selectedPeerMessages_.end()) {
+        return;
+    }
+
+    const auto part = std::find_if(
+        message->GetParts().begin(),
+        message->GetParts().end(),
+        [&partId](const relaydesk::storage::ChatMessagePart& candidate) {
+            return candidate.GetPartId() == partId;
+        });
+    if (part == message->GetParts().end() || !part->GetFileName().has_value()) {
+        return;
+    }
+
+    const auto appPaths = relaydesk::storage::createAppPaths();
+    const std::filesystem::path desiredPath =
+        makeIncomingDesiredFilePath(appPaths, part->GetFileName().value());
+    acceptSelectedPeerFileTransferToPath(
+        messageId,
+        partId,
+        overwriteExisting ? desiredPath : makeAvailableSiblingPath(desiredPath),
+        overwriteExisting);
+#else
+    (void)messageId;
+    (void)partId;
+    (void)overwriteExisting;
+#endif
+}
+
+void RelayDeskRuntime::acceptSelectedPeerFileTransferAs(
+    const std::string& messageId,
+    const std::string& partId,
+    std::filesystem::path finalPath)
+{
+#if defined(RELAYDESK_HAS_BOOST_ASIO)
+    if (finalPath.empty()) {
+        return;
+    }
+
+    acceptSelectedPeerFileTransferToPath(messageId,
+                                         partId,
+                                         std::move(finalPath),
+                                         true);
+#else
+    (void)messageId;
+    (void)partId;
+    (void)finalPath;
+#endif
+}
+
+void RelayDeskRuntime::acceptSelectedPeerFileTransferToPath(
+    const std::string& messageId,
+    const std::string& partId,
+    std::filesystem::path finalPath,
+    bool overwriteExisting)
+{
+#if defined(RELAYDESK_HAS_BOOST_ASIO)
     const std::optional<PeerListItem> selectedPeer = GetSelectedPeer();
     if (!selectedPeer.has_value()) {
         return;
@@ -2394,11 +2457,6 @@ void RelayDeskRuntime::acceptSelectedPeerFileTransfer(const std::string& message
     }
 
     const auto appPaths = relaydesk::storage::createAppPaths();
-    const std::filesystem::path desiredPath =
-        makeIncomingDesiredFilePath(appPaths, part->GetFileName().value());
-    const std::filesystem::path finalPath = overwriteExisting
-        ? desiredPath
-        : makeAvailableSiblingPath(desiredPath);
     const std::filesystem::path tempPath =
         makeIncomingTempFilePath(appPaths,
                                  part->GetTransferId().value(),
@@ -2491,7 +2549,56 @@ void RelayDeskRuntime::acceptSelectedPeerFileTransfer(const std::string& message
 #else
     (void)messageId;
     (void)partId;
+    (void)finalPath;
     (void)overwriteExisting;
+#endif
+}
+
+void RelayDeskRuntime::sendSelectedPeerFileTransfer(const std::string& messageId,
+                                                    const std::string& partId)
+{
+#if defined(RELAYDESK_HAS_BOOST_ASIO)
+    const std::optional<PeerListItem> selectedPeer = GetSelectedPeer();
+    if (!selectedPeer.has_value()) {
+        return;
+    }
+
+    const auto message = std::find_if(
+        selectedPeerMessages_.begin(),
+        selectedPeerMessages_.end(),
+        [&messageId](const relaydesk::storage::ChatMessageRecord& record) {
+            return record.GetMessageId() == messageId;
+        });
+    if (message == selectedPeerMessages_.end()
+        || message->GetDirection()
+            != relaydesk::storage::MessageDirection::Outgoing) {
+        return;
+    }
+
+    const auto part = std::find_if(
+        message->GetParts().begin(),
+        message->GetParts().end(),
+        [&partId](const relaydesk::storage::ChatMessagePart& candidate) {
+            return candidate.GetPartId() == partId;
+        });
+    if (part == message->GetParts().end()
+        || !isManualTransferInvitePart(*part)
+        || !part->GetTransferId().has_value()
+        || !part->GetTransferState().has_value()
+        || part->GetTransferState().value()
+            != relaydesk::storage::TransferState::Offered) {
+        return;
+    }
+
+    PendingOutgoingTransferRequest request;
+    request.SetReceiverDeviceId(selectedPeer->GetDeviceId());
+    request.SetMessageId(messageId);
+    request.SetPartId(partId);
+    request.SetTransferId(part->GetTransferId().value());
+    enqueueOutgoingTransferRequest(std::move(request));
+#else
+    (void)messageId;
+    (void)partId;
 #endif
 }
 

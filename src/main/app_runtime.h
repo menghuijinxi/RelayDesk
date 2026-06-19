@@ -475,6 +475,11 @@ public:
     void acceptSelectedPeerFileTransfer(const std::string& messageId,
                                         const std::string& partId,
                                         bool overwriteExisting);
+    void acceptSelectedPeerFileTransferAs(const std::string& messageId,
+                                          const std::string& partId,
+                                          std::filesystem::path finalPath);
+    void sendSelectedPeerFileTransfer(const std::string& messageId,
+                                      const std::string& partId);
     void rejectSelectedPeerFileTransfer(const std::string& messageId,
                                         const std::string& partId);
     void cancelSelectedPeerFileTransfer(const std::string& messageId,
@@ -526,6 +531,11 @@ protected:
     void enqueueIncomingChatMessage(
         relaydesk::storage::ChatMessageRecord record);
     void handleIncomingPeerFrame(relaydesk::net::PeerFrame frame);
+    void acceptSelectedPeerFileTransferToPath(
+        const std::string& messageId,
+        const std::string& partId,
+        std::filesystem::path finalPath,
+        bool overwriteExisting);
     void enqueueTransferUpdate(PendingTransferUpdate update);
     void drainPendingTransferUpdates();
     bool updateChatMessageTransferPart(

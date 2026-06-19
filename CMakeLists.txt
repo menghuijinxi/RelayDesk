@@ -264,6 +264,7 @@ if(WIN32)
         src/main/image_attachment_store.cpp
         src/core/uuid.cpp
         src/platform/attachment_input_win.cpp
+        src/platform/text_encoding_win.cpp
         src/storage/app_paths.cpp
         src/storage/app_paths_win.cpp
     )

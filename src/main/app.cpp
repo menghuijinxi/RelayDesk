@@ -71,7 +71,14 @@ constexpr float kFailedDeliveryStateTextWidth = 72.0f;
 constexpr float kFailedDeliveryStateRetryGap = 6.0f;
 constexpr float kFailedDeliveryStateRetryButtonSize = 20.0f;
 constexpr float kFailedDeliveryStateRightInset = 4.0f;
-constexpr float kMessageFileTransferNodeHeight = 88.0f;
+constexpr float kTransferActionButtonHeight = 22.0f;
+constexpr float kFileDocumentCardDefaultHeight = 58.0f;
+constexpr float kFileDocumentCardCompactHeight = 48.0f;
+constexpr float kFileDocumentCardTitleLineHeight = 22.0f;
+constexpr float kFileDocumentCardCompactTitleLineHeight = 21.0f;
+constexpr std::size_t kFileDocumentCardMaxTitleLines = 3;
+constexpr float kMessageFileTransferActionGap = 4.0f;
+constexpr float kMessageFileTransferActionBottomPadding = 4.0f;
 constexpr const char* kFileTypeIconAssetDirectory =
     "assets/third_party/vscode-icons/icons";
 constexpr std::size_t kMaxRecentEmojiCount = 10;
@@ -266,7 +273,8 @@ void drawFileDocumentCard(eui::Ui& ui,
                           const std::string& title,
                           const std::string& detail,
                           bool folder,
-                          bool compact);
+                          bool compact,
+                          bool wrapTitle = true);
 void drawCompactImageDocumentCard(eui::Ui& ui,
                                   const std::string& id,
                                   float x,
@@ -381,7 +389,8 @@ void paragraphText(eui::Ui& ui,
                    float fontSize,
                    float lineHeight,
                    Color color = kText,
-                   eui::HorizontalAlign align = eui::HorizontalAlign::Left)
+                   eui::HorizontalAlign align = eui::HorizontalAlign::Left,
+                   bool wrap = false)
 {
     ui.text(id)
         .position(x, y)
@@ -392,6 +401,7 @@ void paragraphText(eui::Ui& ui,
         .color(color)
         .horizontalAlign(align)
         .verticalAlign(eui::VerticalAlign::Top)
+        .wrap(wrap)
         .build();
 }
 
@@ -874,7 +884,8 @@ bool shellRevealPath(const std::filesystem::path& filePath)
 {
 #if defined(_WIN32)
     std::error_code error;
-    if (std::filesystem::is_regular_file(filePath, error)) {
+    if (std::filesystem::is_regular_file(filePath, error)
+        || std::filesystem::is_directory(filePath, error)) {
         const std::wstring parameters =
             L"/select," + quoteWindowsShellArgument(filePath.wstring());
         const HINSTANCE result = ShellExecuteW(nullptr,
@@ -1544,6 +1555,8 @@ std::size_t estimateWrappedLineCount(const std::string& value,
     return std::max<std::size_t>(1u, result);
 }
 
+std::vector<std::string> splitUtf8Codepoints(const std::string& value);
+
 float estimateParagraphHeight(const std::string& value,
                               float width,
                               float fontSize,
@@ -1552,6 +1565,159 @@ float estimateParagraphHeight(const std::string& value,
     const std::size_t lineCount =
         estimateWrappedLineCount(value, width, fontSize);
     return std::max(lineHeight, static_cast<float>(lineCount) * lineHeight);
+}
+
+float fileDocumentCardTitleFontSize(bool compact)
+{
+    return compact ? 13.0f : 14.0f;
+}
+
+float fileDocumentCardTitleLineHeight(bool compact)
+{
+    return compact ? kFileDocumentCardCompactTitleLineHeight
+                   : kFileDocumentCardTitleLineHeight;
+}
+
+float fileDocumentCardTitleWidth(float cardWidth, bool compact)
+{
+    const float iconSize = compact ? 34.0f : 40.0f;
+    const float iconX = 9.0f;
+    const float textX = iconX + iconSize + 10.0f;
+    return std::max(40.0f, cardWidth - textX - 12.0f);
+}
+
+std::size_t textLineCount(const std::string& value)
+{
+    if (value.empty()) {
+        return 1u;
+    }
+    return static_cast<std::size_t>(std::count(value.begin(), value.end(), '\n'))
+        + 1u;
+}
+
+std::vector<std::string> wrapTextToMeasuredLines(const std::string& value,
+                                                 float width,
+                                                 float fontSize,
+                                                 std::size_t maxLines)
+{
+    std::vector<std::string> lines;
+    if (value.empty() || maxLines == 0u) {
+        return lines;
+    }
+
+    std::string currentLine;
+    for (const std::string& codepoint : splitUtf8Codepoints(value)) {
+        if (codepoint == "\n") {
+            lines.push_back(currentLine);
+            currentLine.clear();
+            if (lines.size() >= maxLines) {
+                break;
+            }
+            continue;
+        }
+
+        std::string candidate = currentLine + codepoint;
+        const float candidateWidth =
+            core::TextPrimitive::measureTextWidth(candidate, "", fontSize);
+        if (!currentLine.empty()
+            && std::isfinite(candidateWidth)
+            && candidateWidth > width
+            && lines.size() + 1u < maxLines) {
+            lines.push_back(currentLine);
+            currentLine = codepoint;
+            continue;
+        }
+
+        currentLine = std::move(candidate);
+    }
+
+    if (lines.size() < maxLines && !currentLine.empty()) {
+        lines.push_back(currentLine);
+    }
+    return lines;
+}
+
+std::string fitTextToMeasuredWidth(std::string value, float width, float fontSize)
+{
+    constexpr const char* suffix = "...";
+    const float suffixWidth =
+        core::TextPrimitive::measureTextWidth(suffix, "", fontSize);
+    const float maxTextWidth = std::max(0.0f, width - suffixWidth);
+
+    while (!value.empty()) {
+        const float measuredWidth =
+            core::TextPrimitive::measureTextWidth(value, "", fontSize);
+        if (std::isfinite(measuredWidth) && measuredWidth <= maxTextWidth) {
+            break;
+        }
+        const auto codepoints = splitUtf8Codepoints(value);
+        if (codepoints.empty()) {
+            value.clear();
+            break;
+        }
+        value.resize(value.size() - codepoints.back().size());
+    }
+
+    return value + suffix;
+}
+
+std::string wrappedFileDocumentCardTitle(const std::string& title,
+                                         float cardWidth,
+                                         bool compact)
+{
+    const float titleWidth = fileDocumentCardTitleWidth(cardWidth, compact);
+    const float fontSize = fileDocumentCardTitleFontSize(compact);
+    std::vector<std::string> lines =
+        wrapTextToMeasuredLines(title,
+                                titleWidth,
+                                fontSize,
+                                kFileDocumentCardMaxTitleLines);
+    if (lines.empty()) {
+        return title;
+    }
+
+    std::size_t renderedCodepoints = 0;
+    for (const std::string& line : lines) {
+        renderedCodepoints += utf8CodepointCount(line);
+    }
+    const bool truncated = renderedCodepoints < utf8CodepointCount(title);
+    if (truncated) {
+        lines.back() =
+            fitTextToMeasuredWidth(lines.back(), titleWidth, fontSize);
+    }
+
+    std::ostringstream titleText;
+    for (std::size_t index = 0; index < lines.size(); ++index) {
+        if (index > 0u) {
+            titleText << '\n';
+        }
+        titleText << lines[index];
+    }
+    return titleText.str();
+}
+
+float fileDocumentCardHeight(float cardWidth,
+                             const std::string& title,
+                             bool compact,
+                             bool actions = false)
+{
+    const std::string wrappedTitle =
+        wrappedFileDocumentCardTitle(title, cardWidth, compact);
+    const std::size_t lineCount = textLineCount(wrappedTitle);
+    const float baseHeight = compact ? kFileDocumentCardCompactHeight
+                                     : kFileDocumentCardDefaultHeight;
+    const float extraTitleHeight =
+        static_cast<float>(lineCount - 1u)
+        * fileDocumentCardTitleLineHeight(compact);
+    const float cardHeight = baseHeight + extraTitleHeight;
+    if (!actions) {
+        return cardHeight;
+    }
+
+    return cardHeight
+        + kMessageFileTransferActionGap
+        + kTransferActionButtonHeight
+        + kMessageFileTransferActionBottomPadding;
 }
 
 std::filesystem::path makeAbsolutePath(const std::filesystem::path& filePath)
@@ -2330,10 +2496,39 @@ struct OpenableMessagePath {
 };
 
 bool shouldShowOpenActionsForTransferState(
-    relaydesk::storage::TransferState transferState)
+    relaydesk::storage::TransferState transferState,
+    bool outgoing)
 {
+    if (outgoing) {
+        return transferState == relaydesk::storage::TransferState::Completed
+            || transferState == relaydesk::storage::TransferState::Cancelled
+            || transferState == relaydesk::storage::TransferState::Rejected;
+    }
+
     return transferState == relaydesk::storage::TransferState::Completed
         || transferState == relaydesk::storage::TransferState::Cancelled;
+}
+
+bool messageFilePartHasActions(
+    const relaydesk::storage::ChatMessagePart& part,
+    bool outgoing)
+{
+    if (!part.GetTransferState().has_value()) {
+        return false;
+    }
+
+    const relaydesk::storage::TransferState state =
+        part.GetTransferState().value();
+    if (shouldShowOpenActionsForTransferState(state, outgoing)) {
+        return true;
+    }
+    if (outgoing) {
+        return state == relaydesk::storage::TransferState::Offered
+            || state == relaydesk::storage::TransferState::Transferring;
+    }
+
+    return state == relaydesk::storage::TransferState::Offered
+        || state == relaydesk::storage::TransferState::Transferring;
 }
 
 std::optional<OpenableMessagePath> resolveOpenableMessagePath(
@@ -2485,6 +2680,23 @@ bool incomingTransferTargetExists(
         return std::filesystem::exists(targetPath, error) && !error;
     } catch (const std::exception&) {
         return false;
+    }
+}
+
+std::optional<std::filesystem::path> selectIncomingTransferSavePath(
+    const std::string& fileName)
+{
+    if (fileName.empty()) {
+        return std::nullopt;
+    }
+
+    try {
+        const auto appPaths = relaydesk::storage::createAppPaths();
+        return relaydesk::platform::selectSavePathFromDialog(
+            appPaths.GetInboxDirectory(),
+            transferFileNameLeaf(fileName));
+    } catch (const std::exception&) {
+        return std::nullopt;
     }
 }
 
@@ -3575,6 +3787,7 @@ void drawComposerEditorAttachmentNode(eui::Ui& ui,
                          attachment.displayName,
                          formatFileSize(attachment.fileSize),
                          attachment.kind == PendingAttachmentKind::Folder,
+                         false,
                          false);
     drawComposerEditorCloseButton(ui,
                                   id,
@@ -3911,9 +4124,14 @@ void drawFileDocumentCard(eui::Ui& ui,
                           const std::string& title,
                           const std::string& detail,
                           bool folder,
-                          bool compact)
+                          bool compact,
+                          bool wrapTitle)
 {
-    const float height = compact ? 48.0f : 58.0f;
+    const float height = wrapTitle ? fileDocumentCardHeight(width,
+                                                            title,
+                                                            compact)
+                                   : (compact ? kFileDocumentCardCompactHeight
+                                              : kFileDocumentCardDefaultHeight);
     const float iconSize = compact ? 34.0f : 40.0f;
     const float iconX = x + 9.0f;
     const float iconY = y + (height - iconSize) * 0.5f;
@@ -3923,14 +4141,31 @@ void drawFileDocumentCard(eui::Ui& ui,
     drawFileTypeIcon(ui, id, iconX, iconY, iconSize, title, folder);
 
     const float textX = iconX + iconSize + 10.0f;
-    const float titleWidth = std::max(40.0f, width - (textX - x) - 12.0f);
-    text(ui, id + ".title", textX, y + (compact ? 5.0f : 7.0f), titleWidth,
-         22.0f, title, compact ? 13.0f : 14.0f);
+    const float titleWidth = fileDocumentCardTitleWidth(width, compact);
+    const std::string titleText = wrapTitle
+        ? wrappedFileDocumentCardTitle(title, width, compact)
+        : title;
+    const float titleLineHeight = fileDocumentCardTitleLineHeight(compact);
+    const float titleHeight =
+        static_cast<float>(textLineCount(titleText)) * titleLineHeight;
+    paragraphText(ui,
+                  id + ".title",
+                  textX,
+                  y + (compact ? 5.0f : 7.0f),
+                  titleWidth,
+                  titleHeight,
+                  titleText,
+                  fileDocumentCardTitleFontSize(compact),
+                  titleLineHeight,
+                  kText,
+                  eui::HorizontalAlign::Left,
+                  wrapTitle);
     if (!detail.empty()) {
         text(ui,
              id + ".detail",
              textX,
-             y + (compact ? 26.0f : 31.0f),
+             y + (compact ? 26.0f : 31.0f)
+                 + std::max(0.0f, titleHeight - titleLineHeight),
              titleWidth,
              18.0f,
              detail,
@@ -4101,7 +4336,9 @@ ComposerAttachmentNodeSize messageImageNodeSize(
     const std::optional<std::filesystem::path> imagePath =
         resolveRenderableImagePath(part);
     if (!imagePath.has_value()) {
-        return {composerDraftFileNodeWidth(flowWidth), 58.0f};
+        const float nodeWidth = composerDraftFileNodeWidth(flowWidth);
+        return {nodeWidth,
+                fileDocumentCardHeight(nodeWidth, messagePartTitle(part), false)};
     }
 
     const float aspectRatio = messageImageAspectRatio(imagePath.value());
@@ -4132,17 +4369,21 @@ ComposerAttachmentNodeSize messageImageNodeSize(
 
 ComposerAttachmentNodeSize messagePartNodeSize(
     const relaydesk::storage::ChatMessagePart& part,
-    float flowWidth)
+    float flowWidth,
+    bool outgoing)
 {
     switch (part.GetType()) {
     case relaydesk::storage::MessagePartType::Image:
         return messageImageNodeSize(part, flowWidth);
     case relaydesk::storage::MessagePartType::File:
-        return {composerDraftFileNodeWidth(flowWidth),
-                kMessageFileTransferNodeHeight};
-    case relaydesk::storage::MessagePartType::Folder:
-        return {composerDraftFileNodeWidth(flowWidth),
-                kMessageFileTransferNodeHeight};
+    case relaydesk::storage::MessagePartType::Folder: {
+        const float nodeWidth = composerDraftFileNodeWidth(flowWidth);
+        return {nodeWidth,
+                fileDocumentCardHeight(nodeWidth,
+                                       messagePartTitle(part),
+                                       false,
+                                       messageFilePartHasActions(part, outgoing))};
+    }
     case relaydesk::storage::MessagePartType::Text:
     case relaydesk::storage::MessagePartType::Emoji:
         return {};
@@ -4200,9 +4441,11 @@ void addMessageNodePartToLayout(
     std::size_t partIndex,
     const relaydesk::storage::ChatMessagePart& part,
     float width,
+    bool outgoing,
     bool& hasVisiblePart)
 {
-    const ComposerAttachmentNodeSize nodeSize = messagePartNodeSize(part, width);
+    const ComposerAttachmentNodeSize nodeSize =
+        messagePartNodeSize(part, width, outgoing);
     if (nodeSize.width <= 0.0f || nodeSize.height <= 0.0f) {
         return;
     }
@@ -4252,6 +4495,8 @@ MessageFlowLayout makeMessageFlowLayout(
                                        partIndex,
                                        part,
                                        width,
+                                       message.GetDirection()
+                                           == relaydesk::storage::MessageDirection::Outgoing,
                                        hasVisiblePart);
             break;
         }
@@ -4467,6 +4712,9 @@ void drawMessageFilePart(eui::Ui& ui,
 {
     const bool folder =
         part.GetType() == relaydesk::storage::MessagePartType::Folder;
+    const float cardHeight = fileDocumentCardHeight(width,
+                                                    messagePartTitle(part),
+                                                    false);
     drawFileDocumentCard(ui,
                          id,
                          x,
@@ -4480,35 +4728,18 @@ void drawMessageFilePart(eui::Ui& ui,
     const std::optional<relaydesk::storage::TransferState> transferState =
         part.GetTransferState();
     if (transferState.has_value()
-        && shouldShowOpenActionsForTransferState(transferState.value())) {
+        && shouldShowOpenActionsForTransferState(transferState.value(),
+                                                 outgoing)) {
         const std::optional<OpenableMessagePath> openablePath =
             resolveOpenableMessagePath(part);
         if (!openablePath.has_value()) {
             return;
         }
 
-        if (openablePath->directory) {
-            constexpr float openFolderButtonWidth = 82.0f;
-            const float rowY = y + 62.0f;
-            const float buttonX = x + width - openFolderButtonWidth - 8.0f;
-            drawTransferActionButton(
-                ui,
-                id + ".open_folder",
-                buttonX,
-                rowY,
-                openFolderButtonWidth,
-                "打开文件夹",
-                true,
-                [openPath = openablePath->path] {
-                    shellOpenPath(openPath);
-                });
-            return;
-        }
-
         constexpr float openButtonWidth = 48.0f;
         constexpr float revealButtonWidth = 82.0f;
         constexpr float gap = 6.0f;
-        const float rowY = y + 62.0f;
+        const float rowY = y + cardHeight + kMessageFileTransferActionGap;
         const float rowWidth = openButtonWidth + gap + revealButtonWidth;
         float buttonX = x + width - rowWidth - 8.0f;
         drawTransferActionButton(
@@ -4539,16 +4770,55 @@ void drawMessageFilePart(eui::Ui& ui,
 
     if (transferState.has_value()) {
         const relaydesk::storage::TransferState state = transferState.value();
+        if (outgoing
+            && state == relaydesk::storage::TransferState::Offered
+            && (part.GetType() == relaydesk::storage::MessagePartType::File
+                || part.GetType()
+                    == relaydesk::storage::MessagePartType::Folder)) {
+            constexpr float sendButtonWidth = 72.0f;
+            constexpr float cancelButtonWidth = 48.0f;
+            constexpr float gap = 6.0f;
+            const float rowY = y + cardHeight + kMessageFileTransferActionGap;
+            const float rowWidth = sendButtonWidth + gap + cancelButtonWidth;
+            float buttonX = x + width - rowWidth - 8.0f;
+            drawTransferActionButton(
+                ui,
+                id + ".send",
+                buttonX,
+                rowY,
+                sendButtonWidth,
+                "主动发送",
+                true,
+                [&runtime,
+                 messageId = message.GetMessageId(),
+                 partId = part.GetPartId()] {
+                    runtime.sendSelectedPeerFileTransfer(messageId, partId);
+                });
+            buttonX += sendButtonWidth + gap;
+            drawTransferActionButton(
+                ui,
+                id + ".cancel",
+                buttonX,
+                rowY,
+                cancelButtonWidth,
+                "取消",
+                false,
+                [&runtime,
+                 messageId = message.GetMessageId(),
+                 partId = part.GetPartId()] {
+                    runtime.cancelSelectedPeerFileTransfer(messageId, partId);
+                });
+            return;
+        }
+
         const bool canCancel = (outgoing
-                                && (state
-                                        == relaydesk::storage::TransferState::Offered
-                                    || state
-                                        == relaydesk::storage::TransferState::Transferring))
+                                && state
+                                    == relaydesk::storage::TransferState::Transferring)
             || (!outgoing
                 && state == relaydesk::storage::TransferState::Transferring);
         if (canCancel) {
             constexpr float cancelButtonWidth = 48.0f;
-            const float rowY = y + 62.0f;
+            const float rowY = y + cardHeight + kMessageFileTransferActionGap;
             const float buttonX = x + width - cancelButtonWidth - 8.0f;
             drawTransferActionButton(
                 ui,
@@ -4575,12 +4845,12 @@ void drawMessageFilePart(eui::Ui& ui,
     }
 
     const bool targetExists = incomingTransferTargetExists(part);
-    const float buttonWidth = 48.0f;
+    const float buttonWidth = 56.0f;
     const float gap = 6.0f;
-    const float rowY = y + 62.0f;
+    const float rowY = y + cardHeight + kMessageFileTransferActionGap;
     const float rowWidth = targetExists
-        ? buttonWidth * 3.0f + gap * 2.0f
-        : buttonWidth * 2.0f + gap;
+        ? buttonWidth * 4.0f + gap * 3.0f
+        : buttonWidth * 3.0f + gap * 2.0f;
     float buttonX = x + width - rowWidth - 8.0f;
     drawTransferActionButton(
         ui,
@@ -4594,6 +4864,27 @@ void drawMessageFilePart(eui::Ui& ui,
          messageId = message.GetMessageId(),
          partId = part.GetPartId()] {
             runtime.acceptSelectedPeerFileTransfer(messageId, partId, false);
+        });
+    buttonX += buttonWidth + gap;
+    drawTransferActionButton(
+        ui,
+        id + ".save_as",
+        buttonX,
+        rowY,
+        buttonWidth,
+        "另存为",
+        false,
+        [&runtime,
+         fileName = part.GetFileName().value_or(std::string()),
+         messageId = message.GetMessageId(),
+         partId = part.GetPartId()] {
+            const std::optional<std::filesystem::path> savePath =
+                selectIncomingTransferSavePath(fileName);
+            if (savePath.has_value()) {
+                runtime.acceptSelectedPeerFileTransferAs(messageId,
+                                                         partId,
+                                                         savePath.value());
+            }
         });
     buttonX += buttonWidth + gap;
     if (targetExists) {

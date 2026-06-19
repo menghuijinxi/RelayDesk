@@ -1,6 +1,7 @@
 #include "platform/attachment_input.h"
 
 #include "core/uuid.h"
+#include "platform/text_encoding.h"
 #include "storage/app_paths.h"
 
 #include <algorithm>
@@ -24,6 +25,7 @@
 #include <windows.h>
 #include <wincodec.h>
 #include <wrl/client.h>
+#include <shobjidl.h>
 #include <shellapi.h>
 
 namespace relaydesk::platform {
@@ -245,6 +247,29 @@ HWND findRelayDeskMainWindow()
     context.processId = GetCurrentProcessId();
     EnumWindows(findRelayDeskWindow, reinterpret_cast<LPARAM>(&context));
     return context.window;
+}
+
+void setDialogDefaultFolder(IFileSaveDialog* dialog,
+                            const std::filesystem::path& directoryPath)
+{
+    if (dialog == nullptr || directoryPath.empty()) {
+        return;
+    }
+
+    std::error_code error;
+    if (!std::filesystem::is_directory(directoryPath, error) || error) {
+        return;
+    }
+
+    using Microsoft::WRL::ComPtr;
+    ComPtr<IShellItem> folder;
+    const HRESULT result = SHCreateItemFromParsingName(
+        directoryPath.c_str(),
+        nullptr,
+        IID_PPV_ARGS(&folder));
+    if (SUCCEEDED(result)) {
+        (void)dialog->SetDefaultFolder(folder.Get());
+    }
 }
 
 std::uint32_t calculateDibPixelOffset(const BITMAPINFOHEADER& header)
@@ -629,6 +654,58 @@ std::optional<std::filesystem::path> createImageThumbnail(
     }
 
     return targetPath.lexically_normal();
+}
+
+std::optional<std::filesystem::path> selectSavePathFromDialog(
+    const std::filesystem::path& initialDirectory,
+    const std::string& suggestedFileName)
+{
+    ComApartment apartment;
+    if (!apartment.GetAvailable()) {
+        return std::nullopt;
+    }
+
+    using Microsoft::WRL::ComPtr;
+    ComPtr<IFileSaveDialog> dialog;
+    HRESULT result = CoCreateInstance(CLSID_FileSaveDialog,
+                                      nullptr,
+                                      CLSCTX_INPROC_SERVER,
+                                      IID_PPV_ARGS(&dialog));
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    DWORD options = 0;
+    result = dialog->GetOptions(&options);
+    if (SUCCEEDED(result)) {
+        (void)dialog->SetOptions(options | FOS_PATHMUSTEXIST | FOS_OVERWRITEPROMPT);
+    }
+    setDialogDefaultFolder(dialog.Get(), initialDirectory);
+    if (!suggestedFileName.empty()) {
+        const std::wstring fileName = utf8ToWide(suggestedFileName);
+        (void)dialog->SetFileName(fileName.c_str());
+    }
+
+    result = dialog->Show(findRelayDeskMainWindow());
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    ComPtr<IShellItem> item;
+    result = dialog->GetResult(&item);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    PWSTR rawPath = nullptr;
+    result = item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath);
+    if (FAILED(result) || rawPath == nullptr) {
+        return std::nullopt;
+    }
+
+    const std::filesystem::path selectedPath(rawPath);
+    CoTaskMemFree(rawPath);
+    return selectedPath.lexically_normal();
 }
 
 bool isPasteShortcutDown()
