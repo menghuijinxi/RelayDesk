@@ -1908,6 +1908,10 @@ void RelayDeskRuntime::maybeOfferAppUpdateFromPeer(const PeerListItem& peer)
             && requestedVersion->second >= peer.GetAppVersion()) {
             return;
         }
+        if (scheduledAppUpdate_.has_value()
+            && scheduledAppUpdate_->GetAppVersion() >= peer.GetAppVersion()) {
+            return;
+        }
         if (appUpdatePrompt_.has_value()
             && appUpdatePrompt_->GetSourceDeviceId() == peer.GetDeviceId()
             && appUpdatePrompt_->GetAppVersion() >= peer.GetAppVersion()) {

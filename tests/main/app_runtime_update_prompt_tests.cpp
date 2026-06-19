@@ -6,6 +6,7 @@
 #include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
@@ -66,6 +67,25 @@ public:
         enqueuePeerProfile(std::move(profile), online);
         refreshPeersIfNeeded();
     }
+
+    void scheduleInstallOnExitUpdate(int appVersion)
+    {
+        relaydesk::runtime::PendingIncomingAppUpdate update;
+        update.SetRequestId("scheduled-update-request");
+        update.SetSourceDeviceId("runtime-update-peer");
+        update.SetAppVersion(appVersion);
+        update.SetFileName("relaydesk.exe");
+        update.SetInstallMode(
+            relaydesk::runtime::AppUpdateInstallMode::InstallOnExit);
+
+        completeDownloadedAppUpdate(update);
+    }
+
+    void clearScheduledAppUpdate()
+    {
+        std::lock_guard lock(pendingAppUpdateMutex_);
+        scheduledAppUpdate_.reset();
+    }
 };
 
 int offersAppUpdatePromptWhenOnlinePeerVersionIncreases()
@@ -121,9 +141,80 @@ int offersAppUpdatePromptWhenOnlinePeerVersionIncreases()
     return 0;
 }
 
+int suppressesScheduledInstallOnExitVersionUntilHigherVersionArrives()
+{
+    const relaydesk::storage::AppPaths appPaths =
+        relaydesk::storage::createAppPaths();
+    std::filesystem::remove_all(appPaths.GetDataDirectory());
+
+    {
+        TestableRelayDeskRuntime runtime;
+        if (!runtime.GetStartupErrorMessage().empty()) {
+            return fail("Runtime startup failed: "
+                        + runtime.GetStartupErrorMessage());
+        }
+
+        const int scheduledVersion = relaydesk::core::kAppVersion + 1;
+        runtime.receivePeerProfile(
+            makePeerProfile(scheduledVersion, "2026-06-18T10:20:00Z"),
+            true);
+        if (const int result = expect(runtime.GetAppUpdatePrompt().has_value(),
+                                      "Initial higher-version peer did not show "
+                                      "update prompt.");
+            result != 0) {
+            return result;
+        }
+
+        runtime.scheduleInstallOnExitUpdate(scheduledVersion);
+        if (const int result =
+                expect(!runtime.GetAppUpdatePrompt().has_value(),
+                       "Scheduled install-on-exit update kept prompt visible.");
+            result != 0) {
+            return result;
+        }
+
+        runtime.receivePeerProfile(
+            makePeerProfile(scheduledVersion, "2026-06-18T10:30:00Z"),
+            true);
+        if (const int result =
+                expect(!runtime.GetAppUpdatePrompt().has_value(),
+                       "Scheduled install-on-exit version was offered again.");
+            result != 0) {
+            return result;
+        }
+
+        runtime.receivePeerProfile(
+            makePeerProfile(scheduledVersion + 1, "2026-06-18T10:40:00Z"),
+            true);
+        const std::optional<relaydesk::runtime::AppUpdatePrompt> prompt =
+            runtime.GetAppUpdatePrompt();
+        if (const int result =
+                expect(prompt.has_value(),
+                       "Higher version after scheduled update did not show prompt.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(prompt->GetAppVersion() == scheduledVersion + 1,
+                       "Higher version prompt app version mismatch.");
+            result != 0) {
+            return result;
+        }
+
+        runtime.clearScheduledAppUpdate();
+    }
+
+    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    return 0;
+}
+
 } // namespace
 
 int main()
 {
-    return offersAppUpdatePromptWhenOnlinePeerVersionIncreases();
+    if (const int result = offersAppUpdatePromptWhenOnlinePeerVersionIncreases();
+        result != 0) {
+        return result;
+    }
+    return suppressesScheduledInstallOnExitVersionUntilHigherVersionArrives();
 }
