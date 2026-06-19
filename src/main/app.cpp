@@ -804,6 +804,49 @@ std::string readTextFile(const std::filesystem::path& filePath)
     return output.str();
 }
 
+#if defined(_WIN32)
+std::string makeFileTypeIconResourceName(const std::string& iconFileName)
+{
+    std::string resourceName = "VSICON_";
+    resourceName.reserve(resourceName.size() + iconFileName.size());
+    for (const unsigned char character : iconFileName) {
+        if (std::isalnum(character)) {
+            resourceName.push_back(
+                static_cast<char>(std::toupper(character)));
+        } else {
+            resourceName.push_back('_');
+        }
+    }
+    return resourceName;
+}
+
+std::string readTextResource(const std::string& resourceName)
+{
+    const std::wstring wideResourceName =
+        relaydesk::platform::utf8ToWide(resourceName);
+    const HRSRC resource = FindResourceW(nullptr,
+                                         wideResourceName.c_str(),
+                                         RT_RCDATA);
+    if (!resource) {
+        return {};
+    }
+
+    const HGLOBAL loadedResource = LoadResource(nullptr, resource);
+    if (!loadedResource) {
+        return {};
+    }
+
+    const DWORD resourceSize = SizeofResource(nullptr, resource);
+    const void* resourceData = LockResource(loadedResource);
+    if (!resourceData || resourceSize == 0) {
+        return {};
+    }
+
+    const auto* resourceText = static_cast<const char*>(resourceData);
+    return std::string(resourceText, resourceText + resourceSize);
+}
+#endif
+
 bool shellOpenPath(const std::filesystem::path& filePath)
 {
 #if defined(_WIN32)
@@ -870,6 +913,14 @@ std::string fileTypeIconSvgMarkup(const std::string& iconFileName)
     }
 
     std::string markup;
+#if defined(_WIN32)
+    markup = readTextResource(makeFileTypeIconResourceName(iconFileName));
+#endif
+    if (!markup.empty()) {
+        svgMarkupCache[iconFileName] = markup;
+        return markup;
+    }
+
     const auto path = findBundledAssetPath(
         std::filesystem::path(kFileTypeIconAssetDirectory) / iconFileName);
     if (path) {
