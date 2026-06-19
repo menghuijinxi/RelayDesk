@@ -3,6 +3,7 @@
 #include "core/app_version.h"
 #include "core/render/text.h"
 #include "core/platform/platform.h"
+#include "core/time.h"
 #include "core/uuid.h"
 #include "main/image_attachment_store.h"
 #include "main/app_runtime.h"
@@ -15,9 +16,11 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstddef>
+#include <ctime>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -65,6 +68,8 @@ constexpr float kChatHeaderHeight = 118.0f;
 constexpr float kChatTimelineContentHeight = 650.0f;
 constexpr float kComposerHeight = 196.0f;
 constexpr float kMessageBubblePadding = 12.0f;
+constexpr float kMessageTimestampWidth = 42.0f;
+constexpr float kMessageTimestampGap = 8.0f;
 constexpr float kFailedDeliveryStateHeight = 20.0f;
 constexpr float kFailedDeliveryStateGap = 8.0f;
 constexpr float kFailedDeliveryStateTextWidth = 72.0f;
@@ -77,6 +82,15 @@ constexpr float kFileDocumentCardCompactHeight = 48.0f;
 constexpr float kFileDocumentCardTitleLineHeight = 22.0f;
 constexpr float kFileDocumentCardCompactTitleLineHeight = 21.0f;
 constexpr std::size_t kFileDocumentCardMaxTitleLines = 3;
+constexpr float kMessageFileProgressGap = 6.0f;
+constexpr float kMessageFileProgressTrackHeight = 6.0f;
+constexpr float kMessageFileProgressDetailGap = 5.0f;
+constexpr float kMessageFileProgressDetailHeight = 18.0f;
+constexpr float kMessageFileProgressBlockHeight =
+    kMessageFileProgressGap
+    + kMessageFileProgressTrackHeight
+    + kMessageFileProgressDetailGap
+    + kMessageFileProgressDetailHeight;
 constexpr float kMessageFileTransferActionGap = 4.0f;
 constexpr float kMessageFileTransferActionBottomPadding = 4.0f;
 constexpr const char* kFileTypeIconAssetDirectory =
@@ -274,7 +288,8 @@ void drawFileDocumentCard(eui::Ui& ui,
                           const std::string& detail,
                           bool folder,
                           bool compact,
-                          bool wrapTitle = true);
+                          bool wrapTitle = true,
+                          bool drawBackground = true);
 void drawCompactImageDocumentCard(eui::Ui& ui,
                                   const std::string& id,
                                   float x,
@@ -1064,6 +1079,54 @@ std::string formatRemainingTime(double seconds)
     }
     return "剩余 " + std::to_string(minutes) + " 分 "
         + std::to_string(secondsPart) + " 秒";
+}
+
+std::string formatDurationClock(double seconds)
+{
+    if (!std::isfinite(seconds) || seconds < 0.0) {
+        seconds = 0.0;
+    }
+
+    const int roundedSeconds = static_cast<int>(std::ceil(seconds));
+    const int hours = roundedSeconds / 3600;
+    const int minutes = (roundedSeconds / 60) % 60;
+    const int secondsPart = roundedSeconds % 60;
+
+    std::ostringstream output;
+    output << std::setfill('0');
+    output << std::setw(2) << hours << ':'
+           << std::setw(2) << minutes << ':'
+           << std::setw(2) << secondsPart;
+    return output.str();
+}
+
+std::string formatMessageTimestamp(const std::string& timestamp)
+{
+    try {
+        const std::chrono::system_clock::time_point timePoint =
+            relaydesk::core::parseUtcTimestamp(timestamp);
+        const std::time_t rawTime =
+            std::chrono::system_clock::to_time_t(timePoint);
+        std::tm localTime{};
+#if defined(_WIN32)
+        if (localtime_s(&localTime, &rawTime) != 0) {
+            return {};
+        }
+#else
+        if (localtime_r(&rawTime, &localTime) == nullptr) {
+            return {};
+        }
+#endif
+        std::ostringstream output;
+        output << std::put_time(&localTime, "%H:%M");
+        return output.str();
+    } catch (const std::exception&) {
+        if (timestamp.size() >= 16u && timestamp[13] == ':') {
+            return timestamp.substr(11u, 5u);
+        }
+    }
+
+    return {};
 }
 
 std::string appUpdateDownloadDetail(
@@ -2531,6 +2594,14 @@ bool messageFilePartHasActions(
         || state == relaydesk::storage::TransferState::Transferring;
 }
 
+float messageFileNodeWidth(float flowWidth)
+{
+    if (flowWidth < 420.0f) {
+        return flowWidth;
+    }
+    return std::clamp(flowWidth * 0.72f, 320.0f, flowWidth);
+}
+
 std::optional<OpenableMessagePath> resolveOpenableMessagePath(
     const relaydesk::storage::ChatMessagePart& part)
 {
@@ -2641,6 +2712,17 @@ bool shouldShowTransferProgress(relaydesk::storage::TransferState state)
     return false;
 }
 
+bool shouldShowTransferProgressBlock(
+    const relaydesk::storage::ChatMessagePart& part)
+{
+    return part.GetTransferState().has_value()
+        && part.GetTransferState().value()
+            == relaydesk::storage::TransferState::Transferring
+        && part.GetFileSize().has_value()
+        && part.GetFileSize().value() > 0
+        && part.GetTransferredSize().has_value();
+}
+
 std::string transferFileNameLeaf(std::string fileName)
 {
     const std::size_t position = fileName.find_last_of("/\\");
@@ -2720,6 +2802,25 @@ std::string messagePartTitle(const relaydesk::storage::ChatMessagePart& part)
     return "";
 }
 
+float messageFilePartNodeHeight(
+    const relaydesk::storage::ChatMessagePart& part,
+    float width,
+    bool outgoing)
+{
+    float height = fileDocumentCardHeight(width,
+                                          messagePartTitle(part),
+                                          false);
+    if (shouldShowTransferProgressBlock(part)) {
+        height += kMessageFileProgressBlockHeight;
+    }
+    if (messageFilePartHasActions(part, outgoing)) {
+        height += kMessageFileTransferActionGap
+            + kTransferActionButtonHeight
+            + kMessageFileTransferActionBottomPadding;
+    }
+    return height;
+}
+
 std::string messagePartDetail(const relaydesk::storage::ChatMessagePart& part)
 {
     std::string detail;
@@ -2742,13 +2843,6 @@ std::string messagePartDetail(const relaydesk::storage::ChatMessagePart& part)
                 detail += " · ";
             }
             detail += stateText;
-            const std::optional<int> progressPercent =
-                shouldShowTransferProgress(transferState)
-                ? transferProgressPercent(part)
-                : std::nullopt;
-            if (progressPercent.has_value()) {
-                detail += " " + std::to_string(progressPercent.value()) + "%";
-            }
         }
     }
     return detail;
@@ -4125,7 +4219,8 @@ void drawFileDocumentCard(eui::Ui& ui,
                           const std::string& detail,
                           bool folder,
                           bool compact,
-                          bool wrapTitle)
+                          bool wrapTitle,
+                          bool drawBackground)
 {
     const float height = wrapTitle ? fileDocumentCardHeight(width,
                                                             title,
@@ -4136,8 +4231,10 @@ void drawFileDocumentCard(eui::Ui& ui,
     const float iconX = x + 9.0f;
     const float iconY = y + (height - iconSize) * 0.5f;
 
-    rect(ui, id + ".bg", x, y, width, height,
-         {0.972f, 0.976f, 0.982f, 1.0f}, 8.0f, kBorder);
+    if (drawBackground) {
+        rect(ui, id + ".bg", x, y, width, height,
+             {0.972f, 0.976f, 0.982f, 1.0f}, 8.0f, kBorder);
+    }
     drawFileTypeIcon(ui, id, iconX, iconY, iconSize, title, folder);
 
     const float textX = iconX + iconSize + 10.0f;
@@ -4377,12 +4474,9 @@ ComposerAttachmentNodeSize messagePartNodeSize(
         return messageImageNodeSize(part, flowWidth);
     case relaydesk::storage::MessagePartType::File:
     case relaydesk::storage::MessagePartType::Folder: {
-        const float nodeWidth = composerDraftFileNodeWidth(flowWidth);
+        const float nodeWidth = messageFileNodeWidth(flowWidth);
         return {nodeWidth,
-                fileDocumentCardHeight(nodeWidth,
-                                       messagePartTitle(part),
-                                       false,
-                                       messageFilePartHasActions(part, outgoing))};
+                messageFilePartNodeHeight(part, nodeWidth, outgoing)};
     }
     case relaydesk::storage::MessagePartType::Text:
     case relaydesk::storage::MessagePartType::Emoji:
@@ -4700,6 +4794,159 @@ void drawTransferActionButton(eui::Ui& ui,
         .build();
 }
 
+double estimateTransferBytesPerSecond(eui::Ui& ui,
+                                      const std::string& id,
+                                      std::uintmax_t transferredSize,
+                                      bool transferring)
+{
+    const auto now = std::chrono::steady_clock::now();
+    double& lastTime = ui.state<double>(id + ".last_time");
+    double& lastBytes = ui.state<double>(id + ".last_bytes");
+    double& bytesPerSecond = ui.state<double>(id + ".bytes_per_second");
+    const double nowSeconds =
+        std::chrono::duration<double>(now.time_since_epoch()).count();
+
+    if (!transferring) {
+        lastTime = nowSeconds;
+        lastBytes = static_cast<double>(transferredSize);
+        bytesPerSecond = 0.0;
+        return 0.0;
+    }
+
+    if (lastTime <= 0.0 || lastBytes > static_cast<double>(transferredSize)) {
+        lastTime = nowSeconds;
+        lastBytes = static_cast<double>(transferredSize);
+        return bytesPerSecond;
+    }
+
+    const double elapsedSeconds = nowSeconds - lastTime;
+    const double deltaBytes = static_cast<double>(transferredSize) - lastBytes;
+    if (elapsedSeconds >= 0.2 && deltaBytes >= 0.0) {
+        const double currentSpeed = deltaBytes / elapsedSeconds;
+        bytesPerSecond = bytesPerSecond <= 0.0
+            ? currentSpeed
+            : bytesPerSecond * 0.65 + currentSpeed * 0.35;
+        lastTime = nowSeconds;
+        lastBytes = static_cast<double>(transferredSize);
+    }
+
+    return bytesPerSecond;
+}
+
+std::string transferProgressDetailText(eui::Ui& ui,
+                                       const std::string& id,
+                                       const relaydesk::storage::ChatMessagePart& part)
+{
+    const std::uintmax_t totalSize = part.GetFileSize().value_or(0u);
+    const std::uintmax_t transferredSize = std::min(
+        part.GetTransferredSize().value_or(0u),
+        totalSize);
+    std::string detail = formatFileSize(transferredSize)
+        + " / "
+        + formatFileSize(totalSize);
+
+    const bool transferring = part.GetTransferState().has_value()
+        && part.GetTransferState().value()
+            == relaydesk::storage::TransferState::Transferring;
+    const double bytesPerSecond =
+        estimateTransferBytesPerSecond(ui,
+                                       id,
+                                       transferredSize,
+                                       transferring);
+    if (transferring && bytesPerSecond > 1.0) {
+        const double remainingBytes =
+            static_cast<double>(totalSize - transferredSize);
+        detail += " - " + formatTransferRate(bytesPerSecond);
+        detail += " - 剩余 "
+            + formatDurationClock(remainingBytes / bytesPerSecond);
+    }
+    return detail;
+}
+
+void drawMessageFileProgress(eui::Ui& ui,
+                             const std::string& id,
+                             float x,
+                             float y,
+                             float width,
+                             const relaydesk::storage::ChatMessagePart& part)
+{
+    const std::optional<int> percent = transferProgressPercent(part);
+    const float progress = percent.has_value()
+        ? std::clamp(static_cast<float>(percent.value()) / 100.0f, 0.0f, 1.0f)
+        : 0.0f;
+    const float percentWidth = 44.0f;
+    const float trackWidth = std::max(20.0f, width - percentWidth - 12.0f);
+    const float trackY = y + kMessageFileProgressGap;
+    rect(ui,
+         id + ".track",
+         x,
+         trackY,
+         trackWidth,
+         kMessageFileProgressTrackHeight,
+         {0.790f, 0.810f, 0.820f, 1.0f},
+         3.0f);
+    rect(ui,
+         id + ".fill",
+         x,
+         trackY,
+         trackWidth * progress,
+         kMessageFileProgressTrackHeight,
+         kTeal,
+         3.0f);
+    if (percent.has_value()) {
+        text(ui,
+             id + ".percent",
+             x + trackWidth + 12.0f,
+             y - 1.0f,
+             percentWidth,
+             18.0f,
+             std::to_string(percent.value()) + "%",
+             12.0f,
+             kText,
+             eui::HorizontalAlign::Right);
+    }
+
+    text(ui,
+         id + ".detail",
+         x,
+         trackY + kMessageFileProgressTrackHeight
+             + kMessageFileProgressDetailGap,
+         width,
+         kMessageFileProgressDetailHeight,
+         transferProgressDetailText(ui, id + ".speed", part),
+         11.0f,
+         kMutedText);
+}
+
+void drawFileCleanedNotice(eui::Ui& ui,
+                           const std::string& id,
+                           float x,
+                           float y,
+                           float width)
+{
+    constexpr float noticeWidth = 92.0f;
+    const float noticeX = x + width - noticeWidth - 8.0f;
+    rect(ui,
+         id + ".bg",
+         noticeX,
+         y,
+         noticeWidth,
+         kTransferActionButtonHeight,
+         kAmberSoft,
+         6.0f,
+         kAmber);
+    text(ui,
+         id + ".text",
+         noticeX,
+         y + 3.0f,
+         noticeWidth,
+         16.0f,
+         "文件已被清理",
+         11.0f,
+         kAmber,
+         eui::HorizontalAlign::Center);
+}
+
 void drawMessageFilePart(eui::Ui& ui,
                          const std::string& id,
                          float x,
@@ -4723,7 +4970,19 @@ void drawMessageFilePart(eui::Ui& ui,
                          messagePartTitle(part),
                          messagePartDetail(part),
                          folder,
+                         false,
+                         true,
                          false);
+    float actionBaseY = y + cardHeight;
+    if (shouldShowTransferProgressBlock(part)) {
+        drawMessageFileProgress(ui,
+                                id + ".progress",
+                                x + 2.0f,
+                                actionBaseY,
+                                width - 4.0f,
+                                part);
+        actionBaseY += kMessageFileProgressBlockHeight;
+    }
 
     const std::optional<relaydesk::storage::TransferState> transferState =
         part.GetTransferState();
@@ -4733,13 +4992,19 @@ void drawMessageFilePart(eui::Ui& ui,
         const std::optional<OpenableMessagePath> openablePath =
             resolveOpenableMessagePath(part);
         if (!openablePath.has_value()) {
+            drawFileCleanedNotice(
+                ui,
+                id + ".cleaned",
+                x,
+                actionBaseY + kMessageFileTransferActionGap,
+                width);
             return;
         }
 
         constexpr float openButtonWidth = 48.0f;
         constexpr float revealButtonWidth = 82.0f;
         constexpr float gap = 6.0f;
-        const float rowY = y + cardHeight + kMessageFileTransferActionGap;
+        const float rowY = actionBaseY + kMessageFileTransferActionGap;
         const float rowWidth = openButtonWidth + gap + revealButtonWidth;
         float buttonX = x + width - rowWidth - 8.0f;
         drawTransferActionButton(
@@ -4778,7 +5043,7 @@ void drawMessageFilePart(eui::Ui& ui,
             constexpr float sendButtonWidth = 72.0f;
             constexpr float cancelButtonWidth = 48.0f;
             constexpr float gap = 6.0f;
-            const float rowY = y + cardHeight + kMessageFileTransferActionGap;
+            const float rowY = actionBaseY + kMessageFileTransferActionGap;
             const float rowWidth = sendButtonWidth + gap + cancelButtonWidth;
             float buttonX = x + width - rowWidth - 8.0f;
             drawTransferActionButton(
@@ -4818,7 +5083,7 @@ void drawMessageFilePart(eui::Ui& ui,
                 && state == relaydesk::storage::TransferState::Transferring);
         if (canCancel) {
             constexpr float cancelButtonWidth = 48.0f;
-            const float rowY = y + cardHeight + kMessageFileTransferActionGap;
+            const float rowY = actionBaseY + kMessageFileTransferActionGap;
             const float buttonX = x + width - cancelButtonWidth - 8.0f;
             drawTransferActionButton(
                 ui,
@@ -4847,7 +5112,7 @@ void drawMessageFilePart(eui::Ui& ui,
     const bool targetExists = incomingTransferTargetExists(part);
     const float buttonWidth = 56.0f;
     const float gap = 6.0f;
-    const float rowY = y + cardHeight + kMessageFileTransferActionGap;
+    const float rowY = actionBaseY + kMessageFileTransferActionGap;
     const float rowWidth = targetExists
         ? buttonWidth * 4.0f + gap * 3.0f
         : buttonWidth * 3.0f + gap * 2.0f;
@@ -5610,6 +5875,35 @@ void drawRuntimeMessageDeliveryState(
         .build();
 }
 
+void drawRuntimeMessageTimestamp(eui::Ui& ui,
+                                 const std::string& id,
+                                 float bubbleX,
+                                 float y,
+                                 float bubbleWidth,
+                                 bool outgoing,
+                                 const std::string& createdAt)
+{
+    const std::string timestamp = formatMessageTimestamp(createdAt);
+    if (timestamp.empty()) {
+        return;
+    }
+
+    const float timestampX = outgoing
+        ? bubbleX - kMessageTimestampGap - kMessageTimestampWidth
+        : bubbleX + bubbleWidth + kMessageTimestampGap;
+    text(ui,
+         id + ".time",
+         timestampX,
+         y + 8.0f,
+         kMessageTimestampWidth,
+         18.0f,
+         timestamp,
+         11.0f,
+         kSubtleText,
+         outgoing ? eui::HorizontalAlign::Right
+                  : eui::HorizontalAlign::Left);
+}
+
 float runtimeMessageBubbleMaxWidth(float timelineWidth,
                                    float availableBubbleWidth)
 {
@@ -5631,7 +5925,13 @@ void drawRuntimeChatTimelineContent(
     constexpr float sidePadding = 22.0f;
     constexpr float avatarBubbleGap = 12.0f;
     const float availableBubbleWidth =
-        std::max(160.0f, width - sidePadding * 2.0f - avatarSize - avatarBubbleGap);
+        std::max(160.0f,
+                 width
+                     - sidePadding * 2.0f
+                     - avatarSize
+                     - avatarBubbleGap
+                     - kMessageTimestampGap
+                     - kMessageTimestampWidth);
     const float messageBubbleMaxWidth =
         runtimeMessageBubbleMaxWidth(width, availableBubbleWidth);
     float y = 22.0f;
@@ -5681,6 +5981,13 @@ void drawRuntimeChatTimelineContent(
                                                              stickerMenuY,
                                                              stickerMenuPath,
                                                              stickerMenuName);
+        drawRuntimeMessageTimestamp(ui,
+                                    id,
+                                    bubbleX,
+                                    y,
+                                    bubbleWidth,
+                                    outgoing,
+                                    message.GetCreatedAt());
         if (outgoing) {
             const bool failedStateInside =
                 shouldDrawFailedDeliveryStateInsideBubble(message, outgoing);
@@ -5753,7 +6060,12 @@ void drawRuntimeChatTimeline(
         constexpr float avatarBubbleGap = 12.0f;
         const float availableBubbleWidth =
             std::max(160.0f,
-                     width - sidePadding * 2.0f - avatarSize - avatarBubbleGap);
+                     width
+                         - sidePadding * 2.0f
+                         - avatarSize
+                         - avatarBubbleGap
+                         - kMessageTimestampGap
+                         - kMessageTimestampWidth);
         const float messageBubbleMaxWidth =
             runtimeMessageBubbleMaxWidth(width, availableBubbleWidth);
         float measuredContentHeight = 42.0f;
@@ -7028,6 +7340,107 @@ void drawRelayDesk(eui::Ui& ui,
     drawAppUpdatePromptOverlay(ui, layout.width, layout.height, runtime);
 }
 
+#if defined(_WIN32)
+
+constexpr int kRelayDeskAppIconResourceId = 1;
+
+struct RelayDeskIconWindowSearchContext {
+    HWND window = nullptr;
+};
+
+BOOL CALLBACK relayDeskMainWindowIconEnumProc(HWND window, LPARAM contextAddress)
+{
+    DWORD processId = 0;
+    GetWindowThreadProcessId(window, &processId);
+    if (processId != GetCurrentProcessId() || !IsWindowVisible(window)) {
+        return TRUE;
+    }
+
+    wchar_t title[256]{};
+    GetWindowTextW(window,
+                   title,
+                   static_cast<int>(sizeof(title) / sizeof(title[0])));
+    const std::wstring titleText(title);
+    if (titleText.rfind(L"RelayDesk", 0) != 0) {
+        return TRUE;
+    }
+
+    auto* context = reinterpret_cast<RelayDeskIconWindowSearchContext*>(contextAddress);
+    context->window = window;
+    return FALSE;
+}
+
+HWND findRelayDeskMainWindowForIcon()
+{
+    RelayDeskIconWindowSearchContext context;
+    EnumWindows(relayDeskMainWindowIconEnumProc,
+                reinterpret_cast<LPARAM>(&context));
+    return context.window;
+}
+
+HICON loadRelayDeskIcon(int width, int height)
+{
+    return static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr),
+                                         MAKEINTRESOURCEW(kRelayDeskAppIconResourceId),
+                                         IMAGE_ICON,
+                                         width,
+                                         height,
+                                         LR_DEFAULTCOLOR));
+}
+
+void applyEmbeddedWindowIconOnce()
+{
+    static bool applied = false;
+    static HICON largeIcon = nullptr;
+    static HICON smallIcon = nullptr;
+    if (applied) {
+        return;
+    }
+
+    HWND window = findRelayDeskMainWindowForIcon();
+    if (window == nullptr) {
+        return;
+    }
+
+    if (largeIcon == nullptr) {
+        largeIcon = loadRelayDeskIcon(GetSystemMetrics(SM_CXICON),
+                                      GetSystemMetrics(SM_CYICON));
+    }
+    if (smallIcon == nullptr) {
+        smallIcon = loadRelayDeskIcon(GetSystemMetrics(SM_CXSMICON),
+                                      GetSystemMetrics(SM_CYSMICON));
+    }
+
+    if (largeIcon != nullptr) {
+        SendMessageW(window,
+                     WM_SETICON,
+                     ICON_BIG,
+                     reinterpret_cast<LPARAM>(largeIcon));
+        SetClassLongPtrW(window,
+                         GCLP_HICON,
+                         reinterpret_cast<LONG_PTR>(largeIcon));
+    }
+    if (smallIcon != nullptr) {
+        SendMessageW(window,
+                     WM_SETICON,
+                     ICON_SMALL,
+                     reinterpret_cast<LPARAM>(smallIcon));
+#if defined(ICON_SMALL2)
+        SendMessageW(window,
+                     WM_SETICON,
+                     ICON_SMALL2,
+                     reinterpret_cast<LPARAM>(smallIcon));
+#endif
+        SetClassLongPtrW(window,
+                         GCLP_HICONSM,
+                         reinterpret_cast<LONG_PTR>(smallIcon));
+    }
+
+    applied = true;
+}
+
+#endif
+
 } // namespace
 
 namespace app {
@@ -7050,6 +7463,10 @@ const DslAppConfig& dslAppConfig()
 
 void compose(eui::Ui& ui, const eui::Screen& screen)
 {
+#if defined(_WIN32)
+    applyEmbeddedWindowIconOnce();
+#endif
+
     auto& runtime = relaydesk::runtime::getRelayDeskRuntime();
 
     ui.stack("root")
