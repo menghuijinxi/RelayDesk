@@ -165,6 +165,7 @@ relaydesk::net::TransferOfferMessage makeTransferOffer()
     message.SetFileSize(4);
     message.SetSha256("hash-transfer-1");
     message.SetImageTransfer(true);
+    message.SetResumeRequest(true);
     return message;
 }
 
@@ -199,6 +200,7 @@ relaydesk::net::TransferAcceptMessage makeTransferAccept()
     message.SetTransferId("transfer-1");
     message.SetReceiverDeviceId("peer-device");
     message.SetSaveStrategy(relaydesk::net::TransferSaveStrategy::Overwrite);
+    message.SetResumeOffset(2);
     return message;
 }
 
@@ -299,6 +301,11 @@ int roundTripsTransferOfferFrame()
         check != 0) {
         return check;
     }
+    if (const int check = expect(decoded.GetResumeRequest(),
+                                 "Decoded transfer offer resume flag mismatch.");
+        check != 0) {
+        return check;
+    }
 
     return expect(decoded.GetSha256().value() == "hash-transfer-1",
                   "Decoded transfer offer hash mismatch.");
@@ -323,6 +330,11 @@ int treatsLegacyTransferOfferAsFile()
             })");
     if (const int check = expect(!decoded.GetImageTransfer(),
                                  "Legacy transfer offer was treated as an image.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(!decoded.GetResumeRequest(),
+                                 "Legacy transfer offer was treated as resume.");
         check != 0) {
         return check;
     }
@@ -371,9 +383,39 @@ int roundTripsTransferAcceptFrame()
         check != 0) {
         return check;
     }
+    if (const int check = expect(decoded.GetResumeOffset() == 2,
+                                 "Decoded transfer accept resume offset mismatch.");
+        check != 0) {
+        return check;
+    }
     return expect(decoded.GetSaveStrategy()
                       == relaydesk::net::TransferSaveStrategy::Overwrite,
                   "Decoded transfer accept save strategy mismatch.");
+}
+
+int treatsLegacyTransferAcceptAsFreshUniqueReceive()
+{
+    const relaydesk::net::TransferAcceptMessage decoded =
+        relaydesk::net::parseTransferAcceptHeader(
+            R"({
+                "protocol": "relaydesk.peer",
+                "version": 1,
+                "type": "transfer_accept",
+                "message": {
+                    "message_id": "message-1",
+                    "part_id": "p3",
+                    "transfer_id": "transfer-1",
+                    "receiver_device_id": "peer-device"
+                }
+            })");
+    if (const int check = expect(decoded.GetResumeOffset() == 0,
+                                 "Legacy transfer accept resume offset mismatch.");
+        check != 0) {
+        return check;
+    }
+    return expect(decoded.GetSaveStrategy()
+                      == relaydesk::net::TransferSaveStrategy::Unique,
+                  "Legacy transfer accept save strategy mismatch.");
 }
 
 int roundTripsTransferRejectFrame()
@@ -580,6 +622,10 @@ int main()
         return result;
     }
     if (const int result = roundTripsTransferAcceptFrame(); result != 0) {
+        return result;
+    }
+    if (const int result = treatsLegacyTransferAcceptAsFreshUniqueReceive();
+        result != 0) {
         return result;
     }
     if (const int result = roundTripsTransferRejectFrame(); result != 0) {

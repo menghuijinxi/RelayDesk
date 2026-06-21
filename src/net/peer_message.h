@@ -38,6 +38,7 @@ public:
     const std::optional<std::string>& GetSha256() const { return sha256_; }
     bool GetImageTransfer() const { return imageTransfer_; }
     bool GetFolderTransfer() const { return folderTransfer_; }
+    bool GetResumeRequest() const { return resumeRequest_; }
 
     void SetMessageId(std::string messageId) { messageId_ = std::move(messageId); }
     void SetPartId(std::string partId) { partId_ = std::move(partId); }
@@ -51,6 +52,7 @@ public:
     void SetSha256(std::string sha256) { sha256_ = std::move(sha256); }
     void SetImageTransfer(bool imageTransfer) { imageTransfer_ = imageTransfer; }
     void SetFolderTransfer(bool folderTransfer) { folderTransfer_ = folderTransfer; }
+    void SetResumeRequest(bool resumeRequest) { resumeRequest_ = resumeRequest; }
 
 protected:
     std::string messageId_;
@@ -62,6 +64,7 @@ protected:
     std::optional<std::string> sha256_;
     bool imageTransfer_ = false;
     bool folderTransfer_ = false;
+    bool resumeRequest_ = false;
 };
 
 class TransferAcceptMessage {
@@ -71,6 +74,7 @@ public:
     const std::string& GetTransferId() const { return transferId_; }
     const std::string& GetReceiverDeviceId() const { return receiverDeviceId_; }
     TransferSaveStrategy GetSaveStrategy() const { return saveStrategy_; }
+    std::uintmax_t GetResumeOffset() const { return resumeOffset_; }
 
     void SetMessageId(std::string messageId) { messageId_ = std::move(messageId); }
     void SetPartId(std::string partId) { partId_ = std::move(partId); }
@@ -83,6 +87,10 @@ public:
     {
         saveStrategy_ = saveStrategy;
     }
+    void SetResumeOffset(std::uintmax_t resumeOffset)
+    {
+        resumeOffset_ = resumeOffset;
+    }
 
 protected:
     std::string messageId_;
@@ -90,6 +98,7 @@ protected:
     std::string transferId_;
     std::string receiverDeviceId_;
     TransferSaveStrategy saveStrategy_ = TransferSaveStrategy::Unique;
+    std::uintmax_t resumeOffset_ = 0;
 };
 
 class TransferRejectMessage {

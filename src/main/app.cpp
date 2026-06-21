@@ -289,7 +289,8 @@ void drawFileDocumentCard(eui::Ui& ui,
                           bool folder,
                           bool compact,
                           bool wrapTitle = true,
-                          bool drawBackground = true);
+                          bool drawBackground = true,
+                          Color detailColor = kMutedText);
 void drawCompactImageDocumentCard(eui::Ui& ui,
                                   const std::string& id,
                                   float x,
@@ -2558,6 +2559,9 @@ struct OpenableMessagePath {
     bool directory = false;
 };
 
+std::optional<OpenableMessagePath> resolveOpenableMessagePath(
+    const relaydesk::storage::ChatMessagePart& part);
+
 bool shouldShowOpenActionsForTransferState(
     relaydesk::storage::TransferState transferState,
     bool outgoing)
@@ -2572,6 +2576,13 @@ bool shouldShowOpenActionsForTransferState(
         || transferState == relaydesk::storage::TransferState::Cancelled;
 }
 
+bool shouldShowIncomingTransferAcceptActions(
+    relaydesk::storage::TransferState transferState)
+{
+    return transferState == relaydesk::storage::TransferState::Offered
+        || transferState == relaydesk::storage::TransferState::Interrupted;
+}
+
 bool messageFilePartHasActions(
     const relaydesk::storage::ChatMessagePart& part,
     bool outgoing)
@@ -2583,14 +2594,20 @@ bool messageFilePartHasActions(
     const relaydesk::storage::TransferState state =
         part.GetTransferState().value();
     if (shouldShowOpenActionsForTransferState(state, outgoing)) {
+        if (!outgoing
+            && state == relaydesk::storage::TransferState::Cancelled) {
+            return resolveOpenableMessagePath(part).has_value();
+        }
         return true;
     }
     if (outgoing) {
         return state == relaydesk::storage::TransferState::Offered
+            || state == relaydesk::storage::TransferState::Interrupted
+            || state == relaydesk::storage::TransferState::Failed
             || state == relaydesk::storage::TransferState::Transferring;
     }
 
-    return state == relaydesk::storage::TransferState::Offered
+    return shouldShowIncomingTransferAcceptActions(state)
         || state == relaydesk::storage::TransferState::Transferring;
 }
 
@@ -2668,6 +2685,8 @@ std::string transferStateText(relaydesk::storage::TransferState state)
         return "待接收";
     case relaydesk::storage::TransferState::Transferring:
         return "传输中";
+    case relaydesk::storage::TransferState::Interrupted:
+        return "已中断";
     case relaydesk::storage::TransferState::Completed:
         return "已完成";
     case relaydesk::storage::TransferState::Failed:
@@ -2679,6 +2698,19 @@ std::string transferStateText(relaydesk::storage::TransferState state)
     }
 
     return "";
+}
+
+std::string transferStateText(relaydesk::storage::TransferState state,
+                              bool outgoing)
+{
+    if (state == relaydesk::storage::TransferState::Failed) {
+        return outgoing ? "发送失败" : "接收失败";
+    }
+    if (state == relaydesk::storage::TransferState::Interrupted) {
+        return outgoing ? "发送中断" : "接收中断";
+    }
+
+    return transferStateText(state);
 }
 
 std::optional<int> transferProgressPercent(
@@ -2705,6 +2737,7 @@ bool shouldShowTransferProgress(relaydesk::storage::TransferState state)
         return true;
     case relaydesk::storage::TransferState::Pending:
     case relaydesk::storage::TransferState::Offered:
+    case relaydesk::storage::TransferState::Interrupted:
     case relaydesk::storage::TransferState::Rejected:
         return false;
     }
@@ -2821,7 +2854,8 @@ float messageFilePartNodeHeight(
     return height;
 }
 
-std::string messagePartDetail(const relaydesk::storage::ChatMessagePart& part)
+std::string messagePartDetail(const relaydesk::storage::ChatMessagePart& part,
+                              bool outgoing)
 {
     std::string detail;
     if (part.GetType() == relaydesk::storage::MessagePartType::Folder) {
@@ -2837,7 +2871,7 @@ std::string messagePartDetail(const relaydesk::storage::ChatMessagePart& part)
         const relaydesk::storage::TransferState transferState =
             part.GetTransferState().value();
         const std::string stateText =
-            transferStateText(transferState);
+            transferStateText(transferState, outgoing);
         if (!stateText.empty()) {
             if (!detail.empty()) {
                 detail += " · ";
@@ -2846,6 +2880,26 @@ std::string messagePartDetail(const relaydesk::storage::ChatMessagePart& part)
         }
     }
     return detail;
+}
+
+Color messagePartDetailColor(const relaydesk::storage::ChatMessagePart& part)
+{
+    if (!part.GetTransferState().has_value()) {
+        return kMutedText;
+    }
+
+    const relaydesk::storage::TransferState state =
+        part.GetTransferState().value();
+    if (state == relaydesk::storage::TransferState::Failed
+        || state == relaydesk::storage::TransferState::Cancelled
+        || state == relaydesk::storage::TransferState::Rejected) {
+        return kDanger;
+    }
+    if (state == relaydesk::storage::TransferState::Interrupted) {
+        return kAmber;
+    }
+
+    return kMutedText;
 }
 
 std::optional<std::string> favoriteStickerImage(
@@ -4220,7 +4274,8 @@ void drawFileDocumentCard(eui::Ui& ui,
                           bool folder,
                           bool compact,
                           bool wrapTitle,
-                          bool drawBackground)
+                          bool drawBackground,
+                          Color detailColor)
 {
     const float height = wrapTitle ? fileDocumentCardHeight(width,
                                                             title,
@@ -4267,7 +4322,7 @@ void drawFileDocumentCard(eui::Ui& ui,
              18.0f,
              detail,
              compact ? 11.0f : 12.0f,
-             kMutedText);
+             detailColor);
     }
 }
 
@@ -4605,25 +4660,7 @@ MessageFlowLayout makeMessageFlowLayout(
 std::optional<relaydesk::storage::TransferState> messageTransferFooterState(
     const relaydesk::storage::ChatMessageRecord& message)
 {
-    bool hasCancelledTransfer = false;
-    for (const auto& part : message.GetParts()) {
-        if (!part.GetTransferState().has_value()) {
-            continue;
-        }
-
-        const relaydesk::storage::TransferState transferState =
-            part.GetTransferState().value();
-        if (transferState == relaydesk::storage::TransferState::Rejected) {
-            return transferState;
-        }
-        if (transferState == relaydesk::storage::TransferState::Cancelled) {
-            hasCancelledTransfer = true;
-        }
-    }
-
-    if (hasCancelledTransfer) {
-        return relaydesk::storage::TransferState::Cancelled;
-    }
+    (void)message;
     return std::nullopt;
 }
 
@@ -4695,6 +4732,7 @@ void drawMessageImagePart(eui::Ui& ui,
                           float width,
                           float height,
                           const relaydesk::storage::ChatMessagePart& part,
+                          bool outgoing,
                           bool& stickerMenuOpen,
                           float& stickerMenuX,
                           float& stickerMenuY,
@@ -4713,9 +4751,12 @@ void drawMessageImagePart(eui::Ui& ui,
                              y,
                              width,
                              messagePartTitle(part),
-                             messagePartDetail(part),
+                             messagePartDetail(part, outgoing),
                              false,
-                             false);
+                             false,
+                             true,
+                             true,
+                             messagePartDetailColor(part));
         return;
     }
 
@@ -4968,11 +5009,12 @@ void drawMessageFilePart(eui::Ui& ui,
                          y,
                          width,
                          messagePartTitle(part),
-                         messagePartDetail(part),
+                         messagePartDetail(part, outgoing),
                          folder,
                          false,
                          true,
-                         false);
+                         false,
+                         messagePartDetailColor(part));
     float actionBaseY = y + cardHeight;
     if (shouldShowTransferProgressBlock(part)) {
         drawMessageFileProgress(ui,
@@ -4986,18 +5028,27 @@ void drawMessageFilePart(eui::Ui& ui,
 
     const std::optional<relaydesk::storage::TransferState> transferState =
         part.GetTransferState();
+    const bool canAcceptIncomingTransfer =
+        !outgoing
+        && transferState.has_value()
+        && shouldShowIncomingTransferAcceptActions(transferState.value());
     if (transferState.has_value()
+        && !canAcceptIncomingTransfer
         && shouldShowOpenActionsForTransferState(transferState.value(),
                                                  outgoing)) {
         const std::optional<OpenableMessagePath> openablePath =
             resolveOpenableMessagePath(part);
         if (!openablePath.has_value()) {
-            drawFileCleanedNotice(
-                ui,
-                id + ".cleaned",
-                x,
-                actionBaseY + kMessageFileTransferActionGap,
-                width);
+            if (outgoing
+                || transferState.value()
+                    == relaydesk::storage::TransferState::Completed) {
+                drawFileCleanedNotice(
+                    ui,
+                    id + ".cleaned",
+                    x,
+                    actionBaseY + kMessageFileTransferActionGap,
+                    width);
+            }
             return;
         }
 
@@ -5035,6 +5086,61 @@ void drawMessageFilePart(eui::Ui& ui,
 
     if (transferState.has_value()) {
         const relaydesk::storage::TransferState state = transferState.value();
+        if (outgoing
+            && state == relaydesk::storage::TransferState::Interrupted
+            && (part.GetType() == relaydesk::storage::MessagePartType::File
+                || part.GetType()
+                    == relaydesk::storage::MessagePartType::Folder)) {
+            constexpr float continueButtonWidth = 72.0f;
+            const float rowY = actionBaseY + kMessageFileTransferActionGap;
+            const float buttonX = x + width - continueButtonWidth - 8.0f;
+            drawTransferActionButton(
+                ui,
+                id + ".resume_send",
+                buttonX,
+                rowY,
+                continueButtonWidth,
+                "继续发送",
+                true,
+                [&runtime,
+                 messageId = message.GetMessageId(),
+                 partId = part.GetPartId()] {
+                    runtime.sendSelectedPeerFileTransfer(messageId, partId);
+                });
+            return;
+        }
+
+        if (outgoing
+            && state == relaydesk::storage::TransferState::Failed
+            && (part.GetType() == relaydesk::storage::MessagePartType::File
+                || part.GetType()
+                    == relaydesk::storage::MessagePartType::Folder)) {
+            constexpr float resendButtonWidth = 72.0f;
+            const float rowY = actionBaseY + kMessageFileTransferActionGap;
+            const float buttonX = x + width - resendButtonWidth - 8.0f;
+            drawTransferActionButton(
+                ui,
+                id + ".resend",
+                buttonX,
+                rowY,
+                resendButtonWidth,
+                "重新发送",
+                true,
+                [&runtime,
+                 deliveryFailed =
+                     message.GetDeliveryState()
+                         == relaydesk::storage::DeliveryState::Failed,
+                 messageId = message.GetMessageId(),
+                 partId = part.GetPartId()] {
+                    if (deliveryFailed) {
+                        runtime.resendSelectedPeerMessage(messageId);
+                    } else {
+                        runtime.sendSelectedPeerFileTransfer(messageId, partId);
+                    }
+                });
+            return;
+        }
+
         if (outgoing
             && state == relaydesk::storage::TransferState::Offered
             && (part.GetType() == relaydesk::storage::MessagePartType::File
@@ -5104,8 +5210,28 @@ void drawMessageFilePart(eui::Ui& ui,
 
     if (outgoing
         || !transferState.has_value()
-        || transferState.value()
-            != relaydesk::storage::TransferState::Offered) {
+        || !shouldShowIncomingTransferAcceptActions(transferState.value())) {
+        return;
+    }
+
+    if (transferState.value()
+        == relaydesk::storage::TransferState::Interrupted) {
+        constexpr float continueButtonWidth = 72.0f;
+        const float rowY = actionBaseY + kMessageFileTransferActionGap;
+        const float buttonX = x + width - continueButtonWidth - 8.0f;
+        drawTransferActionButton(
+            ui,
+            id + ".resume_receive",
+            buttonX,
+            rowY,
+            continueButtonWidth,
+            "继续接收",
+            true,
+            [&runtime,
+             messageId = message.GetMessageId(),
+             partId = part.GetPartId()] {
+                runtime.acceptSelectedPeerFileTransfer(messageId, partId, false);
+            });
         return;
     }
 
@@ -5260,6 +5386,7 @@ void drawMessagePartNode(eui::Ui& ui,
                              node.width,
                              node.height,
                              part,
+                             outgoing,
                              stickerMenuOpen,
                              stickerMenuX,
                              stickerMenuY,

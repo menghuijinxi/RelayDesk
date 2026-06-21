@@ -266,6 +266,8 @@ public:
     const std::string& GetMessageId() const { return messageId_; }
     const std::string& GetPartId() const { return partId_; }
     const std::string& GetTransferId() const { return transferId_; }
+    std::uintmax_t GetResumeOffset() const { return resumeOffset_; }
+    bool GetResumeRequestOnly() const { return resumeRequestOnly_; }
 
     void SetReceiverDeviceId(std::string receiverDeviceId)
     {
@@ -277,12 +279,22 @@ public:
     {
         transferId_ = std::move(transferId);
     }
+    void SetResumeOffset(std::uintmax_t resumeOffset)
+    {
+        resumeOffset_ = resumeOffset;
+    }
+    void SetResumeRequestOnly(bool resumeRequestOnly)
+    {
+        resumeRequestOnly_ = resumeRequestOnly;
+    }
 
 protected:
     std::string receiverDeviceId_;
     std::string messageId_;
     std::string partId_;
     std::string transferId_;
+    std::uintmax_t resumeOffset_ = 0;
+    bool resumeRequestOnly_ = false;
 };
 
 class PendingTransferStateUpdate {
@@ -526,11 +538,16 @@ protected:
     void savePeerUnreadMessageCount(const std::string& peerDeviceId,
                                     int unreadMessageCount);
     void syncSelectedPeer();
+    void recoverInterruptedTransfers();
     void setSelectedPeerDeviceId(std::string deviceId);
     void loadSelectedPeerMessages();
     void enqueueIncomingChatMessage(
         relaydesk::storage::ChatMessageRecord record);
     void handleIncomingPeerFrame(relaydesk::net::PeerFrame frame);
+    void failIncomingTransferFromFrame(const relaydesk::net::PeerFrame& frame);
+    void interruptPendingIncomingTransfers();
+    void notifyIncomingTransferFailed(
+        const PendingIncomingTransfer& transfer);
     void acceptSelectedPeerFileTransferToPath(
         const std::string& messageId,
         const std::string& partId,

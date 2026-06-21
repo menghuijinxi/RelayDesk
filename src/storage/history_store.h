@@ -38,6 +38,7 @@ enum class TransferState {
     Pending,
     Offered,
     Transferring,
+    Interrupted,
     Completed,
     Failed,
     Cancelled,

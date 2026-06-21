@@ -256,12 +256,16 @@ protected:
         const std::string remoteAddress =
             error ? std::string{} : endpoint.address().to_string();
         const std::uint16_t remotePort = error ? 0 : endpoint.port();
+        bool transferStreamOpen = false;
 
         while (!stopping_.load()) {
             std::array<std::uint8_t, kPeerFrameHeaderSize> headerBytes{};
             boost::asio::read(socket, boost::asio::buffer(headerBytes), error);
             if (error == boost::asio::error::eof
                 || error == boost::asio::error::connection_reset) {
+                if (transferStreamOpen) {
+                    notifyError("Peer TCP transfer stream closed before completion.");
+                }
                 return;
             }
             if (error) {
@@ -274,7 +278,20 @@ protected:
                 readExact(socket, boost::asio::buffer(payload));
             }
 
-            notifyFrame(decodePeerFrame(header, payload), remoteAddress, remotePort);
+            PeerFrame frame = decodePeerFrame(header, payload);
+            switch (frame.GetType()) {
+            case PeerFrameType::TransferOffer:
+            case PeerFrameType::TransferChunk:
+                transferStreamOpen = true;
+                break;
+            case PeerFrameType::TransferComplete:
+            case PeerFrameType::TransferCancel:
+                transferStreamOpen = false;
+                break;
+            default:
+                break;
+            }
+            notifyFrame(std::move(frame), remoteAddress, remotePort);
         }
     }
 

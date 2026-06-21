@@ -293,6 +293,38 @@ int appendsAndLoadsRejectedTransferState()
                   "Rejected transfer state did not round-trip.");
 }
 
+int appendsAndLoadsInterruptedTransferState()
+{
+    const auto appPaths = makeAppPaths("interrupted-transfer");
+    auto record = makeBaseRecord("m-interrupted");
+    auto part = makeFileLikePart("p1",
+                                 relaydesk::storage::MessagePartType::File,
+                                 "transfer-interrupted",
+                                 "report.pdf");
+    part.SetTransferState(relaydesk::storage::TransferState::Interrupted);
+    part.SetTransferredSize(512);
+    record.AddPart(std::move(part));
+    relaydesk::storage::appendChatMessage(appPaths, "peer-device", record);
+
+    const auto result = relaydesk::storage::loadChatHistory(appPaths, "peer-device");
+    if (const int check = expect(result.GetRecords().size() == 1,
+                                 "Interrupted history record count mismatch.");
+        check != 0) {
+        return check;
+    }
+
+    const auto& loadedPart = result.GetRecords()[0].GetParts()[0];
+    if (const int check =
+            expect(loadedPart.GetTransferState().value()
+                       == relaydesk::storage::TransferState::Interrupted,
+                   "Interrupted transfer state did not round-trip.");
+        check != 0) {
+        return check;
+    }
+    return expect(loadedPart.GetTransferredSize().value() == 512,
+                  "Interrupted transfer progress did not round-trip.");
+}
+
 int appendsAndLoadsFolderWithoutManifest()
 {
     const auto appPaths = makeAppPaths("folder-without-manifest");
@@ -520,6 +552,9 @@ int main()
         return result;
     }
     if (const int result = appendsAndLoadsRejectedTransferState(); result != 0) {
+        return result;
+    }
+    if (const int result = appendsAndLoadsInterruptedTransferState(); result != 0) {
         return result;
     }
     if (const int result = appendsAndLoadsFolderWithoutManifest(); result != 0) {

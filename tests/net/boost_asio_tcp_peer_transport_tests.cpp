@@ -89,6 +89,17 @@ relaydesk::net::TransferChunkMessage makeTransferChunk()
     return message;
 }
 
+relaydesk::net::TransferCompleteMessage makeTransferComplete(
+    std::uintmax_t fileSize)
+{
+    relaydesk::net::TransferCompleteMessage message;
+    message.SetMessageId("tcp-message-1");
+    message.SetPartId("p3");
+    message.SetTransferId("tcp-transfer-1");
+    message.SetFileSize(fileSize);
+    return message;
+}
+
 bool waitForFrameOrError(ReceivedFrameState& state)
 {
     std::unique_lock lock(state.mutex);
@@ -194,7 +205,9 @@ int sendsAndReceivesTransferChunkFrame()
                  std::uint16_t remotePort) {
             {
                 std::lock_guard lock(state.mutex);
-                state.frame = std::move(frame);
+                if (!state.frame.has_value()) {
+                    state.frame = std::move(frame);
+                }
                 state.remoteAddress = std::move(remoteAddress);
                 state.remotePort = remotePort;
             }
@@ -212,10 +225,23 @@ int sendsAndReceivesTransferChunkFrame()
 
     const std::vector<std::uint8_t> body{0x01, 0x02, 0x03, 0x04};
     relaydesk::net::BoostAsioTcpPeerTransport sender(0);
-    sender.sendFrameTo(
+    int nextFrame = 0;
+    sender.sendFramesTo(
         "127.0.0.1",
         receiver.GetLocalPort(),
-        relaydesk::net::makeTransferChunkFrame(makeTransferChunk(), body));
+        [&nextFrame, &body]() -> std::optional<relaydesk::net::PeerFrame> {
+            ++nextFrame;
+            if (nextFrame == 1) {
+                return relaydesk::net::makeTransferChunkFrame(
+                    makeTransferChunk(),
+                    body);
+            }
+            if (nextFrame == 2) {
+                return relaydesk::net::makeTransferCompleteFrame(
+                    makeTransferComplete(body.size()));
+            }
+            return std::nullopt;
+        });
 
     const bool received = waitForFrameOrError(state);
     receiver.stop();
@@ -290,10 +316,14 @@ int sendsAndReceivesMultipleFramesOverOneConnection()
                     makeTransferChunk(),
                     body);
             }
+            if (nextFrame == 3) {
+                return relaydesk::net::makeTransferCompleteFrame(
+                    makeTransferComplete(2));
+            }
             return std::nullopt;
         });
 
-    const bool received = waitForFrameCountOrError(state, 2);
+    const bool received = waitForFrameCountOrError(state, 3);
     receiver.stop();
 
     if (const int check = expect(received,
@@ -306,7 +336,7 @@ int sendsAndReceivesMultipleFramesOverOneConnection()
         check != 0) {
         return check;
     }
-    if (const int check = expect(state.frames.size() == 2,
+    if (const int check = expect(state.frames.size() == 3,
                                  "TCP peer transport multi-frame count mismatch.");
         check != 0) {
         return check;
@@ -320,6 +350,13 @@ int sendsAndReceivesMultipleFramesOverOneConnection()
     if (const int check = expect(state.frames[1].GetType()
                                      == relaydesk::net::PeerFrameType::TransferChunk,
                                  "Second multi-frame type mismatch.");
+        check != 0) {
+        return check;
+    }
+    if (const int check =
+            expect(state.frames[2].GetType()
+                       == relaydesk::net::PeerFrameType::TransferComplete,
+                   "Third multi-frame type mismatch.");
         check != 0) {
         return check;
     }

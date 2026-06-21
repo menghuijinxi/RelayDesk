@@ -138,6 +138,8 @@ std::string toJsonValue(TransferState transferState)
         return "offered";
     case TransferState::Transferring:
         return "transferring";
+    case TransferState::Interrupted:
+        return "interrupted";
     case TransferState::Completed:
         return "completed";
     case TransferState::Failed:
@@ -161,6 +163,9 @@ TransferState transferStateFromJsonValue(const std::string& value)
     }
     if (value == "transferring") {
         return TransferState::Transferring;
+    }
+    if (value == "interrupted") {
+        return TransferState::Interrupted;
     }
     if (value == "completed") {
         return TransferState::Completed;

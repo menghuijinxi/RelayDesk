@@ -146,6 +146,7 @@ nlohmann::json transferOfferToJson(const TransferOfferMessage& message)
         {"file_size", message.GetFileSize()},
         {"image_transfer", message.GetImageTransfer()},
         {"folder_transfer", message.GetFolderTransfer()},
+        {"resume_request", message.GetResumeRequest()},
     };
     if (message.GetSha256().has_value()) {
         value["sha256"] = message.GetSha256().value();
@@ -164,6 +165,7 @@ TransferOfferMessage transferOfferFromJson(const nlohmann::json& value)
     message.SetFileSize(readRequiredFileSize(value));
     message.SetImageTransfer(value.value("image_transfer", false));
     message.SetFolderTransfer(value.value("folder_transfer", false));
+    message.SetResumeRequest(value.value("resume_request", false));
     if (value.contains("sha256") && value["sha256"].is_string()) {
         message.SetSha256(value["sha256"].get<std::string>());
     }
@@ -185,6 +187,7 @@ nlohmann::json transferAcceptToJson(const TransferAcceptMessage& message)
         {"transfer_id", message.GetTransferId()},
         {"receiver_device_id", message.GetReceiverDeviceId()},
         {"save_strategy", toJsonValue(message.GetSaveStrategy())},
+        {"resume_offset", message.GetResumeOffset()},
     };
 }
 
@@ -195,8 +198,17 @@ TransferAcceptMessage transferAcceptFromJson(const nlohmann::json& value)
     message.SetPartId(readRequiredString(value, "part_id"));
     message.SetTransferId(readRequiredString(value, "transfer_id"));
     message.SetReceiverDeviceId(readRequiredString(value, "receiver_device_id"));
-    message.SetSaveStrategy(
-        transferSaveStrategyFromJsonValue(readRequiredString(value, "save_strategy")));
+    if (value.contains("save_strategy")) {
+        message.SetSaveStrategy(
+            transferSaveStrategyFromJsonValue(
+                readRequiredString(value, "save_strategy")));
+    }
+    if (value.contains("resume_offset")) {
+        if (!value["resume_offset"].is_number_unsigned()) {
+            throw std::runtime_error("Transfer accept resume offset is invalid.");
+        }
+        message.SetResumeOffset(value["resume_offset"].get<std::uintmax_t>());
+    }
     return message;
 }
 
