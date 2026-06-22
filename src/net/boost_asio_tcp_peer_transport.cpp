@@ -258,40 +258,49 @@ protected:
         const std::uint16_t remotePort = error ? 0 : endpoint.port();
         bool transferStreamOpen = false;
 
-        while (!stopping_.load()) {
-            std::array<std::uint8_t, kPeerFrameHeaderSize> headerBytes{};
-            boost::asio::read(socket, boost::asio::buffer(headerBytes), error);
-            if (error == boost::asio::error::eof
-                || error == boost::asio::error::connection_reset) {
-                if (transferStreamOpen) {
-                    notifyError("Peer TCP transfer stream closed before completion.");
+        try {
+            while (!stopping_.load()) {
+                std::array<std::uint8_t, kPeerFrameHeaderSize> headerBytes{};
+                boost::asio::read(socket, boost::asio::buffer(headerBytes), error);
+                if (error == boost::asio::error::eof
+                    || error == boost::asio::error::connection_reset) {
+                    if (transferStreamOpen) {
+                        notifyError(
+                            "Peer TCP transfer stream closed before completion.");
+                    }
+                    return;
                 }
+                if (error) {
+                    throwNetworkError("Failed to read peer TCP frame", error);
+                }
+
+                const PeerFrameHeader header = decodePeerFrameHeader(headerBytes);
+                std::vector<std::uint8_t> payload(peerFramePayloadSize(header));
+                if (!payload.empty()) {
+                    readExact(socket, boost::asio::buffer(payload));
+                }
+
+                PeerFrame frame = decodePeerFrame(header, payload);
+                switch (frame.GetType()) {
+                case PeerFrameType::TransferOffer:
+                case PeerFrameType::TransferChunk:
+                    transferStreamOpen = true;
+                    break;
+                case PeerFrameType::TransferComplete:
+                case PeerFrameType::TransferCancel:
+                    transferStreamOpen = false;
+                    break;
+                default:
+                    break;
+                }
+                notifyFrame(std::move(frame), remoteAddress, remotePort);
+            }
+        } catch (const std::exception&) {
+            if (transferStreamOpen && !stopping_.load()) {
+                notifyError("Peer TCP transfer stream closed before completion.");
                 return;
             }
-            if (error) {
-                throwNetworkError("Failed to read peer TCP frame", error);
-            }
-
-            const PeerFrameHeader header = decodePeerFrameHeader(headerBytes);
-            std::vector<std::uint8_t> payload(peerFramePayloadSize(header));
-            if (!payload.empty()) {
-                readExact(socket, boost::asio::buffer(payload));
-            }
-
-            PeerFrame frame = decodePeerFrame(header, payload);
-            switch (frame.GetType()) {
-            case PeerFrameType::TransferOffer:
-            case PeerFrameType::TransferChunk:
-                transferStreamOpen = true;
-                break;
-            case PeerFrameType::TransferComplete:
-            case PeerFrameType::TransferCancel:
-                transferStreamOpen = false;
-                break;
-            default:
-                break;
-            }
-            notifyFrame(std::move(frame), remoteAddress, remotePort);
+            throw;
         }
     }
 

@@ -11,9 +11,12 @@
 #include <string>
 #include <vector>
 
+#include <boost/asio.hpp>
+
 namespace {
 
 using namespace std::chrono_literals;
+using boost::asio::ip::tcp;
 
 class ReceivedFrameState {
 public:
@@ -89,6 +92,18 @@ relaydesk::net::TransferChunkMessage makeTransferChunk()
     return message;
 }
 
+relaydesk::net::TransferOfferMessage makeTransferOffer()
+{
+    relaydesk::net::TransferOfferMessage message;
+    message.SetMessageId("tcp-message-1");
+    message.SetPartId("p3");
+    message.SetTransferId("tcp-transfer-1");
+    message.SetSenderDeviceId("sender-device");
+    message.SetFileName("tcp-transfer.bin");
+    message.SetFileSize(4);
+    return message;
+}
+
 relaydesk::net::TransferCompleteMessage makeTransferComplete(
     std::uintmax_t fileSize)
 {
@@ -114,6 +129,39 @@ bool waitForFrameCountOrError(ReceivedFrameState& state, std::size_t count)
     return state.condition.wait_for(lock, 2s, [&state, count] {
         return state.frames.size() >= count || !state.errors.empty();
     });
+}
+
+bool waitForErrorCount(ReceivedFrameState& state, std::size_t count)
+{
+    std::unique_lock lock(state.mutex);
+    return state.condition.wait_for(lock, 2s, [&state, count] {
+        return state.errors.size() >= count;
+    });
+}
+
+void writeRawFrame(tcp::socket& socket, const relaydesk::net::PeerFrame& frame)
+{
+    const std::array<std::uint8_t, relaydesk::net::kPeerFrameHeaderSize>
+        frameHeader = relaydesk::net::encodePeerFrameHeader(frame);
+    const std::array<boost::asio::const_buffer, 3> buffers{{
+        boost::asio::buffer(frameHeader),
+        boost::asio::buffer(frame.GetHeader()),
+        boost::asio::buffer(frame.GetBody()),
+    }};
+    boost::asio::write(socket, buffers);
+}
+
+void writePartialRawFrameBody(tcp::socket& socket,
+                              const relaydesk::net::PeerFrame& frame,
+                              std::size_t bodyBytesToWrite)
+{
+    const std::array<std::uint8_t, relaydesk::net::kPeerFrameHeaderSize>
+        frameHeader = relaydesk::net::encodePeerFrameHeader(frame);
+    boost::asio::write(socket, boost::asio::buffer(frameHeader));
+    boost::asio::write(socket, boost::asio::buffer(frame.GetHeader()));
+    boost::asio::write(socket,
+                       boost::asio::buffer(frame.GetBody().data(),
+                                           bodyBytesToWrite));
 }
 
 int sendsAndReceivesChatMessageFrame()
@@ -365,6 +413,67 @@ int sendsAndReceivesMultipleFramesOverOneConnection()
                   "TCP peer transport multi-frame endpoint was missing.");
 }
 
+int reportsInterruptedTransferStreamWhenPeerDisconnectsMidFrame()
+{
+    ReceivedFrameState state;
+    relaydesk::net::BoostAsioTcpPeerTransport receiver(0);
+    receiver.SetFrameCallback(
+        [&state](relaydesk::net::PeerFrame frame,
+                 std::string remoteAddress,
+                 std::uint16_t remotePort) {
+            {
+                std::lock_guard lock(state.mutex);
+                state.frames.push_back(std::move(frame));
+                state.remoteAddress = std::move(remoteAddress);
+                state.remotePort = remotePort;
+            }
+            state.condition.notify_all();
+        });
+    receiver.SetErrorCallback(
+        [&state](std::string message) {
+            {
+                std::lock_guard lock(state.mutex);
+                state.errors.push_back(std::move(message));
+            }
+            state.condition.notify_all();
+        });
+    receiver.start();
+
+    boost::asio::io_context ioContext;
+    tcp::socket socket(ioContext);
+    socket.connect(tcp::endpoint(boost::asio::ip::make_address("127.0.0.1"),
+                                 receiver.GetLocalPort()));
+    writeRawFrame(socket,
+                  relaydesk::net::makeTransferOfferFrame(makeTransferOffer()));
+    const std::vector<std::uint8_t> body{0x01, 0x02, 0x03, 0x04};
+    const relaydesk::net::PeerFrame chunkFrame =
+        relaydesk::net::makeTransferChunkFrame(makeTransferChunk(), body);
+    writePartialRawFrameBody(socket, chunkFrame, 2);
+    socket.close();
+
+    const bool interrupted = waitForErrorCount(state, 1);
+    receiver.stop();
+
+    if (const int check =
+            expect(interrupted,
+                   "TCP peer transport did not report an interrupted stream.");
+        check != 0) {
+        return check;
+    }
+    if (const int check =
+            expect(state.errors[0]
+                       == "Peer TCP transfer stream closed before completion.",
+                   "TCP peer transport reported the wrong interrupted stream error.");
+        check != 0) {
+        return check;
+    }
+
+    return expect(state.frames.size() == 1
+                      && state.frames[0].GetType()
+                          == relaydesk::net::PeerFrameType::TransferOffer,
+                  "TCP peer transport should only deliver the complete offer frame.");
+}
+
 } // namespace
 
 int main()
@@ -376,7 +485,11 @@ int main()
         if (const int result = sendsAndReceivesTransferChunkFrame(); result != 0) {
             return result;
         }
-        return sendsAndReceivesMultipleFramesOverOneConnection();
+        if (const int result = sendsAndReceivesMultipleFramesOverOneConnection();
+            result != 0) {
+            return result;
+        }
+        return reportsInterruptedTransferStreamWhenPeerDisconnectsMidFrame();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

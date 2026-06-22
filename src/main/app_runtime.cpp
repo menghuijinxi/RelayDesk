@@ -3016,8 +3016,10 @@ void RelayDeskRuntime::acceptSelectedPeerFileTransferToPath(
                                       localUser_.GetDeviceId(),
                                       overwriteExisting,
                                       resumeOffset));
-    const bool accepted = ::core::async::runOnce(
-        "relaydesk.transfer.accept." + transfer.GetTransferId(),
+    const std::string acceptTaskKey =
+        "relaydesk.transfer.accept." + transfer.GetTransferId();
+    const bool accepted = ::core::async::restart(
+        acceptTaskKey,
         [this, peer = selectedPeer.value(), frame] {
             try {
                 if (!tcpPeerTransport_) {
@@ -4156,8 +4158,10 @@ void RelayDeskRuntime::handleIncomingPeerFrame(relaydesk::net::PeerFrame frame)
                 makePendingTransferAcceptFrame(transfer,
                                                localUser_.GetDeviceId(),
                                                receivedSize);
-            const bool accepted = ::core::async::runOnce(
-                "relaydesk.transfer.resume_accept." + offer.GetTransferId(),
+            const std::string acceptTaskKey =
+                "relaydesk.transfer.resume_accept." + offer.GetTransferId();
+            const bool accepted = ::core::async::restart(
+                acceptTaskKey,
                 [this, senderDeviceId = offer.GetSenderDeviceId(), acceptFrame] {
                     try {
                         const std::optional<PeerListItem> sender =
@@ -4595,8 +4599,9 @@ void RelayDeskRuntime::sendOutgoingTransferRequest(
     updateSelectedPeerMessageRecord(transferringRecord);
     requestUiRefresh();
 
-    const bool accepted = ::core::async::runOnce(
-        "relaydesk.transfer.send." + request.GetTransferId(),
+    const std::string taskKey = "relaydesk.transfer.send." + request.GetTransferId();
+    const bool accepted = ::core::async::restart(
+        taskKey,
         [this, peer = *peer, transferringRecord, request](
             const ::core::async::CancelToken& token) {
             try {
