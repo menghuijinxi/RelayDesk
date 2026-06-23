@@ -23,6 +23,7 @@ std::optional<std::filesystem::path> createImageThumbnail(
 std::optional<std::filesystem::path> selectSavePathFromDialog(
     const std::filesystem::path& initialDirectory,
     const std::string& suggestedFileName);
+bool copyImageFileToClipboard(const std::filesystem::path& sourcePath);
 bool isPasteShortcutDown();
 bool consumeBackspacePressed();
 

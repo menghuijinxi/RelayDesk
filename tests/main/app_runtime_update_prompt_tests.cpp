@@ -148,6 +148,59 @@ std::string readTextFileIfExists(const std::filesystem::path& path)
     return readTextFile(path);
 }
 
+void appendUnsigned32LittleEndian(std::vector<std::uint8_t>& bytes,
+                                  std::uint32_t value)
+{
+    for (std::size_t index = 0; index < 4; ++index) {
+        bytes.push_back(
+            static_cast<std::uint8_t>((value >> (index * 8u)) & 0xFFu));
+    }
+}
+
+void appendUnsigned64LittleEndian(std::vector<std::uint8_t>& bytes,
+                                  std::uint64_t value)
+{
+    for (std::size_t index = 0; index < 8; ++index) {
+        bytes.push_back(
+            static_cast<std::uint8_t>((value >> (index * 8u)) & 0xFFu));
+    }
+}
+
+void appendFolderPackageEntry(std::vector<std::uint8_t>& bytes,
+                              std::uint8_t type,
+                              const std::string& relativePath,
+                              const std::string& content)
+{
+    bytes.push_back(type);
+    appendUnsigned32LittleEndian(
+        bytes, static_cast<std::uint32_t>(relativePath.size()));
+    appendUnsigned64LittleEndian(
+        bytes, static_cast<std::uint64_t>(content.size()));
+    bytes.insert(bytes.end(), relativePath.begin(), relativePath.end());
+    bytes.insert(bytes.end(), content.begin(), content.end());
+}
+
+std::vector<std::uint8_t> makeFolderPackagePayload()
+{
+    std::vector<std::uint8_t> bytes;
+    constexpr std::array<char, 8> magic{
+        'R',
+        'D',
+        'F',
+        'O',
+        'L',
+        'D',
+        'R',
+        '1',
+    };
+    bytes.insert(bytes.end(), magic.begin(), magic.end());
+    appendUnsigned64LittleEndian(bytes, 3);
+    appendFolderPackageEntry(bytes, 1, "nested", "");
+    appendFolderPackageEntry(bytes, 2, "root.txt", "AB");
+    appendFolderPackageEntry(bytes, 2, "nested/child.txt", "CD");
+    return bytes;
+}
+
 std::filesystem::path processTestRoot()
 {
     return std::filesystem::path(RELAYDESK_APP_RUNTIME_PROCESS_TEST_WORK_DIR);
@@ -403,6 +456,37 @@ relaydesk::net::TransferCompleteMessage makeTransferComplete(
     return message;
 }
 
+relaydesk::net::TransferOfferMessage makeFolderTransferOffer(
+    const std::string& messageId,
+    const std::string& partId,
+    const std::string& transferId,
+    std::uintmax_t fileSize)
+{
+    relaydesk::net::TransferOfferMessage message;
+    message.SetMessageId(messageId);
+    message.SetPartId(partId);
+    message.SetTransferId(transferId);
+    message.SetSenderDeviceId("runtime-transfer-peer");
+    message.SetFileName("Project");
+    message.SetFileSize(fileSize);
+    message.SetFolderTransfer(true);
+    return message;
+}
+
+relaydesk::net::TransferCompleteMessage makeFolderTransferComplete(
+    const std::string& messageId,
+    const std::string& partId,
+    const std::string& transferId,
+    std::uintmax_t fileSize)
+{
+    relaydesk::net::TransferCompleteMessage message;
+    message.SetMessageId(messageId);
+    message.SetPartId(partId);
+    message.SetTransferId(transferId);
+    message.SetFileSize(fileSize);
+    return message;
+}
+
 relaydesk::storage::ChatMessageRecord makeInterruptedIncomingTransferRecord(
     const relaydesk::storage::AppPaths& appPaths,
     const relaydesk::runtime::LocalUserSummary& localUser,
@@ -489,6 +573,73 @@ relaydesk::storage::ChatMessageRecord makeOutgoingInterruptedTransferRecord(
     record.SetReceiverDisplayNameSnapshot("Runtime Transfer Peer");
     record.SetCreatedAt("2026-06-21T12:00:00Z");
     record.SetDeliveryState(relaydesk::storage::DeliveryState::Pending);
+    record.SetParts({part});
+    return record;
+}
+
+relaydesk::storage::ChatMessageRecord makeIncomingFolderTransferRecord(
+    const relaydesk::runtime::LocalUserSummary& localUser,
+    const std::string& messageId,
+    const std::string& partId,
+    const std::string& transferId,
+    std::uintmax_t fileSize)
+{
+    relaydesk::storage::ChatMessagePart part;
+    part.SetPartId(partId);
+    part.SetType(relaydesk::storage::MessagePartType::Folder);
+    part.SetTransferId(transferId);
+    part.SetTransferState(relaydesk::storage::TransferState::Offered);
+    part.SetFileName("Project");
+    part.SetFileSize(fileSize);
+    part.SetTransferredSize(0);
+
+    relaydesk::storage::ChatMessageRecord record;
+    record.SetMessageId(messageId);
+    record.SetConversationId(
+        relaydesk::storage::makeDirectConversationId(localUser.GetDeviceId(),
+                                                     "runtime-transfer-peer"));
+    record.SetDirection(relaydesk::storage::MessageDirection::Incoming);
+    record.SetSenderDeviceId("runtime-transfer-peer");
+    record.SetReceiverDeviceId(localUser.GetDeviceId());
+    record.SetSenderDisplayNameSnapshot("Runtime Transfer Peer");
+    record.SetReceiverDisplayNameSnapshot(localUser.GetDisplayName());
+    record.SetCreatedAt("2026-06-22T10:00:00Z");
+    record.SetDeliveryState(relaydesk::storage::DeliveryState::Received);
+    record.SetParts({part});
+    return record;
+}
+
+relaydesk::storage::ChatMessageRecord makeOutgoingFolderTransferRecord(
+    const relaydesk::storage::AppPaths& appPaths,
+    const relaydesk::runtime::LocalUserSummary& localUser,
+    const std::filesystem::path& localPath,
+    const std::string& messageId,
+    const std::string& partId,
+    const std::string& transferId,
+    std::uintmax_t fileSize)
+{
+    relaydesk::storage::ChatMessagePart part;
+    part.SetPartId(partId);
+    part.SetType(relaydesk::storage::MessagePartType::Folder);
+    part.SetTransferId(transferId);
+    part.SetTransferState(relaydesk::storage::TransferState::Offered);
+    part.SetFileName("Project");
+    part.SetFileSize(fileSize);
+    part.SetTransferredSize(0);
+    part.SetLocalPath(makeWorkRelativePath(appPaths, localPath));
+
+    relaydesk::storage::ChatMessageRecord record;
+    record.SetMessageId(messageId);
+    record.SetConversationId(
+        relaydesk::storage::makeDirectConversationId(localUser.GetDeviceId(),
+                                                     "runtime-transfer-peer"));
+    record.SetDirection(relaydesk::storage::MessageDirection::Outgoing);
+    record.SetSenderDeviceId(localUser.GetDeviceId());
+    record.SetReceiverDeviceId("runtime-transfer-peer");
+    record.SetSenderDisplayNameSnapshot(localUser.GetDisplayName());
+    record.SetReceiverDisplayNameSnapshot("Runtime Transfer Peer");
+    record.SetCreatedAt("2026-06-22T11:00:00Z");
+    record.SetDeliveryState(relaydesk::storage::DeliveryState::Sent);
     record.SetParts({part});
     return record;
 }
@@ -1404,6 +1555,320 @@ int resumesInterruptedOutgoingTransferAfterResumeAccept()
     return 0;
 }
 
+int acceptsIncomingFolderTransferAndExtractsPayload()
+{
+    const relaydesk::storage::AppPaths appPaths =
+        relaydesk::storage::createAppPaths();
+    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    relaydesk::storage::ensureAppDirectories(appPaths);
+
+    const std::uint16_t runtimeListenPort = reserveAvailableTcpPort();
+    relaydesk::runtime::RelayDeskRuntimeOptions options =
+        makeTransferRuntimeOptions();
+    options.SetTcpListenPort(runtimeListenPort);
+
+    struct ReceivedTransferFrames {
+        std::mutex mutex;
+        std::vector<relaydesk::net::PeerFrame> frames;
+    };
+
+    ReceivedTransferFrames received;
+    relaydesk::net::BoostAsioTcpPeerTransport sender(0);
+    sender.SetFrameCallback(
+        [&received](relaydesk::net::PeerFrame frame,
+                    std::string,
+                    std::uint16_t) {
+            std::lock_guard lock(received.mutex);
+            received.frames.push_back(std::move(frame));
+        });
+    sender.start();
+
+    struct SenderStopper {
+        relaydesk::net::BoostAsioTcpPeerTransport& sender;
+
+        ~SenderStopper()
+        {
+            sender.stop();
+        }
+    } senderStopper{sender};
+
+    const std::vector<std::uint8_t> package = makeFolderPackagePayload();
+    const std::string messageId = "incoming-folder-message";
+    const std::string partId = "incoming-folder-part";
+    const std::string transferId = "incoming-folder-transfer";
+
+    {
+        TestableRelayDeskRuntime runtime(options);
+        if (!runtime.GetStartupErrorMessage().empty()) {
+            return fail("Runtime startup failed: "
+                        + runtime.GetStartupErrorMessage());
+        }
+
+        runtime.receivePeerProfile(
+            makeTransferPeerProfile(sender.GetLocalPort()),
+            true);
+        runtime.loadSelectedTransferRecord(
+            makeIncomingFolderTransferRecord(runtime.GetLocalUser(),
+                                             messageId,
+                                             partId,
+                                             transferId,
+                                             4));
+
+        runtime.acceptSelectedPeerFileTransfer(messageId, partId, false);
+        if (!waitForCondition(runtime, [&received] {
+                std::lock_guard lock(received.mutex);
+                return !received.frames.empty();
+            })) {
+            return fail("Incoming folder accept frame was not sent.");
+        }
+
+        {
+            std::lock_guard lock(received.mutex);
+            const relaydesk::net::TransferAcceptMessage accept =
+                relaydesk::net::parseTransferAcceptFrame(received.frames.front());
+            if (const int result =
+                    expect(accept.GetTransferId() == transferId,
+                           "Incoming folder accept transfer id mismatch.");
+                result != 0) {
+                return result;
+            }
+        }
+
+        std::vector<relaydesk::net::PeerFrame> payloadFrames;
+        payloadFrames.push_back(
+            relaydesk::net::makeTransferOfferFrame(
+                makeFolderTransferOffer(messageId,
+                                        partId,
+                                        transferId,
+                                        package.size())));
+        payloadFrames.push_back(
+            relaydesk::net::makeTransferChunkFrame(
+                makeTransferChunk(messageId, partId, transferId, 0),
+                package));
+        payloadFrames.push_back(
+            relaydesk::net::makeTransferCompleteFrame(
+                makeFolderTransferComplete(messageId,
+                                           partId,
+                                           transferId,
+                                           package.size())));
+        std::size_t payloadFrameIndex = 0;
+        sender.sendFramesTo(
+            "127.0.0.1",
+            runtimeListenPort,
+            [&payloadFrames,
+             &payloadFrameIndex]() -> std::optional<relaydesk::net::PeerFrame> {
+                if (payloadFrameIndex >= payloadFrames.size()) {
+                    return std::nullopt;
+                }
+                return payloadFrames[payloadFrameIndex++];
+            });
+
+        if (!waitForCondition(runtime, [&runtime] {
+                const auto& messages = runtime.GetSelectedPeerMessages();
+                if (messages.empty() || messages.front().GetParts().empty()) {
+                    return false;
+                }
+                const auto& part = messages.front().GetParts().front();
+                return part.GetTransferState().has_value()
+                    && part.GetTransferState().value()
+                        == relaydesk::storage::TransferState::Completed;
+            })) {
+            return fail("Incoming folder transfer did not complete.");
+        }
+
+        const std::filesystem::path targetRoot =
+            appPaths.GetInboxDirectory() / "Project";
+        if (const int result = expect(readTextFile(targetRoot / "root.txt") == "AB",
+                                      "Incoming folder root file mismatch.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(readTextFile(targetRoot / "nested" / "child.txt") == "CD",
+                       "Incoming folder nested file mismatch.");
+            result != 0) {
+            return result;
+        }
+
+        const auto& part = runtime.GetSelectedPeerMessages()
+                               .front()
+                               .GetParts()
+                               .front();
+        if (const int result =
+                expect(part.GetFileSize().has_value()
+                           && part.GetFileSize().value() == package.size(),
+                       "Incoming folder file size did not use package size.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(part.GetTransferredSize().has_value()
+                           && part.GetTransferredSize().value()
+                               == package.size(),
+                       "Incoming folder progress did not reach package size.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(part.GetLocalPath().has_value()
+                           && part.GetLocalPath().value()
+                               == makeWorkRelativePath(appPaths, targetRoot),
+                       "Incoming folder local path mismatch.");
+            result != 0) {
+            return result;
+        }
+    }
+
+    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    return 0;
+}
+
+int sendsOutgoingFolderTransferWithPackageProgressAndSourcePath()
+{
+    const relaydesk::storage::AppPaths appPaths =
+        relaydesk::storage::createAppPaths();
+    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    relaydesk::storage::ensureAppDirectories(appPaths);
+
+    const std::filesystem::path sourceFolder =
+        appPaths.GetWorkDirectory() / "Project";
+    writeBytes(sourceFolder / "root.txt", {'A', 'B'});
+    writeBytes(sourceFolder / "nested" / "child.txt", {'C', 'D'});
+
+    struct ReceivedTransferFrames {
+        std::mutex mutex;
+        std::vector<relaydesk::net::PeerFrame> frames;
+    };
+
+    ReceivedTransferFrames received;
+    relaydesk::net::BoostAsioTcpPeerTransport receiver(0);
+    receiver.SetFrameCallback(
+        [&received](relaydesk::net::PeerFrame frame,
+                    std::string,
+                    std::uint16_t) {
+            std::lock_guard lock(received.mutex);
+            received.frames.push_back(std::move(frame));
+        });
+    receiver.start();
+
+    struct ReceiverStopper {
+        relaydesk::net::BoostAsioTcpPeerTransport& receiver;
+
+        ~ReceiverStopper()
+        {
+            receiver.stop();
+        }
+    } receiverStopper{receiver};
+
+    const std::string messageId = "outgoing-folder-message";
+    const std::string partId = "outgoing-folder-part";
+    const std::string transferId = "outgoing-folder-transfer";
+
+    {
+        TestableRelayDeskRuntime runtime(makeTransferRuntimeOptions());
+        if (!runtime.GetStartupErrorMessage().empty()) {
+            return fail("Runtime startup failed: "
+                        + runtime.GetStartupErrorMessage());
+        }
+
+        runtime.receivePeerProfile(
+            makeTransferPeerProfile(receiver.GetLocalPort()),
+            true);
+        runtime.loadSelectedTransferRecord(
+            makeOutgoingFolderTransferRecord(appPaths,
+                                             runtime.GetLocalUser(),
+                                             sourceFolder,
+                                             messageId,
+                                             partId,
+                                             transferId,
+                                             4));
+
+        runtime.sendSelectedPeerFileTransfer(messageId, partId);
+        if (!waitForCondition(runtime, [&runtime, &received] {
+                {
+                    std::lock_guard lock(received.mutex);
+                    if (received.frames.size() < 3) {
+                        return false;
+                    }
+                }
+                const auto& messages = runtime.GetSelectedPeerMessages();
+                if (messages.empty() || messages.front().GetParts().empty()) {
+                    return false;
+                }
+                const auto& part = messages.front().GetParts().front();
+                return part.GetTransferState().has_value()
+                    && part.GetTransferState().value()
+                        == relaydesk::storage::TransferState::Completed;
+            })) {
+            return fail("Outgoing folder transfer did not complete.");
+        }
+
+        std::uintmax_t packageSize = 0;
+        {
+            std::lock_guard lock(received.mutex);
+            const relaydesk::net::TransferOfferMessage offer =
+                relaydesk::net::parseTransferOfferFrame(received.frames[0]);
+            if (const int result = expect(offer.GetFolderTransfer(),
+                                          "Outgoing folder offer flag missing.");
+                result != 0) {
+                return result;
+            }
+            packageSize = offer.GetFileSize();
+
+            const relaydesk::net::TransferCompleteMessage complete =
+                relaydesk::net::parseTransferCompleteFrame(received.frames[2]);
+            if (const int result =
+                    expect(complete.GetFileSize() == packageSize,
+                           "Outgoing folder complete size mismatch.");
+                result != 0) {
+                return result;
+            }
+        }
+
+        if (const int result = expect(packageSize > 4,
+                                      "Folder package size did not include metadata.");
+            result != 0) {
+            return result;
+        }
+
+        const auto& part = runtime.GetSelectedPeerMessages()
+                               .front()
+                               .GetParts()
+                               .front();
+        if (const int result =
+                expect(part.GetFileSize().has_value()
+                           && part.GetFileSize().value() == packageSize,
+                       "Outgoing folder progress total did not use package size.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(part.GetTransferredSize().has_value()
+                           && part.GetTransferredSize().value() == packageSize,
+                       "Outgoing folder progress did not reach package size.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(part.GetLocalPath().has_value()
+                           && part.GetLocalPath().value()
+                               == makeWorkRelativePath(appPaths, sourceFolder),
+                       "Outgoing folder local path should stay on source folder.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(std::filesystem::is_directory(sourceFolder),
+                       "Outgoing folder source path disappeared after transfer.");
+            result != 0) {
+            return result;
+        }
+    }
+
+    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    return 0;
+}
+
 int interruptsIncomingTransferWhenTcpStreamBreaksMidFrame()
 {
     const relaydesk::storage::AppPaths appPaths =
@@ -2138,6 +2603,16 @@ int main(int argc, char** argv)
                 resumesInterruptedOutgoingTransferAfterResumeAccept();
             outgoingResumeResult != 0) {
             return outgoingResumeResult;
+        }
+        if (const int incomingFolderResult =
+                acceptsIncomingFolderTransferAndExtractsPayload();
+            incomingFolderResult != 0) {
+            return incomingFolderResult;
+        }
+        if (const int outgoingFolderResult =
+                sendsOutgoingFolderTransferWithPackageProgressAndSourcePath();
+            outgoingFolderResult != 0) {
+            return outgoingFolderResult;
         }
         if (const int tcpBreakResult =
                 interruptsIncomingTransferWhenTcpStreamBreaksMidFrame();

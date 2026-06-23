@@ -55,6 +55,8 @@ constexpr Color kMutedText{0.360f, 0.390f, 0.430f, 1.0f};
 constexpr Color kSubtleText{0.560f, 0.590f, 0.620f, 1.0f};
 constexpr Color kTeal{0.000f, 0.590f, 0.590f, 1.0f};
 constexpr Color kTealSoft{0.860f, 0.965f, 0.960f, 1.0f};
+constexpr Color kSelectionFill{0.000f, 0.590f, 0.590f, 0.18f};
+constexpr Color kLinkText{0.000f, 0.440f, 0.720f, 1.0f};
 constexpr Color kAmber{0.890f, 0.560f, 0.000f, 1.0f};
 constexpr Color kAmberSoft{1.000f, 0.970f, 0.900f, 1.0f};
 constexpr Color kDanger{0.820f, 0.190f, 0.120f, 1.0f};
@@ -753,7 +755,7 @@ std::filesystem::path resolveWorkRelativePath(
     const relaydesk::storage::AppPaths& appPaths,
     const std::string& relativePath)
 {
-    std::filesystem::path filePath(relativePath);
+    std::filesystem::path filePath = filesystemPathFromUtf8String(relativePath);
     if (filePath.is_relative()) {
         filePath = appPaths.GetWorkDirectory() / filePath;
     }
@@ -1972,8 +1974,13 @@ std::size_t composerDraftAttachmentCount(
 
 struct ComposerCaretState {
     std::size_t position = 0;
+    std::size_t selectionAnchor = 0;
     float preferredX = 0.0f;
     bool hasPreferredX = false;
+    float selectionBoundsX = 0.0f;
+    float selectionBoundsY = 0.0f;
+    float selectionBoundsWidth = 0.0f;
+    float selectionBoundsHeight = 0.0f;
 };
 
 bool hasComposerDraftContent(const std::vector<ComposerDraftItem>& draftItems)
@@ -2037,6 +2044,33 @@ std::vector<std::string> splitUtf8Codepoints(const std::string& value)
     return codepoints;
 }
 
+std::string utf8SubstringByCodepointRange(const std::string& value,
+                                          std::size_t begin,
+                                          std::size_t end)
+{
+    if (begin > end) {
+        std::swap(begin, end);
+    }
+    const std::size_t byteBegin =
+        utf8ByteOffsetForCodepointIndex(value, begin);
+    const std::size_t byteEnd =
+        utf8ByteOffsetForCodepointIndex(value, end);
+    return value.substr(byteBegin, byteEnd - byteBegin);
+}
+
+struct MessageTextLinkSpan {
+    std::size_t begin = 0;
+    std::size_t end = 0;
+    std::string url;
+};
+
+std::vector<MessageTextLinkSpan> findMessageTextLinkSpans(
+    const std::string& value);
+
+std::string linkUrlForByteOffset(
+    const std::vector<MessageTextLinkSpan>& linkSpans,
+    std::size_t byteOffset);
+
 ComposerDraftItem makeComposerDraftTextItem(std::string text)
 {
     ComposerDraftItem item;
@@ -2083,9 +2117,101 @@ void normalizeComposerDraftItems(std::vector<ComposerDraftItem>& draftItems)
 void clampComposerCaret(const std::vector<ComposerDraftItem>& draftItems,
                         ComposerCaretState& caret)
 {
-    caret.position =
-        std::min(caret.position, composerDraftDocumentLength(draftItems));
+    const std::size_t documentLength = composerDraftDocumentLength(draftItems);
+    caret.position = std::min(caret.position, documentLength);
+    caret.selectionAnchor = std::min(caret.selectionAnchor, documentLength);
 }
+
+std::pair<std::size_t, std::size_t> composerSelectionRange(
+    const ComposerCaretState& caret)
+{
+    return {
+        std::min(caret.selectionAnchor, caret.position),
+        std::max(caret.selectionAnchor, caret.position)
+    };
+}
+
+bool hasComposerSelection(const ComposerCaretState& caret)
+{
+    return caret.selectionAnchor != caret.position;
+}
+
+void clearComposerSelection(ComposerCaretState& caret)
+{
+    caret.selectionAnchor = caret.position;
+}
+
+void updateComposerSelectionAfterMove(ComposerCaretState& caret,
+                                      std::size_t previousPosition,
+                                      bool keepSelection,
+                                      bool hadSelection)
+{
+    if (keepSelection) {
+        if (!hadSelection) {
+            caret.selectionAnchor = previousPosition;
+        }
+        return;
+    }
+
+    clearComposerSelection(caret);
+}
+
+void moveComposerCaretTo(ComposerCaretState& caret,
+                         std::size_t position,
+                         bool keepSelection)
+{
+    const std::size_t previousPosition = caret.position;
+    const bool hadSelection = hasComposerSelection(caret);
+    caret.position = position;
+    caret.hasPreferredX = false;
+    updateComposerSelectionAfterMove(caret,
+                                     previousPosition,
+                                     keepSelection,
+                                     hadSelection);
+}
+
+std::string composerDraftRangeText(
+    const std::vector<ComposerDraftItem>& draftItems,
+    std::size_t begin,
+    std::size_t end)
+{
+    if (begin > end) {
+        std::swap(begin, end);
+    }
+
+    std::string selectedText;
+    std::size_t consumedLength = 0;
+    for (const ComposerDraftItem& item : draftItems) {
+        const std::size_t itemLength = composerDraftItemAtomLength(item);
+        const std::size_t itemBegin = consumedLength;
+        const std::size_t itemEnd = consumedLength + itemLength;
+        if (end <= itemBegin) {
+            break;
+        }
+        if (begin >= itemEnd) {
+            consumedLength = itemEnd;
+            continue;
+        }
+
+        if (item.type == ComposerDraftItemType::Text) {
+            const std::size_t overlapBegin = std::max(begin, itemBegin) - itemBegin;
+            const std::size_t overlapEnd = std::min(end, itemEnd) - itemBegin;
+            const std::size_t byteBegin =
+                utf8ByteOffsetForCodepointIndex(item.text, overlapBegin);
+            const std::size_t byteEnd =
+                utf8ByteOffsetForCodepointIndex(item.text, overlapEnd);
+            selectedText.append(item.text.substr(byteBegin, byteEnd - byteBegin));
+        } else if (!selectedText.empty() && selectedText.back() != ' ') {
+            selectedText.push_back(' ');
+        }
+
+        consumedLength = itemEnd;
+    }
+    return selectedText;
+}
+
+bool removeComposerDraftSelection(std::vector<ComposerDraftItem>& draftItems,
+                                  ComposerCaretState& caret);
 
 void insertComposerDraftTextItemAt(std::vector<ComposerDraftItem>& draftItems,
                                    std::size_t itemIndex,
@@ -2110,6 +2236,7 @@ void insertComposerDraftTextAtCaret(std::vector<ComposerDraftItem>& draftItems,
         return;
     }
 
+    (void)removeComposerDraftSelection(draftItems, caret);
     clampComposerCaret(draftItems, caret);
     const std::size_t insertedLength = utf8CodepointCount(text);
     std::size_t consumedLength = 0;
@@ -2123,6 +2250,7 @@ void insertComposerDraftTextAtCaret(std::vector<ComposerDraftItem>& draftItems,
                     utf8ByteOffsetForCodepointIndex(item.text, offset);
                 item.text.insert(byteOffset, text);
                 caret.position += insertedLength;
+                clearComposerSelection(caret);
                 caret.hasPreferredX = false;
                 normalizeComposerDraftItems(draftItems);
                 return;
@@ -2134,6 +2262,7 @@ void insertComposerDraftTextAtCaret(std::vector<ComposerDraftItem>& draftItems,
         if (caret.position <= consumedLength) {
             insertComposerDraftTextItemAt(draftItems, index, std::move(text));
             caret.position += insertedLength;
+            clearComposerSelection(caret);
             caret.hasPreferredX = false;
             normalizeComposerDraftItems(draftItems);
             return;
@@ -2142,6 +2271,7 @@ void insertComposerDraftTextAtCaret(std::vector<ComposerDraftItem>& draftItems,
         if (caret.position <= consumedLength) {
             insertComposerDraftTextItemAt(draftItems, index + 1u, std::move(text));
             caret.position += insertedLength;
+            clearComposerSelection(caret);
             caret.hasPreferredX = false;
             normalizeComposerDraftItems(draftItems);
             return;
@@ -2150,6 +2280,7 @@ void insertComposerDraftTextAtCaret(std::vector<ComposerDraftItem>& draftItems,
 
     draftItems.push_back(makeComposerDraftTextItem(std::move(text)));
     caret.position += insertedLength;
+    clearComposerSelection(caret);
     caret.hasPreferredX = false;
     normalizeComposerDraftItems(draftItems);
 }
@@ -2163,6 +2294,7 @@ void insertComposerDraftAttachmentAtCaret(
         return;
     }
 
+    (void)removeComposerDraftSelection(draftItems, caret);
     clampComposerCaret(draftItems, caret);
     std::size_t consumedLength = 0;
     for (std::size_t index = 0; index < draftItems.size(); ++index) {
@@ -2191,6 +2323,7 @@ void insertComposerDraftAttachmentAtCaret(
                     replacement.begin(),
                     replacement.end());
                 ++caret.position;
+                clearComposerSelection(caret);
                 caret.hasPreferredX = false;
                 normalizeComposerDraftItems(draftItems);
                 return;
@@ -2204,6 +2337,7 @@ void insertComposerDraftAttachmentAtCaret(
                 draftItems.begin() + static_cast<std::ptrdiff_t>(index),
                 makeComposerDraftAttachmentItem(std::move(attachment)));
             ++caret.position;
+            clearComposerSelection(caret);
             caret.hasPreferredX = false;
             return;
         }
@@ -2213,6 +2347,7 @@ void insertComposerDraftAttachmentAtCaret(
                 draftItems.begin() + static_cast<std::ptrdiff_t>(index + 1u),
                 makeComposerDraftAttachmentItem(std::move(attachment)));
             ++caret.position;
+            clearComposerSelection(caret);
             caret.hasPreferredX = false;
             return;
         }
@@ -2220,6 +2355,7 @@ void insertComposerDraftAttachmentAtCaret(
 
     draftItems.push_back(makeComposerDraftAttachmentItem(std::move(attachment)));
     ++caret.position;
+    clearComposerSelection(caret);
     caret.hasPreferredX = false;
 }
 
@@ -2298,6 +2434,7 @@ void removeComposerDraftAtomBeforeCaret(std::vector<ComposerDraftItem>& draftIte
 
     if (removeComposerDraftAtomAt(draftItems, caret.position - 1u)) {
         --caret.position;
+        clearComposerSelection(caret);
         caret.hasPreferredX = false;
     }
 }
@@ -2307,6 +2444,7 @@ void removeComposerDraftAtomAfterCaret(std::vector<ComposerDraftItem>& draftItem
 {
     clampComposerCaret(draftItems, caret);
     if (removeComposerDraftAtomAt(draftItems, caret.position)) {
+        clearComposerSelection(caret);
         caret.hasPreferredX = false;
     }
 }
@@ -2329,9 +2467,30 @@ void removeComposerDraftItemAt(std::vector<ComposerDraftItem>& draftItems,
     if (caret.position > itemStart) {
         caret.position -= std::min(caret.position - itemStart, itemLength);
     }
+    clearComposerSelection(caret);
     caret.hasPreferredX = false;
     normalizeComposerDraftItems(draftItems);
     clampComposerCaret(draftItems, caret);
+}
+
+bool removeComposerDraftSelection(std::vector<ComposerDraftItem>& draftItems,
+                                  ComposerCaretState& caret)
+{
+    clampComposerCaret(draftItems, caret);
+    if (!hasComposerSelection(caret)) {
+        return false;
+    }
+
+    const auto [begin, end] = composerSelectionRange(caret);
+    for (std::size_t position = end; position > begin; --position) {
+        (void)removeComposerDraftAtomAt(draftItems, position - 1u);
+    }
+    caret.position = begin;
+    clearComposerSelection(caret);
+    caret.hasPreferredX = false;
+    normalizeComposerDraftItems(draftItems);
+    clampComposerCaret(draftItems, caret);
+    return true;
 }
 
 std::vector<std::filesystem::path> selectAttachmentFilesFromDialog()
@@ -3383,6 +3542,7 @@ struct ComposerEditorTextAtom {
     float x = 0.0f;
     float y = 0.0f;
     float width = 0.0f;
+    std::string linkUrl;
 };
 
 struct ComposerEditorAttachmentAtom {
@@ -3514,6 +3674,9 @@ ComposerEditorLayout makeComposerEditorLayout(
     for (std::size_t itemIndex = 0; itemIndex < draftItems.size(); ++itemIndex) {
         const ComposerDraftItem& item = draftItems[itemIndex];
         if (item.type == ComposerDraftItemType::Text) {
+            const std::vector<MessageTextLinkSpan> linkSpans =
+                findMessageTextLinkSpans(item.text);
+            std::size_t byteOffset = 0;
             for (const std::string& codepoint : splitUtf8Codepoints(item.text)) {
                 if (codepoint == "\n") {
                     setComposerEditorCaretLocation(layout,
@@ -3522,6 +3685,7 @@ ComposerEditorLayout makeComposerEditorLayout(
                                                    cursor.y,
                                                    kComposerEditorLineHeight);
                     ++documentPosition;
+                    byteOffset += codepoint.size();
                     advanceComposerEditorLine(cursor, 0.0f, rowGap);
                     setComposerEditorCaretLocation(layout,
                                                    documentPosition,
@@ -3541,12 +3705,20 @@ ComposerEditorLayout makeComposerEditorLayout(
                                                cursor.x,
                                                cursor.y,
                                                kComposerEditorLineHeight);
+                const std::string linkUrl =
+                    linkUrlForByteOffset(linkSpans, byteOffset);
                 layout.textAtoms.push_back(
-                    {documentPosition, codepoint, cursor.x, cursor.y, atomWidth});
+                    {documentPosition,
+                     codepoint,
+                     cursor.x,
+                     cursor.y,
+                     atomWidth,
+                     linkUrl});
                 cursor.x += atomWidth;
                 cursor.lineHeight =
                     std::max(cursor.lineHeight, kComposerEditorLineHeight);
                 ++documentPosition;
+                byteOffset += codepoint.size();
                 setComposerEditorCaretLocation(layout,
                                                documentPosition,
                                                cursor.x,
@@ -3647,16 +3819,20 @@ std::size_t composerCaretLineEdge(const ComposerEditorLayout& layout,
 
 void moveComposerCaretVertically(ComposerCaretState& caret,
                                  const ComposerEditorLayout& layout,
-                                 int direction)
+                                 int direction,
+                                 bool keepSelection)
 {
     if (layout.caretLocations.empty()) {
         caret.position = 0u;
+        clearComposerSelection(caret);
         return;
     }
 
     caret.position = std::min(caret.position, layout.caretLocations.size() - 1u);
     const ComposerEditorCaretLocation& current =
         layout.caretLocations[caret.position];
+    const std::size_t previousPosition = caret.position;
+    const bool hadSelection = hasComposerSelection(caret);
     if (!caret.hasPreferredX) {
         caret.preferredX = current.x;
         caret.hasPreferredX = true;
@@ -3693,6 +3869,10 @@ void moveComposerCaretVertically(ComposerCaretState& caret,
         }
     }
     caret.position = bestPosition;
+    updateComposerSelectionAfterMove(caret,
+                                     previousPosition,
+                                     keepSelection,
+                                     hadSelection);
 }
 
 void handleComposerEditorKeyboardEvent(
@@ -3703,33 +3883,80 @@ void handleComposerEditorKeyboardEvent(
 {
     clampComposerCaret(draftItems, caret);
     const std::size_t documentLength = composerDraftDocumentLength(draftItems);
-    if (event.left && caret.position > 0u) {
-        --caret.position;
-        caret.hasPreferredX = false;
+    if (event.copy || event.cut) {
+        const auto [begin, end] = composerSelectionRange(caret);
+        if (begin != end) {
+            core::window::setClipboardText(
+                composerDraftRangeText(draftItems, begin, end));
+            if (event.cut) {
+                (void)removeComposerDraftSelection(draftItems, caret);
+            }
+        }
+        return;
     }
-    if (event.right && caret.position < documentLength) {
-        ++caret.position;
+    if (event.selectAll) {
+        caret.selectionAnchor = 0u;
+        caret.position = documentLength;
         caret.hasPreferredX = false;
+        return;
+    }
+
+    const bool keepSelection = event.shift;
+    if (event.left) {
+        if (!keepSelection && hasComposerSelection(caret)) {
+            caret.position = composerSelectionRange(caret).first;
+            clearComposerSelection(caret);
+            caret.hasPreferredX = false;
+        } else if (caret.position > 0u) {
+            moveComposerCaretTo(caret, caret.position - 1u, keepSelection);
+        } else if (!keepSelection) {
+            clearComposerSelection(caret);
+        }
+    }
+    if (event.right) {
+        if (!keepSelection && hasComposerSelection(caret)) {
+            caret.position = composerSelectionRange(caret).second;
+            clearComposerSelection(caret);
+            caret.hasPreferredX = false;
+        } else if (caret.position < documentLength) {
+            moveComposerCaretTo(caret, caret.position + 1u, keepSelection);
+        } else if (!keepSelection) {
+            clearComposerSelection(caret);
+        }
     }
     if (event.up) {
-        moveComposerCaretVertically(caret, layout, -1);
+        if (!keepSelection && hasComposerSelection(caret)) {
+            caret.position = composerSelectionRange(caret).first;
+            clearComposerSelection(caret);
+        }
+        moveComposerCaretVertically(caret, layout, -1, keepSelection);
     }
     if (event.down) {
-        moveComposerCaretVertically(caret, layout, 1);
+        if (!keepSelection && hasComposerSelection(caret)) {
+            caret.position = composerSelectionRange(caret).second;
+            clearComposerSelection(caret);
+        }
+        moveComposerCaretVertically(caret, layout, 1, keepSelection);
     }
     if (event.home) {
-        caret.position = composerCaretLineEdge(layout, caret.position, false);
-        caret.hasPreferredX = false;
+        moveComposerCaretTo(caret,
+                            composerCaretLineEdge(layout, caret.position, false),
+                            keepSelection);
     }
     if (event.end) {
-        caret.position = composerCaretLineEdge(layout, caret.position, true);
-        caret.hasPreferredX = false;
+        moveComposerCaretTo(caret,
+                            composerCaretLineEdge(layout, caret.position, true),
+                            keepSelection);
     }
     if (event.backspace) {
-        removeComposerDraftAtomBeforeCaret(draftItems, caret);
+        if (!removeComposerDraftSelection(draftItems, caret)) {
+            removeComposerDraftAtomBeforeCaret(draftItems, caret);
+        }
     }
     if (event.del) {
-        removeComposerDraftAtomAfterCaret(draftItems, caret);
+        if (!removeComposerDraftSelection(draftItems, caret)) {
+            removeComposerDraftAtomAfterCaret(draftItems, caret);
+        }
     }
     if (!event.pasteText.empty()) {
         insertComposerDraftTextAtCaret(draftItems, caret, event.pasteText);
@@ -3860,6 +4087,47 @@ void drawComposerEditorImageNode(eui::Ui& ui,
                                   index);
 }
 
+void drawComposerEditorSelectionHighlight(eui::Ui& ui,
+                                          const std::string& id,
+                                          const ComposerEditorLayout& layout,
+                                          const ComposerCaretState& caret)
+{
+    if (!hasComposerSelection(caret)) {
+        return;
+    }
+
+    const auto [begin, end] = composerSelectionRange(caret);
+    std::size_t selectionIndex = 0;
+    for (const ComposerEditorTextAtom& atom : layout.textAtoms) {
+        if (atom.position < begin || atom.position >= end) {
+            continue;
+        }
+        rect(ui,
+             id + ".selection.text." + std::to_string(selectionIndex),
+             atom.x,
+             atom.y + 2.0f,
+             std::max(1.0f, atom.width),
+             std::max(16.0f, kComposerEditorLineHeight - 4.0f),
+             kSelectionFill,
+             2.0f);
+        ++selectionIndex;
+    }
+
+    for (const ComposerEditorAttachmentAtom& node : layout.attachmentAtoms) {
+        if (node.position < begin || node.position >= end) {
+            continue;
+        }
+        rect(ui,
+             id + ".selection.attachment." + std::to_string(node.position),
+             node.x - 3.0f,
+             node.y - 3.0f,
+             node.width + 6.0f,
+             node.height + 6.0f,
+             kSelectionFill,
+             8.0f);
+    }
+}
+
 void drawComposerEditorTextAtoms(eui::Ui& ui,
                                  const std::string& id,
                                  const ComposerEditorLayout& layout)
@@ -3868,6 +4136,7 @@ void drawComposerEditorTextAtoms(eui::Ui& ui,
     float fragmentX = 0.0f;
     float fragmentY = 0.0f;
     float fragmentWidth = 0.0f;
+    std::string fragmentLinkUrl;
     std::size_t fragmentIndex = 0;
     auto flushFragment = [&] {
         if (fragmentText.empty()) {
@@ -3881,20 +4150,34 @@ void drawComposerEditorTextAtoms(eui::Ui& ui,
                       kComposerEditorLineHeight,
                       fragmentText,
                       kComposerEditorFontSize,
-                      kComposerEditorLineHeight);
+                      kComposerEditorLineHeight,
+                      fragmentLinkUrl.empty() ? kText : kLinkText);
+        if (!fragmentLinkUrl.empty()) {
+            rect(ui,
+                 id + ".text.link.underline." + std::to_string(fragmentIndex),
+                 fragmentX,
+                 fragmentY + kComposerEditorLineHeight - 4.0f,
+                 std::max(1.0f, fragmentWidth),
+                 1.0f,
+                 kLinkText,
+                 0.5f);
+        }
         fragmentText.clear();
         fragmentWidth = 0.0f;
+        fragmentLinkUrl.clear();
         ++fragmentIndex;
     };
 
     for (const ComposerEditorTextAtom& atom : layout.textAtoms) {
         const bool sameLine = !fragmentText.empty()
             && std::fabs(atom.y - fragmentY) < 0.5f
-            && std::fabs(atom.x - (fragmentX + fragmentWidth)) < 1.5f;
+            && std::fabs(atom.x - (fragmentX + fragmentWidth)) < 1.5f
+            && atom.linkUrl == fragmentLinkUrl;
         if (!sameLine) {
             flushFragment();
             fragmentX = atom.x;
             fragmentY = atom.y;
+            fragmentLinkUrl = atom.linkUrl;
         }
         fragmentText += atom.text;
         fragmentWidth = (atom.x + atom.width) - fragmentX;
@@ -4025,6 +4308,14 @@ void drawComposerEditor(eui::Ui& ui,
                                           contentWidth](
                                               const eui::PointerEvent& event,
                                               const eui::Rect& bounds) {
+                                    caret.selectionBoundsX =
+                                        static_cast<float>(bounds.x);
+                                    caret.selectionBoundsY =
+                                        static_cast<float>(bounds.y);
+                                    caret.selectionBoundsWidth =
+                                        static_cast<float>(bounds.width);
+                                    caret.selectionBoundsHeight =
+                                        static_cast<float>(bounds.height);
                                     const float scale = contentWidth > 0.0f
                                         ? bounds.width / contentWidth
                                         : 1.0f;
@@ -4033,6 +4324,28 @@ void drawComposerEditor(eui::Ui& ui,
                                         / std::max(0.001f, scale));
                                     const float localY = static_cast<float>(
                                         (event.y - bounds.y)
+                                        / std::max(0.001f, scale))
+                                        + scrollOffset;
+                                    caret.position =
+                                        composerCaretFromPoint(layout,
+                                                               localX,
+                                                               localY);
+                                    clearComposerSelection(caret);
+                                    caret.hasPreferredX = false;
+                                })
+                                .onDrag([&caret,
+                                         &scrollOffset,
+                                         layout,
+                                         contentWidth](
+                                             const core::dsl::DragEvent& event) {
+                                    const float scale = contentWidth > 0.0f
+                                        ? caret.selectionBoundsWidth / contentWidth
+                                        : 1.0f;
+                                    const float localX = static_cast<float>(
+                                        (event.x - caret.selectionBoundsX)
+                                        / std::max(0.001f, scale));
+                                    const float localY = static_cast<float>(
+                                        (event.y - caret.selectionBoundsY)
                                         / std::max(0.001f, scale))
                                         + scrollOffset;
                                     caret.position =
@@ -4065,6 +4378,11 @@ void drawComposerEditor(eui::Ui& ui,
                                     kComposerEditorLineHeight,
                                     kSubtleText);
                             } else {
+                                drawComposerEditorSelectionHighlight(
+                                    contentUi,
+                                    "composer.editor",
+                                    layout,
+                                    caret);
                                 drawComposerEditorTextAtoms(contentUi,
                                                             "composer.editor",
                                                             layout);
@@ -4371,6 +4689,7 @@ void drawCompactImageDocumentCard(eui::Ui& ui,
 
 struct MessageFlowTextAtom {
     std::size_t partIndex = 0;
+    std::size_t textPosition = 0;
     std::string text;
     float x = 0.0f;
     float y = 0.0f;
@@ -4378,6 +4697,26 @@ struct MessageFlowTextAtom {
     float fontSize = kComposerEditorFontSize;
     float lineHeight = kComposerEditorLineHeight;
     bool emoji = false;
+    std::string linkUrl;
+};
+
+struct MessageFlowTextLine {
+    float y = 0.0f;
+    float lineHeight = kComposerEditorLineHeight;
+    std::vector<const MessageFlowTextAtom*> atoms;
+};
+
+struct MessageFlowTextCaret {
+    std::size_t position = 0;
+    float x = 0.0f;
+    float y = 0.0f;
+    float height = kComposerEditorLineHeight;
+};
+
+struct MessageFlowTextCaretLine {
+    float y = 0.0f;
+    float height = kComposerEditorLineHeight;
+    std::vector<const MessageFlowTextCaret*> carets;
 };
 
 struct MessageFlowPartNode {
@@ -4390,6 +4729,7 @@ struct MessageFlowPartNode {
 
 struct MessageFlowLayout {
     std::vector<MessageFlowTextAtom> textAtoms;
+    std::vector<MessageFlowTextCaret> textCarets;
     std::vector<MessageFlowPartNode> partNodes;
     float contentWidth = 0.0f;
     float contentHeight = kComposerEditorLineHeight;
@@ -4399,6 +4739,18 @@ struct MessageDocumentBubbleMetrics {
     MessageFlowLayout layout;
     float width = 0.0f;
     float height = 0.0f;
+};
+
+struct MessageTextSelectionState {
+    std::string messageId;
+    std::size_t anchor = 0;
+    std::size_t cursor = 0;
+    std::size_t anchorLineIndex = 0;
+    std::size_t cursorLineIndex = 0;
+    float boundsX = 0.0f;
+    float boundsY = 0.0f;
+    float boundsWidth = 0.0f;
+    float boundsHeight = 0.0f;
 };
 
 constexpr float kMessageFlowAttachmentGap = 8.0f;
@@ -4427,6 +4779,24 @@ void expandMessageFlowContentWidth(MessageFlowLayout& layout, float width)
     layout.contentWidth = std::max(layout.contentWidth, width);
 }
 
+void addMessageFlowTextCaret(MessageFlowLayout& layout,
+                             std::size_t position,
+                             float x,
+                             float y,
+                             float height)
+{
+    if (!layout.textCarets.empty()) {
+        const MessageFlowTextCaret& lastCaret = layout.textCarets.back();
+        if (lastCaret.position == position
+            && std::fabs(lastCaret.x - x) < 0.5f
+            && std::fabs(lastCaret.y - y) < 0.5f) {
+            return;
+        }
+    }
+
+    layout.textCarets.push_back({position, x, y, height});
+}
+
 std::string messageTextPartValue(
     const relaydesk::storage::ChatMessagePart& part)
 {
@@ -4449,6 +4819,101 @@ float messageTextPartLineHeight(
     return part.GetType() == relaydesk::storage::MessagePartType::Emoji
         ? 32.0f
         : kComposerEditorLineHeight;
+}
+
+bool asciiStartsWithInsensitive(const std::string& value,
+                                std::size_t offset,
+                                const char* prefix)
+{
+    for (std::size_t index = 0; prefix[index] != '\0'; ++index) {
+        if (offset + index >= value.size()) {
+            return false;
+        }
+        const auto actual =
+            static_cast<unsigned char>(value[offset + index]);
+        const auto expected = static_cast<unsigned char>(prefix[index]);
+        if (std::tolower(actual) != std::tolower(expected)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool isUrlTerminatingByte(unsigned char value)
+{
+    return value <= 0x20u;
+}
+
+bool isUrlTrailingPunctuation(unsigned char value)
+{
+    switch (value) {
+    case '.':
+    case ',':
+    case '!':
+    case '?':
+    case ';':
+    case ':':
+    case ')':
+    case ']':
+    case '}':
+    case '>':
+        return true;
+    default:
+        return false;
+    }
+}
+
+std::vector<MessageTextLinkSpan> findMessageTextLinkSpans(
+    const std::string& value)
+{
+    std::vector<MessageTextLinkSpan> spans;
+    for (std::size_t offset = 0; offset < value.size();) {
+        const bool hasHttpPrefix =
+            asciiStartsWithInsensitive(value, offset, "http://")
+            || asciiStartsWithInsensitive(value, offset, "https://");
+        const bool hasWwwPrefix =
+            asciiStartsWithInsensitive(value, offset, "www.");
+        if (!hasHttpPrefix && !hasWwwPrefix) {
+            ++offset;
+            continue;
+        }
+
+        std::size_t end = offset;
+        while (end < value.size()
+               && !isUrlTerminatingByte(
+                   static_cast<unsigned char>(value[end]))) {
+            ++end;
+        }
+        while (end > offset
+               && isUrlTrailingPunctuation(
+                   static_cast<unsigned char>(value[end - 1u]))) {
+            --end;
+        }
+        if (end == offset) {
+            ++offset;
+            continue;
+        }
+
+        std::string url = value.substr(offset, end - offset);
+        if (hasWwwPrefix) {
+            url = "https://" + url;
+        }
+        spans.push_back({offset, end, std::move(url)});
+        offset = end;
+    }
+    return spans;
+}
+
+std::string linkUrlForByteOffset(
+    const std::vector<MessageTextLinkSpan>& linkSpans,
+    std::size_t byteOffset)
+{
+    for (const MessageTextLinkSpan& span : linkSpans) {
+        if (byteOffset >= span.begin && byteOffset < span.end) {
+            return span.url;
+        }
+    }
+    return {};
 }
 
 float messageImageAspectRatio(const std::filesystem::path& imagePath)
@@ -4547,16 +5012,32 @@ void addMessageTextPartToLayout(
     std::size_t partIndex,
     const relaydesk::storage::ChatMessagePart& part,
     float width,
+    std::size_t& textPosition,
     bool& hasVisiblePart)
 {
     const std::string value = messageTextPartValue(part);
+    const std::vector<MessageTextLinkSpan> linkSpans =
+        findMessageTextLinkSpans(value);
     const float fontSize = messageTextPartFontSize(part);
     const float lineHeight = messageTextPartLineHeight(part);
+    std::size_t byteOffset = 0;
+    addMessageFlowTextCaret(layout,
+                            textPosition,
+                            cursor.x,
+                            cursor.y,
+                            lineHeight);
     for (const std::string& codepoint : splitUtf8Codepoints(value)) {
         if (codepoint == "\n") {
             expandMessageFlowContentWidth(layout, cursor.x);
-            advanceComposerEditorLine(cursor, 0.0f, kMessageFlowRowGap);
             hasVisiblePart = true;
+            byteOffset += codepoint.size();
+            ++textPosition;
+            advanceComposerEditorLine(cursor, 0.0f, kMessageFlowRowGap);
+            addMessageFlowTextCaret(layout,
+                                    textPosition,
+                                    cursor.x,
+                                    cursor.y,
+                                    lineHeight);
             continue;
         }
 
@@ -4564,23 +5045,39 @@ void addMessageTextPartToLayout(
         if (cursor.x > 0.0f && cursor.x + atomWidth > width) {
             expandMessageFlowContentWidth(layout, cursor.x);
             advanceComposerEditorLine(cursor, 0.0f, kMessageFlowRowGap);
+            addMessageFlowTextCaret(layout,
+                                    textPosition,
+                                    cursor.x,
+                                    cursor.y,
+                                    lineHeight);
         }
 
         const bool emoji = part.GetType() == relaydesk::storage::MessagePartType::Emoji
             || isEmojiCodepointText(codepoint);
+        const std::string linkUrl =
+            emoji ? std::string{} : linkUrlForByteOffset(linkSpans, byteOffset);
         layout.textAtoms.push_back(
             {partIndex,
+             textPosition,
              codepoint,
              cursor.x,
              cursor.y,
              atomWidth,
              fontSize,
              lineHeight,
-             emoji});
+             emoji,
+             linkUrl});
         cursor.x += atomWidth;
         expandMessageFlowContentWidth(layout, cursor.x);
         cursor.lineHeight = std::max(cursor.lineHeight, lineHeight);
         hasVisiblePart = true;
+        byteOffset += codepoint.size();
+        ++textPosition;
+        addMessageFlowTextCaret(layout,
+                                textPosition,
+                                cursor.x,
+                                cursor.y,
+                                lineHeight);
     }
 }
 
@@ -4622,6 +5119,7 @@ MessageFlowLayout makeMessageFlowLayout(
     MessageFlowLayout layout;
     ComposerFlowCursor cursor{0.0f, 0.0f, kComposerEditorLineHeight};
     bool hasVisiblePart = false;
+    std::size_t textPosition = 0;
 
     for (std::size_t partIndex = 0; partIndex < message.GetParts().size();
          ++partIndex) {
@@ -4634,6 +5132,7 @@ MessageFlowLayout makeMessageFlowLayout(
                                        partIndex,
                                        part,
                                        width,
+                                       textPosition,
                                        hasVisiblePart);
             break;
         case relaydesk::storage::MessagePartType::Image:
@@ -4655,6 +5154,275 @@ MessageFlowLayout makeMessageFlowLayout(
         ? cursor.y + std::max(cursor.lineHeight, kComposerEditorLineHeight)
         : kComposerEditorLineHeight;
     return layout;
+}
+
+std::pair<std::size_t, std::size_t> messageTextSelectionRange(
+    const MessageTextSelectionState& selection)
+{
+    return {
+        std::min(selection.anchor, selection.cursor),
+        std::max(selection.anchor, selection.cursor)
+    };
+}
+
+bool hasMessageTextSelection(const MessageTextSelectionState& selection,
+                             const std::string& messageId)
+{
+    return selection.messageId == messageId
+        && selection.anchor != selection.cursor;
+}
+
+std::vector<MessageFlowTextLine> messageTextLayoutLines(
+    const MessageFlowLayout& layout)
+{
+    std::vector<MessageFlowTextLine> lines;
+    lines.reserve(layout.textAtoms.size());
+    for (const MessageFlowTextAtom& atom : layout.textAtoms) {
+        if (lines.empty()
+            || std::fabs(atom.y - lines.back().y) > 0.5f) {
+            lines.push_back(MessageFlowTextLine{atom.y, atom.lineHeight, {&atom}});
+            continue;
+        }
+
+        MessageFlowTextLine& line = lines.back();
+        line.lineHeight = std::max(line.lineHeight, atom.lineHeight);
+        line.atoms.push_back(&atom);
+    }
+    return lines;
+}
+
+std::vector<MessageFlowTextCaretLine> messageTextCaretLines(
+    const MessageFlowLayout& layout)
+{
+    std::vector<MessageFlowTextCaretLine> lines;
+    lines.reserve(layout.textCarets.size());
+    for (const MessageFlowTextCaret& caret : layout.textCarets) {
+        if (lines.empty()
+            || std::fabs(caret.y - lines.back().y) > 0.5f) {
+            lines.push_back(MessageFlowTextCaretLine{
+                caret.y,
+                caret.height,
+                {&caret}
+            });
+            continue;
+        }
+
+        MessageFlowTextCaretLine& line = lines.back();
+        line.height = std::max(line.height, caret.height);
+        line.carets.push_back(&caret);
+    }
+    return lines;
+}
+
+std::size_t messageTextDocumentLength(
+    const relaydesk::storage::ChatMessageRecord& message)
+{
+    std::size_t length = 0;
+    for (const relaydesk::storage::ChatMessagePart& part : message.GetParts()) {
+        switch (part.GetType()) {
+        case relaydesk::storage::MessagePartType::Text:
+        case relaydesk::storage::MessagePartType::Emoji:
+            length += utf8CodepointCount(messageTextPartValue(part));
+            break;
+        case relaydesk::storage::MessagePartType::Image:
+        case relaydesk::storage::MessagePartType::File:
+        case relaydesk::storage::MessagePartType::Folder:
+            break;
+        }
+    }
+    return length;
+}
+
+std::string messageTextRangeText(
+    const relaydesk::storage::ChatMessageRecord& message,
+    std::size_t begin,
+    std::size_t end)
+{
+    if (begin > end) {
+        std::swap(begin, end);
+    }
+
+    std::string selectedText;
+    std::size_t position = 0;
+    for (const relaydesk::storage::ChatMessagePart& part : message.GetParts()) {
+        switch (part.GetType()) {
+        case relaydesk::storage::MessagePartType::Text:
+        case relaydesk::storage::MessagePartType::Emoji:
+            break;
+        case relaydesk::storage::MessagePartType::Image:
+        case relaydesk::storage::MessagePartType::File:
+        case relaydesk::storage::MessagePartType::Folder:
+            continue;
+        }
+
+        for (const std::string& codepoint
+             : splitUtf8Codepoints(messageTextPartValue(part))) {
+            if (position >= begin && position < end) {
+                selectedText += codepoint;
+            }
+            ++position;
+            if (position >= end) {
+                return selectedText;
+            }
+        }
+    }
+    return selectedText;
+}
+
+struct MessageTextPointHit {
+    std::size_t position = 0;
+    std::size_t lineIndex = 0;
+};
+
+MessageTextPointHit messageTextPointHitFromPoint(const MessageFlowLayout& layout,
+                                                float x,
+                                                float y)
+{
+    if (!layout.textCarets.empty()) {
+        const std::vector<MessageFlowTextCaretLine> lines =
+            messageTextCaretLines(layout);
+        const MessageFlowTextCaretLine* bestLine = &lines.front();
+        float bestLineDistance = 0.0f;
+        bool hasBestLineDistance = false;
+        std::size_t bestLineIndex = 0;
+        std::size_t currentLineIndex = 0;
+        for (const MessageFlowTextCaretLine& line : lines) {
+            const float top = line.y;
+            const float bottom = line.y + line.height;
+            const float verticalDistance = y < top
+                ? top - y
+                : (y > bottom ? y - bottom : 0.0f);
+            if (!hasBestLineDistance || verticalDistance < bestLineDistance) {
+                bestLineDistance = verticalDistance;
+                bestLine = &line;
+                bestLineIndex = currentLineIndex;
+                hasBestLineDistance = true;
+            }
+            ++currentLineIndex;
+        }
+
+        std::size_t bestPosition = bestLine->carets.front()->position;
+        float bestDistance = std::fabs(x - bestLine->carets.front()->x);
+        for (const MessageFlowTextCaret* caret : bestLine->carets) {
+            const float distance = std::fabs(x - caret->x);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                bestPosition = caret->position;
+            }
+        }
+        return {bestPosition, bestLineIndex};
+    }
+
+    if (layout.textAtoms.empty()) {
+        return {};
+    }
+
+    const std::vector<MessageFlowTextLine> lines = messageTextLayoutLines(layout);
+
+    const MessageFlowTextLine* bestLine = &lines.front();
+    float bestLineDistance = 0.0f;
+    bool hasBestLineDistance = false;
+    std::size_t bestLineIndex = 0;
+    std::size_t currentLineIndex = 0;
+    for (const MessageFlowTextLine& line : lines) {
+        const float top = line.y;
+        const float bottom = line.y + line.lineHeight;
+        const float verticalDistance = y < top
+            ? top - y
+            : (y > bottom ? y - bottom : 0.0f);
+        if (!hasBestLineDistance || verticalDistance < bestLineDistance) {
+            bestLineDistance = verticalDistance;
+            bestLine = &line;
+            bestLineIndex = currentLineIndex;
+            hasBestLineDistance = true;
+        }
+        ++currentLineIndex;
+    }
+
+    std::size_t bestPosition = bestLine->atoms.front()->textPosition;
+    float bestDistance = std::fabs(x - bestLine->atoms.front()->x);
+    auto considerPosition = [&](std::size_t position, float positionX) {
+        const float distance = std::fabs(x - positionX);
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestPosition = position;
+        }
+    };
+    for (const MessageFlowTextAtom* atom : bestLine->atoms) {
+        considerPosition(atom->textPosition, atom->x);
+        considerPosition(atom->textPosition + 1u, atom->x + atom->width);
+    }
+
+    return {bestPosition, bestLineIndex};
+}
+
+std::size_t messageTextLineEdgePosition(const MessageFlowLayout& layout,
+                                        std::size_t lineIndex,
+                                        bool trailingEdge)
+{
+    const std::vector<MessageFlowTextCaretLine> caretLines =
+        messageTextCaretLines(layout);
+    if (!caretLines.empty()) {
+        const std::size_t clampedIndex =
+            std::min(lineIndex, caretLines.size() - 1u);
+        const MessageFlowTextCaretLine& line = caretLines[clampedIndex];
+        if (!line.carets.empty()) {
+            return trailingEdge
+                ? line.carets.back()->position
+                : line.carets.front()->position;
+        }
+    }
+
+    const std::vector<MessageFlowTextLine> lines = messageTextLayoutLines(layout);
+    if (lines.empty()) {
+        return 0u;
+    }
+
+    const std::size_t clampedIndex = std::min(lineIndex, lines.size() - 1u);
+    const MessageFlowTextLine& line = lines[clampedIndex];
+    if (line.atoms.empty()) {
+        return 0u;
+    }
+
+    return trailingEdge
+        ? line.atoms.back()->textPosition + 1u
+        : line.atoms.front()->textPosition;
+}
+
+float messageTextLineCaretX(const MessageFlowTextCaretLine& line,
+                            std::size_t position)
+{
+    if (line.carets.empty()) {
+        return 0.0f;
+    }
+
+    if (position <= line.carets.front()->position) {
+        return line.carets.front()->x;
+    }
+    for (const MessageFlowTextCaret* caret : line.carets) {
+        if (caret->position >= position) {
+            return caret->x;
+        }
+    }
+    return line.carets.back()->x;
+}
+
+std::string messageTextLinkUrlFromPoint(const MessageFlowLayout& layout,
+                                        float x,
+                                        float y)
+{
+    for (const MessageFlowTextAtom& atom : layout.textAtoms) {
+        if (atom.linkUrl.empty()) {
+            continue;
+        }
+
+        const float right = atom.x + std::max(1.0f, atom.width);
+        const float bottom = atom.y + std::max(1.0f, atom.lineHeight);
+        if (x >= atom.x && x <= right && y >= atom.y && y <= bottom) {
+            return atom.linkUrl;
+        }
+    }
+    return {};
 }
 
 std::optional<relaydesk::storage::TransferState> messageTransferFooterState(
@@ -4737,7 +5505,8 @@ void drawMessageImagePart(eui::Ui& ui,
                           float& stickerMenuX,
                           float& stickerMenuY,
                           std::string& stickerMenuPath,
-                          std::string& stickerMenuName)
+                          std::string& stickerMenuName,
+                          std::string& stickerMenuCopyPath)
 {
     bool& previewOpen = ui.state<bool>("chat.image.preview.open");
     std::string& previewPath = ui.state<std::string>("chat.image.preview.path");
@@ -4767,6 +5536,8 @@ void drawMessageImagePart(eui::Ui& ui,
         makeAttachmentLocalPath(appPaths, displayPath);
     const std::string imagePathText =
         makeAttachmentLocalPath(appPaths, imagePath.value());
+    const std::string imageCopyPathText =
+        filesystemPathToUtf8String(imagePath.value());
     const std::string imageName = messagePartTitle(part);
     const float imageWidth = width;
     rect(ui, id + ".frame", x, y, imageWidth, height,
@@ -4792,7 +5563,9 @@ void drawMessageImagePart(eui::Ui& ui,
                         &stickerMenuY,
                         &stickerMenuPath,
                         &stickerMenuName,
+                        &stickerMenuCopyPath,
                         imagePathText,
+                        imageCopyPathText,
                         imageName](const eui::PointerEvent& event,
                                    const eui::Rect&) {
             stickerMenuOpen = true;
@@ -4800,6 +5573,7 @@ void drawMessageImagePart(eui::Ui& ui,
             stickerMenuY = static_cast<float>(event.y);
             stickerMenuPath = imagePathText;
             stickerMenuName = imageName;
+            stickerMenuCopyPath = imageCopyPathText;
         })
         .build();
 }
@@ -5056,20 +5830,23 @@ void drawMessageFilePart(eui::Ui& ui,
         constexpr float revealButtonWidth = 82.0f;
         constexpr float gap = 6.0f;
         const float rowY = actionBaseY + kMessageFileTransferActionGap;
-        const float rowWidth = openButtonWidth + gap + revealButtonWidth;
+        const float rowWidth =
+            folder ? revealButtonWidth : openButtonWidth + gap + revealButtonWidth;
         float buttonX = x + width - rowWidth - 8.0f;
-        drawTransferActionButton(
-            ui,
-            id + ".open",
-            buttonX,
-            rowY,
-            openButtonWidth,
-            "打开",
-            true,
-            [openPath = openablePath->path] {
-                shellOpenPath(openPath);
-            });
-        buttonX += openButtonWidth + gap;
+        if (!folder) {
+            drawTransferActionButton(
+                ui,
+                id + ".open",
+                buttonX,
+                rowY,
+                openButtonWidth,
+                "打开",
+                true,
+                [openPath = openablePath->path] {
+                    shellOpenPath(openPath);
+                });
+            buttonX += openButtonWidth + gap;
+        }
         drawTransferActionButton(
             ui,
             id + ".reveal",
@@ -5078,7 +5855,11 @@ void drawMessageFilePart(eui::Ui& ui,
             revealButtonWidth,
             "打开文件夹",
             false,
-            [openPath = openablePath->path] {
+            [openPath = openablePath->path, folder] {
+                if (folder) {
+                    shellOpenPath(openPath);
+                    return;
+                }
                 shellRevealPath(openPath);
         });
         return;
@@ -5309,6 +6090,214 @@ void drawMessageFilePart(eui::Ui& ui,
         });
 }
 
+void drawMessageFlowTextSelectionHighlight(
+    eui::Ui& ui,
+    const std::string& id,
+    const MessageFlowLayout& layout,
+    float x,
+    float y,
+    const std::string& messageId,
+    const MessageTextSelectionState& selection)
+{
+    if (!hasMessageTextSelection(selection, messageId)) {
+        return;
+    }
+
+    const auto [begin, end] = messageTextSelectionRange(selection);
+    std::size_t selectionIndex = 0;
+    for (const MessageFlowTextAtom& atom : layout.textAtoms) {
+        if (atom.textPosition < begin || atom.textPosition >= end) {
+            continue;
+        }
+
+        rect(ui,
+             id + ".text.selection." + std::to_string(selectionIndex),
+             x + atom.x,
+             y + atom.y + 2.0f,
+             std::max(1.0f, atom.width),
+             std::max(16.0f, atom.lineHeight - 4.0f),
+             kSelectionFill,
+             2.0f);
+        ++selectionIndex;
+    }
+}
+
+void updateMessageTextSelectionFromPoint(
+    const MessageFlowLayout& layout,
+    float pointerX,
+    float pointerY,
+    const eui::Rect& bounds,
+    float width,
+    float height,
+    float scrollOffset,
+    MessageTextSelectionState& selection)
+{
+    const float scaleX = width > 0.0f
+        ? static_cast<float>(bounds.width) / width
+        : 1.0f;
+    const float scaleY = height > 0.0f
+        ? static_cast<float>(bounds.height) / height
+        : 1.0f;
+    const float localX = static_cast<float>(
+        (pointerX - bounds.x) / std::max(0.001f, scaleX));
+    const float localY = static_cast<float>(
+        (pointerY - bounds.y) / std::max(0.001f, scaleY))
+        + scrollOffset;
+    const MessageTextPointHit hit =
+        messageTextPointHitFromPoint(layout, localX, localY);
+    selection.cursor = hit.position;
+    selection.cursorLineIndex = hit.lineIndex;
+}
+
+void drawMessageFlowTextInteractionLayer(
+    eui::Ui& ui,
+    const std::string& id,
+    const MessageFlowLayout& layout,
+    float x,
+    float y,
+    float width,
+    float height,
+    float scrollOffset,
+    const std::string& messageId,
+    const std::string& messageText,
+    MessageTextSelectionState& selection)
+{
+    if (layout.textAtoms.empty()) {
+        return;
+    }
+
+    const std::size_t documentLength = utf8CodepointCount(messageText);
+    ui.rect(id + ".text.hit")
+        .position(x, y)
+        .size(std::max(1.0f, width), std::max(1.0f, height))
+        .color({0.0f, 0.0f, 0.0f, 0.0f})
+        .focusable()
+        .imeRect(1.0f, 1.0f, 1.5f, kComposerEditorLineHeight)
+        .onPress([&selection,
+                  layout,
+                  messageId,
+                  width,
+                  height,
+                  scrollOffset](const eui::PointerEvent& event,
+                                const eui::Rect& bounds) {
+            selection.messageId = messageId;
+            selection.boundsX = static_cast<float>(bounds.x);
+            selection.boundsY = static_cast<float>(bounds.y);
+            selection.boundsWidth = static_cast<float>(bounds.width);
+            selection.boundsHeight = static_cast<float>(bounds.height);
+            updateMessageTextSelectionFromPoint(layout,
+                                                static_cast<float>(event.x),
+                                                static_cast<float>(event.y),
+                                                bounds,
+                                                width,
+                                                height,
+                                                scrollOffset,
+                                                selection);
+            selection.anchor = selection.cursor;
+            selection.anchorLineIndex = selection.cursorLineIndex;
+        })
+        .onMove([&selection,
+                 layout,
+                 messageId,
+                 width,
+                 height,
+                 scrollOffset](const eui::PointerEvent& event,
+                               const eui::Rect& bounds) -> bool {
+            if (!event.down || selection.messageId != messageId) {
+                return false;
+            }
+
+            updateMessageTextSelectionFromPoint(layout,
+                                                static_cast<float>(event.x),
+                                                static_cast<float>(event.y),
+                                                bounds,
+                                                width,
+                                                height,
+                                                scrollOffset,
+                                                selection);
+            return true;
+        })
+        .onDrag([&selection,
+                 layout,
+                 messageId,
+                 width,
+                 height,
+                 scrollOffset](const core::dsl::DragEvent& event) {
+            if (selection.messageId != messageId) {
+                return;
+            }
+
+            const eui::Rect bounds{
+                selection.boundsX,
+                selection.boundsY,
+                selection.boundsWidth,
+                selection.boundsHeight
+            };
+            updateMessageTextSelectionFromPoint(layout,
+                                                static_cast<float>(event.x),
+                                                static_cast<float>(event.y),
+                                                bounds,
+                                                width,
+                                                height,
+                                                scrollOffset,
+                                                selection);
+        })
+        .onRelease([&selection,
+                    layout,
+                    messageId,
+                    width,
+                    height,
+                    scrollOffset](const eui::PointerEvent& event,
+                                  const eui::Rect& bounds) {
+            if (selection.messageId != messageId
+                || hasMessageTextSelection(selection, messageId)) {
+                return;
+            }
+
+            const float scaleX = width > 0.0f
+                ? static_cast<float>(bounds.width) / width
+                : 1.0f;
+            const float scaleY = height > 0.0f
+                ? static_cast<float>(bounds.height) / height
+                : 1.0f;
+            const float localX = static_cast<float>(
+                (event.x - bounds.x) / std::max(0.001f, scaleX));
+            const float localY = static_cast<float>(
+                (event.y - bounds.y) / std::max(0.001f, scaleY))
+                + scrollOffset;
+            const std::string linkUrl =
+                messageTextLinkUrlFromPoint(layout, localX, localY);
+            if (!linkUrl.empty()) {
+                (void)core::platform::openUrl(linkUrl);
+            }
+        })
+        .onTextInput([&selection,
+                      messageId,
+                      messageText,
+                      documentLength](const core::KeyboardEvent& event) {
+            if (selection.messageId != messageId) {
+                return;
+            }
+            if (event.selectAll) {
+                selection.anchor = 0u;
+                selection.cursor = documentLength;
+                return;
+            }
+            if (!event.copy || !hasMessageTextSelection(selection, messageId)) {
+                return;
+            }
+
+            auto [begin, end] = messageTextSelectionRange(selection);
+            begin = std::min(begin, documentLength);
+            end = std::min(end, documentLength);
+            if (begin != end) {
+                core::window::setClipboardText(
+                    utf8SubstringByCodepointRange(messageText, begin, end));
+            }
+        })
+        .build();
+}
+
 void drawMessageFlowTextAtoms(eui::Ui& ui,
                               const std::string& id,
                               const MessageFlowLayout& layout,
@@ -5322,6 +6311,7 @@ void drawMessageFlowTextAtoms(eui::Ui& ui,
     float fragmentFontSize = kComposerEditorFontSize;
     float fragmentLineHeight = kComposerEditorLineHeight;
     bool fragmentEmoji = false;
+    std::string fragmentLinkUrl;
     std::size_t fragmentIndex = 0;
     auto flushFragment = [&] {
         if (fragmentText.empty()) {
@@ -5335,9 +6325,24 @@ void drawMessageFlowTextAtoms(eui::Ui& ui,
                       fragmentLineHeight,
                       fragmentText,
                       fragmentFontSize,
-                      fragmentLineHeight);
+                      fragmentLineHeight,
+                      fragmentLinkUrl.empty() ? kText : kLinkText);
+        if (!fragmentLinkUrl.empty()) {
+            const float underlineY =
+                y + fragmentY + fragmentLineHeight - 4.0f;
+            rect(ui,
+                 id + ".text.link.underline."
+                     + std::to_string(fragmentIndex),
+                 x + fragmentX,
+                 underlineY,
+                 std::max(1.0f, fragmentWidth),
+                 1.0f,
+                 kLinkText,
+                 0.5f);
+        }
         fragmentText.clear();
         fragmentWidth = 0.0f;
+        fragmentLinkUrl.clear();
         ++fragmentIndex;
     };
 
@@ -5347,7 +6352,8 @@ void drawMessageFlowTextAtoms(eui::Ui& ui,
             && std::fabs(atom.x - (fragmentX + fragmentWidth)) < 1.5f
             && std::fabs(atom.fontSize - fragmentFontSize) < 0.5f
             && std::fabs(atom.lineHeight - fragmentLineHeight) < 0.5f
-            && atom.emoji == fragmentEmoji;
+            && atom.emoji == fragmentEmoji
+            && atom.linkUrl == fragmentLinkUrl;
         if (!sameLine) {
             flushFragment();
             fragmentX = atom.x;
@@ -5355,6 +6361,7 @@ void drawMessageFlowTextAtoms(eui::Ui& ui,
             fragmentFontSize = atom.fontSize;
             fragmentLineHeight = atom.lineHeight;
             fragmentEmoji = atom.emoji;
+            fragmentLinkUrl = atom.linkUrl;
         }
         fragmentText += atom.text;
         fragmentWidth = (atom.x + atom.width) - fragmentX;
@@ -5375,7 +6382,8 @@ void drawMessagePartNode(eui::Ui& ui,
                          float& stickerMenuX,
                          float& stickerMenuY,
                          std::string& stickerMenuPath,
-                         std::string& stickerMenuName)
+                         std::string& stickerMenuName,
+                         std::string& stickerMenuCopyPath)
 {
     switch (part.GetType()) {
     case relaydesk::storage::MessagePartType::Image:
@@ -5391,7 +6399,8 @@ void drawMessagePartNode(eui::Ui& ui,
                              stickerMenuX,
                              stickerMenuY,
                              stickerMenuPath,
-                             stickerMenuName);
+                             stickerMenuName,
+                             stickerMenuCopyPath);
         return;
     case relaydesk::storage::MessagePartType::File:
         drawMessageFilePart(ui,
@@ -5430,21 +6439,48 @@ float drawMessageDocumentBubble(
     const relaydesk::storage::ChatMessageRecord& message,
     bool outgoing,
     relaydesk::runtime::RelayDeskRuntime& runtime,
+    float scrollOffset,
     bool& stickerMenuOpen,
     float& stickerMenuX,
     float& stickerMenuY,
     std::string& stickerMenuPath,
-    std::string& stickerMenuName)
+    std::string& stickerMenuName,
+    std::string& stickerMenuCopyPath,
+    MessageTextSelectionState& selection)
 {
     const float width = metrics.width;
     const float bubbleHeight = metrics.height;
     const MessageFlowLayout& layout = metrics.layout;
     const Color fill = outgoing ? kTealSoft : Color{0.990f, 0.990f, 0.992f, 1.0f};
+    const std::size_t messageTextLength = messageTextDocumentLength(message);
+    const std::string messageText =
+        messageTextRangeText(message, 0u, messageTextLength);
 
     rect(ui, id + ".bg", x, y, width, bubbleHeight, fill, 9.0f, kBorder);
 
     const float contentX = x + kMessageBubblePadding;
     const float contentY = y + kMessageBubblePadding;
+    drawMessageFlowTextSelectionHighlight(ui,
+                                          id,
+                                          layout,
+                                          contentX,
+                                          contentY,
+                                          message.GetMessageId(),
+                                          selection);
+    drawMessageFlowTextAtoms(ui, id, layout, contentX, contentY);
+    drawMessageFlowTextInteractionLayer(ui,
+                                        id,
+                                        layout,
+                                        contentX,
+                                        contentY,
+                                        std::max(1.0f,
+                                                 width
+                                                     - kMessageBubblePadding * 2.0f),
+                                        layout.contentHeight,
+                                        scrollOffset,
+                                        message.GetMessageId(),
+                                        messageText,
+                                        selection);
     for (std::size_t nodeIndex = 0; nodeIndex < layout.partNodes.size();
          ++nodeIndex) {
         const MessageFlowPartNode& node = layout.partNodes[nodeIndex];
@@ -5464,9 +6500,9 @@ float drawMessageDocumentBubble(
                             stickerMenuX,
                             stickerMenuY,
                             stickerMenuPath,
-                            stickerMenuName);
+                            stickerMenuName,
+                            stickerMenuCopyPath);
     }
-    drawMessageFlowTextAtoms(ui, id, layout, contentX, contentY);
 
     return bubbleHeight;
 }
@@ -6046,7 +7082,8 @@ void drawRuntimeChatTimelineContent(
     eui::Ui& ui,
     float width,
     const std::vector<relaydesk::storage::ChatMessageRecord>& messages,
-    relaydesk::runtime::RelayDeskRuntime& runtime)
+    relaydesk::runtime::RelayDeskRuntime& runtime,
+    float scrollOffset)
 {
     constexpr float avatarSize = 34.0f;
     constexpr float sidePadding = 22.0f;
@@ -6069,8 +7106,12 @@ void drawRuntimeChatTimelineContent(
         ui.state<std::string>("chat.sticker.context.path");
     std::string& stickerMenuName =
         ui.state<std::string>("chat.sticker.context.name");
+    std::string& stickerMenuCopyPath =
+        ui.state<std::string>("chat.sticker.context.copy.path");
     std::string& stickerMenuStatus =
         ui.state<std::string>("chat.sticker.context.status");
+    MessageTextSelectionState& messageTextSelection =
+        ui.state<MessageTextSelectionState>("chat.runtime.text.selection");
 
     for (std::size_t index = 0; index < messages.size(); ++index) {
         const auto& message = messages[index];
@@ -6103,11 +7144,14 @@ void drawRuntimeChatTimelineContent(
                                                              message,
                                                              outgoing,
                                                              runtime,
+                                                             scrollOffset,
                                                              stickerMenuOpen,
                                                              stickerMenuX,
                                                              stickerMenuY,
                                                              stickerMenuPath,
-                                                             stickerMenuName);
+                                                             stickerMenuName,
+                                                             stickerMenuCopyPath,
+                                                             messageTextSelection);
         drawRuntimeMessageTimestamp(ui,
                                     id,
                                     bubbleX,
@@ -6146,18 +7190,23 @@ void drawRuntimeChatTimelineContent(
         components::contextMenu(ui, "chat.sticker.context")
             .screen(width, kChatTimelineContentHeight)
             .position(stickerMenuX, stickerMenuY)
-            .size(150.0f, 34.0f)
-            .items({"收藏为表情", "取消"})
+            .size(172.0f, 34.0f)
+            .items({"收藏为表情", "复制图片", "取消"})
             .style(stickerContextMenuStyle())
             .open(stickerMenuOpen)
             .onSelect([&stickerMenuOpen,
                        &stickerMenuPath,
                        &stickerMenuName,
+                       &stickerMenuCopyPath,
                        &stickerMenuStatus](int itemIndex) {
                 if (itemIndex == 0 && !stickerMenuPath.empty()) {
                     const auto error =
                         favoriteStickerImage(stickerMenuPath, stickerMenuName);
                     stickerMenuStatus = error.value_or("已收藏为表情");
+                } else if (itemIndex == 1 && !stickerMenuCopyPath.empty()) {
+                    const bool copied = relaydesk::platform::copyImageFileToClipboard(
+                        filesystemPathFromUtf8String(stickerMenuCopyPath));
+                    stickerMenuStatus = copied ? "已复制到剪贴板" : "图片复制失败";
                 }
                 stickerMenuOpen = false;
             })
@@ -6278,7 +7327,8 @@ void drawRuntimeChatTimeline(
                                 drawRuntimeChatTimelineContent(contentUi,
                                                                contentWidth,
                                                                messages,
-                                                               runtime);
+                                                               runtime,
+                                                               scrollOffset);
                             })
                             .build();
                     })

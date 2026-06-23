@@ -76,6 +76,12 @@ using TransferProgressCallback = std::function<void(const std::string&,
                                                     const std::string&,
                                                     const std::string&,
                                                     std::uintmax_t)>;
+using TransferPreparedCallback = std::function<void(const std::string&,
+                                                    const std::string&,
+                                                    const std::string&,
+                                                    const std::string&,
+                                                    std::uintmax_t,
+                                                    const std::string&)>;
 #endif
 
 constexpr bool discoveryTraceEnabled()
@@ -1837,6 +1843,27 @@ PendingTransferUpdate makeInterruptedIncomingTransferUpdate(
     update.SetTransferState(relaydesk::storage::TransferState::Interrupted);
     return update;
 }
+
+PendingTransferUpdate makePreparedOutgoingTransferUpdate(
+    const std::string& peerDeviceId,
+    const std::string& messageId,
+    const std::string& partId,
+    const std::string& transferId,
+    const std::string& fileName,
+    std::uintmax_t fileSize,
+    const std::string& localPath)
+{
+    PendingTransferUpdate update;
+    update.SetPeerDeviceId(peerDeviceId);
+    update.SetMessageId(messageId);
+    update.SetPartId(partId);
+    update.SetTransferId(transferId);
+    update.SetFileName(fileName);
+    update.SetFileSize(fileSize);
+    update.SetLocalPath(localPath);
+    update.SetTransferState(relaydesk::storage::TransferState::Transferring);
+    return update;
+}
 #endif
 
 } // namespace
@@ -1905,6 +1932,7 @@ void sendTransferPartFrames(
     const relaydesk::storage::ChatMessageRecord& record,
     const relaydesk::storage::ChatMessagePart& part,
     const relaydesk::storage::AppPaths& appPaths,
+    const TransferPreparedCallback& onPrepared,
     const TransferProgressCallback& onProgress,
     const ::core::async::CancelToken& cancelToken,
     std::uintmax_t resumeOffset = 0)
@@ -1936,6 +1964,14 @@ void sendTransferPartFrames(
 
     const std::string fileName = chooseTransferFileName(part, localPath);
     const std::uintmax_t fileSize = std::filesystem::file_size(payloadPath);
+    if (onPrepared) {
+        onPrepared(record.GetMessageId(),
+                   part.GetPartId(),
+                   part.GetTransferId().value(),
+                   fileName,
+                   fileSize,
+                   makeWorkRelativePath(appPaths, localPath));
+    }
     if (resumeOffset > fileSize) {
         resumeOffset = 0;
     }
@@ -2036,6 +2072,7 @@ void sendImmediateTransferFrames(
                                    record,
                                    part,
                                    appPaths,
+                                   {},
                                    onProgress,
                                    cancelToken);
         }
@@ -2049,6 +2086,7 @@ void sendRequestedFileTransferFrames(
     const std::string& partId,
     const std::string& transferId,
     const relaydesk::storage::AppPaths& appPaths,
+    const TransferPreparedCallback& onPrepared,
     const TransferProgressCallback& onProgress,
     const ::core::async::CancelToken& cancelToken,
     std::uintmax_t resumeOffset = 0)
@@ -2063,6 +2101,7 @@ void sendRequestedFileTransferFrames(
                                    record,
                                    part,
                                    appPaths,
+                                   onPrepared,
                                    onProgress,
                                    cancelToken,
                                    resumeOffset);
@@ -3162,7 +3201,7 @@ void RelayDeskRuntime::rejectSelectedPeerFileTransfer(const std::string& message
             return candidate.GetPartId() == partId;
         });
     if (part == parts.end()
-        || part->GetType() != relaydesk::storage::MessagePartType::File
+        || !isManualTransferInvitePart(*part)
         || !part->GetTransferId().has_value()
         || !part->GetTransferState().has_value()
         || part->GetTransferState().value()
@@ -4628,6 +4667,25 @@ void RelayDeskRuntime::sendOutgoingTransferRequest(
                                                 request.GetPartId(),
                                                 request.GetTransferId(),
                                                 appPaths,
+                                                [this,
+                                                 peerDeviceId =
+                                                     request.GetReceiverDeviceId()](
+                                                    const std::string& messageId,
+                                                    const std::string& partId,
+                                                    const std::string& transferId,
+                                                    const std::string& fileName,
+                                                    std::uintmax_t fileSize,
+                                                    const std::string& localPath) {
+                                                    enqueueTransferUpdate(
+                                                        makePreparedOutgoingTransferUpdate(
+                                                            peerDeviceId,
+                                                            messageId,
+                                                            partId,
+                                                            transferId,
+                                                            fileName,
+                                                            fileSize,
+                                                            localPath));
+                                                },
                                                 [this](
                                                     const std::string& messageId,
                                                     const std::string& partId,

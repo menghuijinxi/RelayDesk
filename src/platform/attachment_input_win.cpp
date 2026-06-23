@@ -8,6 +8,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <cwctype>
 #include <fstream>
 #include <limits>
@@ -349,6 +350,117 @@ std::optional<std::filesystem::path> saveClipboardDibToOutbox()
     return targetPath;
 }
 
+HANDLE createClipboardDibFromImageFile(const std::filesystem::path& sourcePath)
+{
+    ComApartment apartment;
+    if (!apartment.GetAvailable()) {
+        return nullptr;
+    }
+
+    using Microsoft::WRL::ComPtr;
+    ComPtr<IWICImagingFactory> factory;
+    HRESULT result = CoCreateInstance(CLSID_WICImagingFactory,
+                                      nullptr,
+                                      CLSCTX_INPROC_SERVER,
+                                      IID_PPV_ARGS(&factory));
+    if (FAILED(result)) {
+        return nullptr;
+    }
+
+    ComPtr<IWICBitmapDecoder> decoder;
+    result = factory->CreateDecoderFromFilename(
+        sourcePath.c_str(),
+        nullptr,
+        GENERIC_READ,
+        WICDecodeMetadataCacheOnDemand,
+        &decoder);
+    if (FAILED(result)) {
+        return nullptr;
+    }
+
+    ComPtr<IWICBitmapFrameDecode> frame;
+    result = decoder->GetFrame(0, &frame);
+    if (FAILED(result)) {
+        return nullptr;
+    }
+
+    UINT width = 0;
+    UINT height = 0;
+    result = frame->GetSize(&width, &height);
+    if (FAILED(result) || width == 0 || height == 0) {
+        return nullptr;
+    }
+
+    const std::uint64_t stride64 = static_cast<std::uint64_t>(width) * 4u;
+    const std::uint64_t pixelSize64 = stride64 * static_cast<std::uint64_t>(height);
+    const std::uint64_t dibSize64 =
+        sizeof(BITMAPINFOHEADER) + pixelSize64;
+    if (stride64 > std::numeric_limits<UINT>::max()
+        || pixelSize64 > std::numeric_limits<UINT>::max()
+        || pixelSize64 > std::numeric_limits<DWORD>::max()
+        || dibSize64 > std::numeric_limits<SIZE_T>::max()
+        || width > static_cast<UINT>(std::numeric_limits<LONG>::max())
+        || height > static_cast<UINT>(std::numeric_limits<LONG>::max())) {
+        return nullptr;
+    }
+
+    ComPtr<IWICFormatConverter> converter;
+    result = factory->CreateFormatConverter(&converter);
+    if (FAILED(result)) {
+        return nullptr;
+    }
+    result = converter->Initialize(frame.Get(),
+                                   GUID_WICPixelFormat32bppBGRA,
+                                   WICBitmapDitherTypeNone,
+                                   nullptr,
+                                   0.0,
+                                   WICBitmapPaletteTypeCustom);
+    if (FAILED(result)) {
+        return nullptr;
+    }
+
+    std::vector<std::uint8_t> pixels(
+        static_cast<std::size_t>(pixelSize64), 0u);
+    result = converter->CopyPixels(
+        nullptr,
+        static_cast<UINT>(stride64),
+        static_cast<UINT>(pixelSize64),
+        pixels.data());
+    if (FAILED(result)) {
+        return nullptr;
+    }
+
+    const HANDLE dibHandle = GlobalAlloc(
+        GMEM_MOVEABLE,
+        static_cast<SIZE_T>(dibSize64));
+    if (dibHandle == nullptr) {
+        return nullptr;
+    }
+
+    GlobalMemoryLock dibMemory(dibHandle);
+    if (dibMemory.GetData() == nullptr) {
+        GlobalFree(dibHandle);
+        return nullptr;
+    }
+
+    auto* header = static_cast<BITMAPINFOHEADER*>(
+        const_cast<void*>(dibMemory.GetData()));
+    std::memset(header, 0, sizeof(BITMAPINFOHEADER));
+    header->biSize = sizeof(BITMAPINFOHEADER);
+    header->biWidth = static_cast<LONG>(width);
+    header->biHeight = -static_cast<LONG>(height);
+    header->biPlanes = 1;
+    header->biBitCount = 32;
+    header->biCompression = BI_RGB;
+    header->biSizeImage = static_cast<DWORD>(pixelSize64);
+    std::memcpy(static_cast<std::uint8_t*>(const_cast<void*>(dibMemory.GetData()))
+                    + sizeof(BITMAPINFOHEADER),
+                pixels.data(),
+                pixels.size());
+
+    return dibHandle;
+}
+
 } // namespace
 
 void initializeAttachmentDropTarget()
@@ -411,6 +523,33 @@ std::vector<std::filesystem::path> collectClipboardAttachmentPaths()
         }
     }
     return paths;
+}
+
+bool copyImageFileToClipboard(const std::filesystem::path& sourcePath)
+{
+    if (sourcePath.empty()) {
+        return false;
+    }
+
+    const HANDLE dibHandle = createClipboardDibFromImageFile(sourcePath);
+    if (dibHandle == nullptr) {
+        return false;
+    }
+
+    ClipboardScope clipboard;
+    if (!clipboard.GetOpened()) {
+        GlobalFree(dibHandle);
+        return false;
+    }
+    if (EmptyClipboard() == FALSE) {
+        GlobalFree(dibHandle);
+        return false;
+    }
+    if (SetClipboardData(CF_DIB, dibHandle) == nullptr) {
+        GlobalFree(dibHandle);
+        return false;
+    }
+    return true;
 }
 
 std::optional<ImageSize> probeImageSize(const std::filesystem::path& sourcePath)
