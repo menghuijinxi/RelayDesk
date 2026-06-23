@@ -202,7 +202,13 @@ if(RELAYDESK_HAS_EUI_NEO)
             ${CMAKE_SOURCE_DIR}/relaydesk.rc
             ${RELAYDESK_VSCODE_ICON_RESOURCE_SCRIPT}
         )
-        target_link_libraries(relaydesk PRIVATE shell32 windowscodecs ole32 bcrypt)
+        target_link_libraries(relaydesk PRIVATE
+            shell32
+            windowscodecs
+            ole32
+            bcrypt
+            winmm
+        )
     else()
         message(FATAL_ERROR "RelayDesk currently targets Windows only.")
     endif()

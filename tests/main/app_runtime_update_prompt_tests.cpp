@@ -86,6 +86,36 @@ relaydesk::storage::PeerProfile makeUpdatePeerProfile(std::uint16_t tcpPort,
     return profile;
 }
 
+relaydesk::storage::ChatMessagePart makeRuntimeTextPart(
+    const std::string& partId,
+    const std::string& text)
+{
+    relaydesk::storage::ChatMessagePart part;
+    part.SetPartId(partId);
+    part.SetType(relaydesk::storage::MessagePartType::Text);
+    part.SetText(text);
+    return part;
+}
+
+relaydesk::storage::ChatMessageRecord makeIncomingChatRecord(
+    const relaydesk::runtime::LocalUserSummary& localUser)
+{
+    relaydesk::storage::ChatMessageRecord record;
+    record.SetMessageId("notification-message");
+    record.SetConversationId(
+        relaydesk::storage::makeDirectConversationId(localUser.GetDeviceId(),
+                                                     "runtime-transfer-peer"));
+    record.SetDirection(relaydesk::storage::MessageDirection::Incoming);
+    record.SetSenderDeviceId("runtime-transfer-peer");
+    record.SetReceiverDeviceId(localUser.GetDeviceId());
+    record.SetSenderDisplayNameSnapshot("Runtime Transfer Peer");
+    record.SetReceiverDisplayNameSnapshot(localUser.GetDisplayName());
+    record.SetCreatedAt("2026-06-23T10:00:00Z");
+    record.SetDeliveryState(relaydesk::storage::DeliveryState::Received);
+    record.AddPart(makeRuntimeTextPart("notification-part", "hello"));
+    return record;
+}
+
 std::string makeWorkRelativePath(const relaydesk::storage::AppPaths& appPaths,
                                  const std::filesystem::path& path)
 {
@@ -840,6 +870,57 @@ bool waitForCondition(TestableRelayDeskRuntime& runtime, Predicate&& predicate)
     (void)::core::async::dispatchReady();
     runtime.refreshPeersIfNeeded();
     return predicate();
+}
+
+int queuesUserNotificationForIncomingChatMessage()
+{
+    const relaydesk::storage::AppPaths appPaths =
+        relaydesk::storage::createAppPaths();
+    std::filesystem::remove_all(appPaths.GetDataDirectory());
+
+    {
+        TestableRelayDeskRuntime runtime;
+        if (!runtime.GetStartupErrorMessage().empty()) {
+            return fail("Runtime startup failed: "
+                        + runtime.GetStartupErrorMessage());
+        }
+
+        if (const int result =
+                expect(runtime.ConsumePendingUserNotificationCount() == 0,
+                       "Runtime should start without pending user notifications.");
+            result != 0) {
+            return result;
+        }
+
+        int notificationHandlerCalls = 0;
+        runtime.SetUserNotificationHandler([&notificationHandlerCalls] {
+            ++notificationHandlerCalls;
+        });
+
+        runtime.receivePeerFrame(relaydesk::net::makeChatMessageFrame(
+            makeIncomingChatRecord(runtime.GetLocalUser())));
+        if (const int result =
+                expect(runtime.ConsumePendingUserNotificationCount() == 1,
+                       "Incoming chat message did not queue a user notification.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(notificationHandlerCalls == 1,
+                       "Incoming chat message did not invoke notification handler.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(runtime.ConsumePendingUserNotificationCount() == 0,
+                       "User notification count was not consumed.");
+            result != 0) {
+            return result;
+        }
+    }
+
+    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    return 0;
 }
 
 int offersAppUpdatePromptWhenOnlinePeerVersionIncreases()
@@ -2564,6 +2645,11 @@ int main(int argc, char** argv)
             }
         }
 
+        if (const int updatePromptResult =
+                queuesUserNotificationForIncomingChatMessage();
+            updatePromptResult != 0) {
+            return updatePromptResult;
+        }
         if (const int updatePromptResult =
                 offersAppUpdatePromptWhenOnlinePeerVersionIncreases();
             updatePromptResult != 0) {

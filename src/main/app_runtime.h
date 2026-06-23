@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -477,6 +478,8 @@ public:
     bool GetDiscoveryStarted() const { return discoveryStarted_; }
     std::uint16_t GetDiscoveryUdpPort() const { return discoveryUdpPort_; }
     std::optional<AppUpdatePrompt> GetAppUpdatePrompt();
+    std::uint64_t ConsumePendingUserNotificationCount();
+    void SetUserNotificationHandler(std::function<void()> handler);
 
     void updateLocalDisplayName(std::string displayName);
     void refreshPeersIfNeeded();
@@ -583,6 +586,7 @@ protected:
         bool replaceExistingRecord);
     void updateSelectedPeerMessageRecord(
         const relaydesk::storage::ChatMessageRecord& record);
+    void notifyUserNotification();
     void setStartupError(std::string errorMessage);
     void requestUiRefresh();
     void requestPeerStatusRefresh();
@@ -610,6 +614,7 @@ protected:
     std::string startupErrorMessage_;
     std::chrono::steady_clock::time_point nextPeerStatusRefreshAt_{};
     std::filesystem::path diagnosticLogFilePath_;
+    std::function<void()> userNotificationHandler_;
     std::mutex pendingPeerMutex_;
     std::mutex pendingChatMutex_;
     std::mutex pendingTransferUpdateMutex_;
@@ -618,8 +623,10 @@ protected:
     std::mutex pendingTransferProgressUpdateMutex_;
     std::mutex pendingTransferMutex_;
     std::mutex pendingAppUpdateMutex_;
+    std::mutex userNotificationMutex_;
     std::atomic_bool uiRefreshPending_ = false;
     std::atomic_bool peerStatusRefreshPending_ = false;
+    std::atomic<std::uint64_t> pendingUserNotificationCount_ = 0;
     bool storageAvailable_ = false;
     bool discoveryStarted_ = false;
     std::uint16_t discoveryUdpPort_ = 0;

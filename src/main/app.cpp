@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -26,6 +27,7 @@
 #include <fstream>
 #include <functional>
 #include <iomanip>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -41,6 +43,7 @@
 #endif
 #include <windows.h>
 #include <shellapi.h>
+#include <mmsystem.h>
 #endif
 
 namespace {
@@ -8145,17 +8148,30 @@ void drawSettingsScreenshotPage(eui::Ui& ui,
          "后续需要接入真实按键录入和冲突检测。", 12.0f, kMutedText);
 }
 
-void drawSettingsNotificationPage(eui::Ui& ui,
-                                  float x,
-                                  float y,
-                                  float width)
+std::atomic_bool& notificationSoundEnabledFlag()
+{
+    static std::atomic_bool soundEnabled{true};
+    return soundEnabled;
+}
+
+bool& notificationSoundEnabledState(eui::Ui& ui)
 {
     bool& initialized = ui.state<bool>("settings.notification.initialized");
     bool& soundEnabled = ui.state<bool>("settings.notification.sound_enabled");
     if (!initialized) {
         soundEnabled = true;
+        notificationSoundEnabledFlag().store(true, std::memory_order_relaxed);
         initialized = true;
     }
+    return soundEnabled;
+}
+
+void drawSettingsNotificationPage(eui::Ui& ui,
+                                  float x,
+                                  float y,
+                                  float width)
+{
+    bool& soundEnabled = notificationSoundEnabledState(ui);
 
     drawSettingsTitle(ui, "settings.notification.header", x, y, width,
                       "通知", "消息提示音默认开启，当前只做界面占位。");
@@ -8178,6 +8194,9 @@ void drawSettingsNotificationPage(eui::Ui& ui,
                 .style(settingsSwitchStyle())
                 .onChange([&soundEnabled](bool next) {
                     soundEnabled = next;
+                    notificationSoundEnabledFlag().store(
+                        next,
+                        std::memory_order_relaxed);
                 })
                 .build();
         })
@@ -8538,6 +8557,7 @@ void drawRelayDesk(eui::Ui& ui,
 #if defined(_WIN32)
 
 constexpr int kRelayDeskAppIconResourceId = 1;
+constexpr int kRelayDeskNotificationSoundResourceId = 2;
 
 struct RelayDeskIconWindowSearchContext {
     HWND window = nullptr;
@@ -8573,6 +8593,95 @@ HWND findRelayDeskMainWindowForIcon()
     return context.window;
 }
 
+HWND relayDeskMainWindow()
+{
+    static std::mutex windowMutex;
+    static HWND cachedWindow = nullptr;
+    std::lock_guard lock(windowMutex);
+    if (cachedWindow != nullptr && IsWindow(cachedWindow)) {
+        return cachedWindow;
+    }
+
+    cachedWindow = findRelayDeskMainWindowForIcon();
+    return cachedWindow;
+}
+
+bool isRelayDeskMainWindowActive(HWND window)
+{
+    if (window == nullptr) {
+        return true;
+    }
+
+    HWND foreground = GetForegroundWindow();
+    if (foreground == window) {
+        return true;
+    }
+    return foreground != nullptr && GetAncestor(foreground, GA_ROOT) == window;
+}
+
+void setRelayDeskTaskbarFlash(HWND window, bool enabled)
+{
+    if (window == nullptr) {
+        return;
+    }
+
+    FLASHWINFO flashInfo{};
+    flashInfo.cbSize = sizeof(flashInfo);
+    flashInfo.hwnd = window;
+    flashInfo.dwFlags = enabled
+        ? static_cast<DWORD>(FLASHW_TRAY | FLASHW_TIMERNOFG)
+        : static_cast<DWORD>(FLASHW_STOP);
+    flashInfo.uCount = 0;
+    flashInfo.dwTimeout = 0;
+    (void)FlashWindowEx(&flashInfo);
+}
+
+void playRelayDeskNotificationSound()
+{
+    if (!notificationSoundEnabledFlag().load(std::memory_order_relaxed)) {
+        return;
+    }
+
+    (void)PlaySoundW(MAKEINTRESOURCEW(kRelayDeskNotificationSoundResourceId),
+                     GetModuleHandleW(nullptr),
+                     SND_RESOURCE | SND_ASYNC | SND_NODEFAULT | SND_SYSTEM);
+}
+
+void handleIncomingUserNotification()
+{
+    playRelayDeskNotificationSound();
+
+    HWND window = relayDeskMainWindow();
+    if (!isRelayDeskMainWindowActive(window)) {
+        setRelayDeskTaskbarFlash(window, true);
+    }
+}
+
+void ensureUserNotificationHandlerInstalled(
+    relaydesk::runtime::RelayDeskRuntime& runtime)
+{
+    static bool installed = false;
+    if (installed) {
+        return;
+    }
+
+    runtime.SetUserNotificationHandler([] {
+        handleIncomingUserNotification();
+    });
+    installed = true;
+}
+
+void processPendingUserNotifications(
+    relaydesk::runtime::RelayDeskRuntime& runtime)
+{
+    HWND window = relayDeskMainWindow();
+    if (isRelayDeskMainWindowActive(window)) {
+        setRelayDeskTaskbarFlash(window, false);
+    }
+
+    (void)runtime.ConsumePendingUserNotificationCount();
+}
+
 HICON loadRelayDeskIcon(int width, int height)
 {
     return static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr),
@@ -8592,7 +8701,7 @@ void applyEmbeddedWindowIconOnce()
         return;
     }
 
-    HWND window = findRelayDeskMainWindowForIcon();
+    HWND window = relayDeskMainWindow();
     if (window == nullptr) {
         return;
     }
@@ -8634,6 +8743,20 @@ void applyEmbeddedWindowIconOnce()
     applied = true;
 }
 
+#else
+
+void ensureUserNotificationHandlerInstalled(
+    relaydesk::runtime::RelayDeskRuntime& runtime)
+{
+    runtime.SetUserNotificationHandler([] {});
+}
+
+void processPendingUserNotifications(
+    relaydesk::runtime::RelayDeskRuntime& runtime)
+{
+    (void)runtime.ConsumePendingUserNotificationCount();
+}
+
 #endif
 
 } // namespace
@@ -8663,6 +8786,11 @@ void compose(eui::Ui& ui, const eui::Screen& screen)
 #endif
 
     auto& runtime = relaydesk::runtime::getRelayDeskRuntime();
+    bool& notificationSoundEnabled = notificationSoundEnabledState(ui);
+    notificationSoundEnabledFlag().store(notificationSoundEnabled,
+                                         std::memory_order_relaxed);
+    ensureUserNotificationHandlerInstalled(runtime);
+    processPendingUserNotifications(runtime);
 
     ui.stack("root")
         .size(screen.width, screen.height)

@@ -2378,6 +2378,17 @@ std::optional<AppUpdatePrompt> RelayDeskRuntime::GetAppUpdatePrompt()
     return appUpdatePrompt_;
 }
 
+std::uint64_t RelayDeskRuntime::ConsumePendingUserNotificationCount()
+{
+    return pendingUserNotificationCount_.exchange(0);
+}
+
+void RelayDeskRuntime::SetUserNotificationHandler(std::function<void()> handler)
+{
+    std::lock_guard lock(userNotificationMutex_);
+    userNotificationHandler_ = std::move(handler);
+}
+
 void RelayDeskRuntime::updateLocalDisplayName(std::string displayName)
 {
     if (!storageAvailable_) {
@@ -3771,6 +3782,8 @@ void RelayDeskRuntime::enqueueIncomingChatMessage(
     }
 
     logDiagnostic("runtime.chat.enqueue_incoming peer_device_id=" + peerDeviceId);
+    pendingUserNotificationCount_.fetch_add(1);
+    notifyUserNotification();
     requestUiRefresh();
 }
 
@@ -5357,6 +5370,35 @@ void RelayDeskRuntime::setStartupError(std::string errorMessage)
 {
     logDiagnostic("runtime.error message=" + errorMessage);
     startupErrorMessage_ = std::move(errorMessage);
+}
+
+void RelayDeskRuntime::notifyUserNotification()
+{
+    std::function<void()> handler;
+    try {
+        std::lock_guard lock(userNotificationMutex_);
+        handler = userNotificationHandler_;
+    } catch (const std::exception& error) {
+        logDiagnostic("runtime.notification.handler_copy_failed message="
+                      + std::string(error.what()));
+        return;
+    } catch (...) {
+        logDiagnostic("runtime.notification.handler_copy_failed message=unknown");
+        return;
+    }
+
+    if (!handler) {
+        return;
+    }
+
+    try {
+        handler();
+    } catch (const std::exception& error) {
+        logDiagnostic("runtime.notification.handler_failed message="
+                      + std::string(error.what()));
+    } catch (...) {
+        logDiagnostic("runtime.notification.handler_failed message=unknown");
+    }
 }
 
 void RelayDeskRuntime::requestUiRefresh()
