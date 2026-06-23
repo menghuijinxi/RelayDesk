@@ -751,6 +751,17 @@ std::filesystem::path filesystemPathFromUtf8String(const std::string& pathText)
 #endif
 }
 
+bool isControlKeyDown()
+{
+#if defined(_WIN32)
+    return (GetKeyState(VK_CONTROL) & 0x8000) != 0
+        || (GetKeyState(VK_LCONTROL) & 0x8000) != 0
+        || (GetKeyState(VK_RCONTROL) & 0x8000) != 0;
+#else
+    return false;
+#endif
+}
+
 std::filesystem::path resolveWorkRelativePath(
     const relaydesk::storage::AppPaths& appPaths,
     const std::string& relativePath)
@@ -4236,7 +4247,8 @@ void drawComposerEditor(eui::Ui& ui,
                         float height,
                         std::vector<ComposerDraftItem>& draftItems,
                         ComposerCaretState& caret,
-                        const std::string& placeholder)
+                        const std::string& placeholder,
+                        const std::function<void()>& onSubmit)
 {
     normalizeComposerDraftItems(draftItems);
     clampComposerCaret(draftItems, caret);
@@ -4356,8 +4368,13 @@ void drawComposerEditor(eui::Ui& ui,
                                 })
                                 .onTextInput([&draftItems,
                                               &caret,
-                                              layout](
+                                              layout,
+                                              onSubmit](
                                                   const core::KeyboardEvent& event) {
+                                    if (event.enter && !isControlKeyDown()) {
+                                        onSubmit();
+                                        return;
+                                    }
                                     handleComposerEditorKeyboardEvent(draftItems,
                                                                       caret,
                                                                       layout,
@@ -7526,7 +7543,8 @@ void drawRuntimeComposer(
                        inputHeight,
                        draftItems,
                        composerCaret,
-                       placeholder);
+                       placeholder,
+                       submitMessage);
     if (width < 560.0f) {
         icon(ui, "composer.file", composerX + 16.0f, toolbarY, iconSize,
              0xE723, kText);

@@ -42,7 +42,6 @@
 
 #if defined(_WIN32)
 #include <windows.h>
-#include <shellapi.h>
 #endif
 
 namespace relaydesk::runtime {
@@ -1096,13 +1095,13 @@ std::string batchPathFromScriptDirectory(
     const std::filesystem::path& scriptDirectory,
     const std::filesystem::path& path)
 {
+    (void)scriptDirectory;
     std::error_code error;
-    const std::filesystem::path relativePath =
-        std::filesystem::relative(path, scriptDirectory, error);
-    if (!error && !relativePath.empty()) {
-        return "!SCRIPT_DIR!" + filesystemPathToUtf8String(relativePath);
+    std::filesystem::path absolutePath = std::filesystem::absolute(path, error);
+    if (error || absolutePath.empty()) {
+        absolutePath = path;
     }
-    return filesystemPathToUtf8String(path);
+    return filesystemPathToUtf8String(absolutePath.lexically_normal());
 }
 
 std::uint32_t currentProcessId()
@@ -1113,6 +1112,24 @@ std::uint32_t currentProcessId()
     return 0;
 #endif
 }
+
+#if defined(_WIN32)
+std::wstring quoteWindowsCommandLineArgument(const std::wstring& value)
+{
+    std::wstring result;
+    result.reserve(value.size() + 2);
+    result.push_back(L'"');
+    for (wchar_t character : value) {
+        if (character == L'"') {
+            result += L"\\\"";
+        } else {
+            result.push_back(character);
+        }
+    }
+    result.push_back(L'"');
+    return result;
+}
+#endif
 
 void writeAppUpdateScript(const std::filesystem::path& scriptPath,
                           const std::filesystem::path& targetPath,
@@ -1176,12 +1193,14 @@ void writeAppUpdateScript(const std::filesystem::path& scriptPath,
     output << ">> \"!LOG!\" echo process did not exit\n";
     output << "exit /b 3\n";
     output << ":copy_update\n";
+    output << "attrib -R \"!TARGET!\" >> \"!LOG!\" 2>&1\n";
     output << "for /l %%i in (1,1,60) do (\n";
+    output << "  >> \"!LOG!\" echo copy attempt %%i\n";
     output << "  copy /y \"!UPDATE!\" \"!TARGET!\" >> \"!LOG!\" 2>&1\n";
     output << "  if not errorlevel 1 goto copy_done\n";
     output << "  timeout /t 1 /nobreak >nul\n";
     output << ")\n";
-    output << ">> \"!LOG!\" echo copy failed\n";
+    output << ">> \"!LOG!\" echo copy failed after 60 attempts\n";
     output << "exit /b 4\n";
     output << ":copy_done\n";
     output << ">> \"!LOG!\" echo copy succeeded\n";
@@ -1207,13 +1226,29 @@ bool launchAppUpdateScript(const std::filesystem::path& scriptPath)
 #if defined(_WIN32)
     const std::wstring script = scriptPath.wstring();
     const std::wstring directory = scriptPath.parent_path().wstring();
-    const HINSTANCE result = ShellExecuteW(nullptr,
-                                           L"open",
-                                           script.c_str(),
-                                           nullptr,
-                                           directory.c_str(),
-                                           SW_HIDE);
-    return reinterpret_cast<std::intptr_t>(result) > 32;
+    std::wstring commandLine =
+        L"cmd.exe /d /c " + quoteWindowsCommandLineArgument(script);
+    STARTUPINFOW startupInfo{};
+    startupInfo.cb = sizeof(startupInfo);
+    startupInfo.dwFlags = STARTF_USESHOWWINDOW;
+    startupInfo.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION processInfo{};
+    const BOOL started = CreateProcessW(nullptr,
+                                        commandLine.data(),
+                                        nullptr,
+                                        nullptr,
+                                        FALSE,
+                                        CREATE_NO_WINDOW,
+                                        nullptr,
+                                        directory.c_str(),
+                                        &startupInfo,
+                                        &processInfo);
+    if (!started) {
+        return false;
+    }
+    CloseHandle(processInfo.hThread);
+    CloseHandle(processInfo.hProcess);
+    return true;
 #else
     (void)scriptPath;
     return false;
