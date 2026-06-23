@@ -48,6 +48,16 @@ void writeJsonFile(const std::filesystem::path& filePath, const nlohmann::json& 
     output << content.dump(4) << '\n';
 }
 
+void writeTextFile(const std::filesystem::path& filePath, const std::string& content)
+{
+    std::filesystem::create_directories(filePath.parent_path());
+    std::ofstream output(filePath, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        throw std::runtime_error("Failed to write test file.");
+    }
+    output << content;
+}
+
 relaydesk::storage::PeerProfile makeProfile(const std::string& deviceId)
 {
     relaydesk::storage::PeerProfile profile;
@@ -201,6 +211,26 @@ int listsSavedPeerProfilesInStableOrder()
                   "Peer profile list order is not stable.");
 }
 
+int skipsInvalidPeerProfileFilesWhenListingProfiles()
+{
+    const auto appPaths = makeAppPaths("list-with-invalid-profile");
+    relaydesk::storage::savePeerProfile(appPaths, makeProfile("peer-device-valid"));
+    writeTextFile(relaydesk::storage::getPeerProfileFilePath(appPaths,
+                                                             "peer-device-invalid"),
+                  "{not-json");
+
+    const std::vector<relaydesk::storage::PeerProfile> profiles =
+        relaydesk::storage::loadPeerProfiles(appPaths);
+    if (const int result = expect(profiles.size() == 1,
+                                  "Invalid peer profile should be skipped.");
+        result != 0) {
+        return result;
+    }
+
+    return expect(profiles[0].GetDeviceId() == "peer-device-valid",
+                  "Valid peer profile was not kept.");
+}
+
 int rejectsInvalidPeerProfileFile()
 {
     const auto appPaths = makeAppPaths("invalid");
@@ -311,6 +341,11 @@ int main()
     }
 
     if (const int result = listsSavedPeerProfilesInStableOrder(); result != 0) {
+        return result;
+    }
+
+    if (const int result = skipsInvalidPeerProfileFilesWhenListingProfiles();
+        result != 0) {
         return result;
     }
 

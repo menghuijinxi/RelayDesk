@@ -243,8 +243,12 @@ std::vector<PeerProfile> loadPeerProfiles(const AppPaths& appPaths)
 
     std::vector<PeerProfile> profiles;
     for (const auto& profilePath : profilePaths) {
-        profiles.push_back(loadPeerProfile(appPaths,
-                                           profilePath.parent_path().filename().string()));
+        try {
+            profiles.push_back(loadPeerProfile(
+                appPaths, profilePath.parent_path().filename().string()));
+        } catch (const std::exception&) {
+            continue;
+        }
     }
     return profiles;
 }
