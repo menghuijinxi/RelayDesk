@@ -33,6 +33,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -4773,6 +4774,12 @@ struct MessageTextSelectionState {
     float boundsHeight = 0.0f;
 };
 
+struct RuntimeTimelineViewport {
+    float x = 0.0f;
+    float y = 0.0f;
+    float scrollOffset = 0.0f;
+};
+
 constexpr float kMessageFlowAttachmentGap = 8.0f;
 constexpr float kMessageFlowRowGap = 8.0f;
 constexpr float kMessageImageMaxHeight = 360.0f;
@@ -5521,6 +5528,7 @@ void drawMessageImagePart(eui::Ui& ui,
                           float height,
                           const relaydesk::storage::ChatMessagePart& part,
                           bool outgoing,
+                          const RuntimeTimelineViewport& viewport,
                           bool& stickerMenuOpen,
                           float& stickerMenuX,
                           float& stickerMenuY,
@@ -5586,11 +5594,14 @@ void drawMessageImagePart(eui::Ui& ui,
                         &stickerMenuCopyPath,
                         imagePathText,
                         imageCopyPathText,
-                        imageName](const eui::PointerEvent& event,
-                                   const eui::Rect&) {
+                        imageName,
+                        viewport](const eui::PointerEvent& event,
+                                  const eui::Rect&) {
             stickerMenuOpen = true;
-            stickerMenuX = static_cast<float>(event.x);
-            stickerMenuY = static_cast<float>(event.y);
+            stickerMenuX = static_cast<float>(event.x) - viewport.x;
+            stickerMenuY = static_cast<float>(event.y)
+                - viewport.y
+                + viewport.scrollOffset;
             stickerMenuPath = imagePathText;
             stickerMenuName = imageName;
             stickerMenuCopyPath = imageCopyPathText;
@@ -6398,6 +6409,7 @@ void drawMessagePartNode(eui::Ui& ui,
                          const MessageFlowPartNode& node,
                          bool outgoing,
                          relaydesk::runtime::RelayDeskRuntime& runtime,
+                         const RuntimeTimelineViewport& viewport,
                          bool& stickerMenuOpen,
                          float& stickerMenuX,
                          float& stickerMenuY,
@@ -6415,6 +6427,7 @@ void drawMessagePartNode(eui::Ui& ui,
                              node.height,
                              part,
                              outgoing,
+                             viewport,
                              stickerMenuOpen,
                              stickerMenuX,
                              stickerMenuY,
@@ -6459,7 +6472,7 @@ float drawMessageDocumentBubble(
     const relaydesk::storage::ChatMessageRecord& message,
     bool outgoing,
     relaydesk::runtime::RelayDeskRuntime& runtime,
-    float scrollOffset,
+    const RuntimeTimelineViewport& viewport,
     bool& stickerMenuOpen,
     float& stickerMenuX,
     float& stickerMenuY,
@@ -6497,7 +6510,7 @@ float drawMessageDocumentBubble(
                                                  width
                                                      - kMessageBubblePadding * 2.0f),
                                         layout.contentHeight,
-                                        scrollOffset,
+                                        viewport.scrollOffset,
                                         message.GetMessageId(),
                                         messageText,
                                         selection);
@@ -6516,6 +6529,7 @@ float drawMessageDocumentBubble(
                             node,
                             outgoing,
                             runtime,
+                            viewport,
                             stickerMenuOpen,
                             stickerMenuX,
                             stickerMenuY,
@@ -7101,9 +7115,10 @@ float runtimeMessageBubbleMaxWidth(float timelineWidth,
 void drawRuntimeChatTimelineContent(
     eui::Ui& ui,
     float width,
+    float contentHeight,
+    const RuntimeTimelineViewport& viewport,
     const std::vector<relaydesk::storage::ChatMessageRecord>& messages,
-    relaydesk::runtime::RelayDeskRuntime& runtime,
-    float scrollOffset)
+    relaydesk::runtime::RelayDeskRuntime& runtime)
 {
     constexpr float avatarSize = 34.0f;
     constexpr float sidePadding = 22.0f;
@@ -7164,7 +7179,7 @@ void drawRuntimeChatTimelineContent(
                                                              message,
                                                              outgoing,
                                                              runtime,
-                                                             scrollOffset,
+                                                             viewport,
                                                              stickerMenuOpen,
                                                              stickerMenuX,
                                                              stickerMenuY,
@@ -7208,7 +7223,7 @@ void drawRuntimeChatTimelineContent(
 
     if (stickerMenuOpen) {
         components::contextMenu(ui, "chat.sticker.context")
-            .screen(width, kChatTimelineContentHeight)
+            .screen(width, contentHeight)
             .position(stickerMenuX, stickerMenuY)
             .size(172.0f, 34.0f)
             .items({"收藏为表情", "复制图片", "取消"})
@@ -7341,14 +7356,16 @@ void drawRuntimeChatTimeline(
                         scrollOffset = value;
                     })
                     .content([&](eui::Ui& contentUi, float contentWidth, float) {
+                        const RuntimeTimelineViewport viewport{x, y, scrollOffset};
                         contentUi.stack("chat.runtime.content")
                             .size(contentWidth, contentHeight)
                             .content([&] {
                                 drawRuntimeChatTimelineContent(contentUi,
                                                                contentWidth,
+                                                               contentHeight,
+                                                               viewport,
                                                                messages,
-                                                               runtime,
-                                                               scrollOffset);
+                                                               runtime);
                             })
                             .build();
                     })
@@ -8647,6 +8664,8 @@ void playRelayDeskNotificationSound()
                      SND_RESOURCE | SND_ASYNC | SND_NODEFAULT | SND_SYSTEM);
 }
 
+void setRelayDeskTrayAttention(bool enabled);
+
 void handleIncomingUserNotification()
 {
     playRelayDeskNotificationSound();
@@ -8654,6 +8673,7 @@ void handleIncomingUserNotification()
     HWND window = relayDeskMainWindow();
     if (!isRelayDeskMainWindowActive(window)) {
         setRelayDeskTaskbarFlash(window, true);
+        setRelayDeskTrayAttention(true);
     }
 }
 
@@ -8677,6 +8697,7 @@ void processPendingUserNotifications(
     HWND window = relayDeskMainWindow();
     if (isRelayDeskMainWindowActive(window)) {
         setRelayDeskTaskbarFlash(window, false);
+        setRelayDeskTrayAttention(false);
     }
 
     (void)runtime.ConsumePendingUserNotificationCount();
@@ -8690,6 +8711,121 @@ HICON loadRelayDeskIcon(int width, int height)
                                          width,
                                          height,
                                          LR_DEFAULTCOLOR));
+}
+
+struct RelayDeskTrayWindowSearchContext {
+    HWND window = nullptr;
+};
+
+BOOL CALLBACK relayDeskTrayWindowEnumProc(HWND window, LPARAM contextAddress)
+{
+    DWORD processId = 0;
+    GetWindowThreadProcessId(window, &processId);
+    if (processId != GetCurrentProcessId()) {
+        return TRUE;
+    }
+
+    wchar_t className[64]{};
+    const int classLength = GetClassNameW(
+        window,
+        className,
+        static_cast<int>(sizeof(className) / sizeof(className[0])));
+    if (classLength <= 0 || std::wstring(className) != L"TRAY") {
+        return TRUE;
+    }
+
+    auto* context =
+        reinterpret_cast<RelayDeskTrayWindowSearchContext*>(contextAddress);
+    context->window = window;
+    return FALSE;
+}
+
+HWND findRelayDeskTrayWindow()
+{
+    RelayDeskTrayWindowSearchContext context;
+    EnumWindows(relayDeskTrayWindowEnumProc, reinterpret_cast<LPARAM>(&context));
+    return context.window;
+}
+
+HICON createTransparentIcon()
+{
+    constexpr int kIconSize = 16;
+    std::array<BYTE, (kIconSize * kIconSize) / 8> andMask{};
+    std::array<BYTE, (kIconSize * kIconSize) / 8> xorMask{};
+    andMask.fill(0xFF);
+    return CreateIcon(GetModuleHandleW(nullptr),
+                      kIconSize,
+                      kIconSize,
+                      1,
+                      1,
+                      andMask.data(),
+                      xorMask.data());
+}
+
+void updateRelayDeskTrayIcon(HICON icon)
+{
+    HWND trayWindow = findRelayDeskTrayWindow();
+    if (trayWindow == nullptr || icon == nullptr) {
+        return;
+    }
+
+    NOTIFYICONDATAW data{};
+    data.cbSize = sizeof(data);
+    data.hWnd = trayWindow;
+    data.uID = 0;
+    data.uFlags = NIF_ICON;
+    data.hIcon = icon;
+    (void)Shell_NotifyIconW(NIM_MODIFY, &data);
+}
+
+std::atomic_bool& relayDeskTrayAttentionEnabled()
+{
+    static std::atomic_bool enabled{false};
+    return enabled;
+}
+
+std::atomic_bool& relayDeskTrayAttentionWorkerRunning()
+{
+    static std::atomic_bool running{false};
+    return running;
+}
+
+void runRelayDeskTrayAttentionWorker()
+{
+    const HICON normalIcon = loadRelayDeskIcon(GetSystemMetrics(SM_CXSMICON),
+                                               GetSystemMetrics(SM_CYSMICON));
+    const HICON transparentIcon = createTransparentIcon();
+    bool showTransparent = false;
+
+    while (relayDeskTrayAttentionEnabled().load(std::memory_order_relaxed)) {
+        updateRelayDeskTrayIcon(showTransparent ? transparentIcon : normalIcon);
+        showTransparent = !showTransparent;
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+
+    if (normalIcon != nullptr) {
+        updateRelayDeskTrayIcon(normalIcon);
+        DestroyIcon(normalIcon);
+    }
+    if (transparentIcon != nullptr) {
+        DestroyIcon(transparentIcon);
+    }
+
+    relayDeskTrayAttentionWorkerRunning().store(false, std::memory_order_relaxed);
+}
+
+void setRelayDeskTrayAttention(bool enabled)
+{
+    relayDeskTrayAttentionEnabled().store(enabled, std::memory_order_relaxed);
+    if (!enabled) {
+        return;
+    }
+
+    bool expected = false;
+    if (relayDeskTrayAttentionWorkerRunning().compare_exchange_strong(
+            expected, true, std::memory_order_relaxed)) {
+        std::thread(runRelayDeskTrayAttentionWorker).detach();
+    }
 }
 
 void applyEmbeddedWindowIconOnce()
@@ -8759,6 +8895,19 @@ void processPendingUserNotifications(
 
 #endif
 
+const char* relayDeskTrayIconPath()
+{
+    static const std::string iconPath = [] {
+        try {
+            const auto appPaths = relaydesk::storage::createAppPaths();
+            return filesystemPathToUtf8String(appPaths.GetExecutablePath());
+        } catch (const std::exception&) {
+            return std::string{};
+        }
+    }();
+    return iconPath.c_str();
+}
+
 } // namespace
 
 namespace app {
@@ -8771,6 +8920,9 @@ const DslAppConfig& dslAppConfig()
         .pageId("relaydesk")
         .clearColor(kWindowBackground)
         .iconPath("")
+        .tray(true)
+        .trayTitle("RelayDesk")
+        .trayIcon(relayDeskTrayIconPath())
         .textFont("C:/Windows/Fonts/msyh.ttc")
         .iconFont("C:/Windows/Fonts/segmdl2.ttf")
         .windowSize(1940, 1224)
