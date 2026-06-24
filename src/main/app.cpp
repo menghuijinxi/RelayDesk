@@ -72,6 +72,7 @@ constexpr unsigned int kRefreshIconCodePoint = 0xE72C;
 constexpr float kContentTop = 0.0f;
 constexpr float kChatHeaderHeight = 118.0f;
 constexpr float kChatTimelineContentHeight = 650.0f;
+constexpr float kChatLoadMoreTopThreshold = 36.0f;
 constexpr float kComposerHeight = 196.0f;
 constexpr float kMessageBubblePadding = 12.0f;
 constexpr float kMessageTimestampWidth = 42.0f;
@@ -7310,6 +7311,8 @@ void drawRuntimeChatTimeline(
             ui.state<std::string>("chat.runtime.scroll.peer.device_id");
         std::string& scrollTailMessageId =
             ui.state<std::string>("chat.runtime.scroll.tail.message_id");
+        std::string& scrollHeadMessageId =
+            ui.state<std::string>("chat.runtime.scroll.head.message_id");
         std::size_t& scrollMessageCount =
             ui.state<std::size_t>("chat.runtime.scroll.message_count");
         float& previousMaxScrollOffset =
@@ -7319,10 +7322,17 @@ void drawRuntimeChatTimeline(
         std::uint64_t& autoScrollRevision =
             ui.state<std::uint64_t>("chat.runtime.scroll.auto_revision");
         const std::string& peerDeviceId = selectedPeer->GetDeviceId();
+        const std::string& headMessageId = messages.front().GetMessageId();
         const std::string& tailMessageId = messages.back().GetMessageId();
         const bool peerChanged = scrollPeerDeviceId != peerDeviceId;
-        const bool tailChanged = scrollTailMessageId != tailMessageId
-            || scrollMessageCount != messages.size();
+        const bool tailMessageChanged = scrollTailMessageId != tailMessageId;
+        const bool messageCountChanged = scrollMessageCount != messages.size();
+        const bool tailChanged = tailMessageChanged || messageCountChanged;
+        const bool headChanged = scrollHeadMessageId != headMessageId;
+        const bool olderMessagesPrepended = !peerChanged
+            && headChanged
+            && !tailMessageChanged
+            && scrollMessageCount < messages.size();
         const bool contentHeightChanged =
             std::abs(previousContentHeight - contentHeight) > 0.5f;
         const bool wasAtBottom = previousMaxScrollOffset <= 0.5f
@@ -7330,10 +7340,16 @@ void drawRuntimeChatTimeline(
         if (peerChanged || ((tailChanged || contentHeightChanged) && wasAtBottom)) {
             scrollOffset = maxScrollOffset;
             ++autoScrollRevision;
+        } else if (olderMessagesPrepended && !wasAtBottom) {
+            scrollOffset = std::clamp(
+                scrollOffset + (contentHeight - previousContentHeight),
+                0.0f,
+                maxScrollOffset);
         } else {
             scrollOffset = std::clamp(scrollOffset, 0.0f, maxScrollOffset);
         }
         scrollPeerDeviceId = peerDeviceId;
+        scrollHeadMessageId = headMessageId;
         scrollTailMessageId = tailMessageId;
         scrollMessageCount = messages.size();
         previousMaxScrollOffset = maxScrollOffset;
@@ -7383,6 +7399,10 @@ void drawRuntimeChatTimeline(
                     .build();
             })
             .build();
+        if (scrollOffset <= kChatLoadMoreTopThreshold
+            && runtime.GetSelectedPeerHasMoreMessages()) {
+            runtime.loadMoreSelectedPeerMessages();
+        }
         return;
     }
 

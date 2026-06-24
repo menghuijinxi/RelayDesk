@@ -132,6 +132,16 @@ relaydesk::storage::ChatMessageRecord makeTextRecord(const std::string& messageI
     return record;
 }
 
+relaydesk::storage::ChatMessageRecord makeTextRecordAt(
+    const std::string& messageId,
+    const std::string& createdAt)
+{
+    auto record = makeTextRecord(messageId);
+    record.SetCreatedAt(createdAt);
+    record.SetParts({makeTextPart("p1", "hello " + messageId)});
+    return record;
+}
+
 relaydesk::storage::ChatMessageRecord makeMixedRecord(const std::string& messageId)
 {
     auto record = makeBaseRecord(messageId);
@@ -499,6 +509,100 @@ int skipsBrokenJsonLines()
                   "Broken history line prevented valid records from loading.");
 }
 
+int loadsRecentHistoryWindow()
+{
+    const auto appPaths = makeAppPaths("recent-window");
+    for (int index = 1; index <= 5; ++index) {
+        relaydesk::storage::appendChatMessage(
+            appPaths,
+            "peer-device",
+            makeTextRecordAt("m" + std::to_string(index),
+                             "2026-06-12T00:00:0"
+                                 + std::to_string(index) + "Z"));
+    }
+
+    const auto result =
+        relaydesk::storage::loadRecentChatHistory(appPaths, "peer-device", 3);
+    if (const int check = expect(result.GetSkippedLineCount() == 0,
+                                 "Recent history skipped valid lines.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(result.GetHasMoreRecords(),
+                                 "Recent history did not report older records.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(result.GetRecords().size() == 3,
+                                 "Recent history window size mismatch.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(result.GetRecords()[0].GetMessageId() == "m3",
+                                 "Recent history first record mismatch.");
+        check != 0) {
+        return check;
+    }
+
+    return expect(result.GetRecords()[2].GetMessageId() == "m5",
+                  "Recent history last record mismatch.");
+}
+
+int loadsHistoryWindowBeforeMessage()
+{
+    const auto appPaths = makeAppPaths("before-window");
+    for (int index = 1; index <= 6; ++index) {
+        relaydesk::storage::appendChatMessage(
+            appPaths,
+            "peer-device",
+            makeTextRecordAt("m" + std::to_string(index),
+                             "2026-06-12T00:00:0"
+                                 + std::to_string(index) + "Z"));
+    }
+
+    const auto result =
+        relaydesk::storage::loadChatHistoryBefore(appPaths, "peer-device", "m5", 3);
+    if (const int check = expect(result.GetHasMoreRecords(),
+                                 "History-before window did not report older records.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(result.GetRecords().size() == 3,
+                                 "History-before window size mismatch.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(result.GetRecords()[0].GetMessageId() == "m2",
+                                 "History-before first record mismatch.");
+        check != 0) {
+        return check;
+    }
+
+    return expect(result.GetRecords()[2].GetMessageId() == "m4",
+                  "History-before last record mismatch.");
+}
+
+int loadsLatestMessageCreatedAtWithoutHistoryVector()
+{
+    const auto appPaths = makeAppPaths("latest-created-at");
+    relaydesk::storage::appendChatMessage(
+        appPaths,
+        "peer-device",
+        makeTextRecordAt("m1", "2026-06-12T00:00:01Z"));
+    relaydesk::storage::appendChatMessage(
+        appPaths,
+        "peer-device",
+        makeTextRecordAt("m2", "2026-06-12T00:00:03Z"));
+    relaydesk::storage::appendChatMessage(
+        appPaths,
+        "peer-device",
+        makeTextRecordAt("m3", "2026-06-12T00:00:02Z"));
+
+    return expect(relaydesk::storage::loadLatestChatMessageCreatedAt(
+                      appPaths, "peer-device") == "2026-06-12T00:00:03Z",
+                  "Latest chat message timestamp mismatch.");
+}
+
 int replacesExistingMessageRecord()
 {
     const auto appPaths = makeAppPaths("replace-record");
@@ -573,6 +677,19 @@ int main()
     }
 
     if (const int result = skipsBrokenJsonLines(); result != 0) {
+        return result;
+    }
+
+    if (const int result = loadsRecentHistoryWindow(); result != 0) {
+        return result;
+    }
+
+    if (const int result = loadsHistoryWindowBeforeMessage(); result != 0) {
+        return result;
+    }
+
+    if (const int result = loadsLatestMessageCreatedAtWithoutHistoryVector();
+        result != 0) {
         return result;
     }
 

@@ -2,6 +2,7 @@
 
 #include "storage/app_paths.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -170,14 +171,17 @@ protected:
 class ChatHistoryLoadResult {
 public:
     explicit ChatHistoryLoadResult(std::vector<ChatMessageRecord> records,
-                                   int skippedLineCount);
+                                   int skippedLineCount,
+                                   bool hasMoreRecords = false);
 
     const std::vector<ChatMessageRecord>& GetRecords() const { return records_; }
     int GetSkippedLineCount() const { return skippedLineCount_; }
+    bool GetHasMoreRecords() const { return hasMoreRecords_; }
 
 protected:
     std::vector<ChatMessageRecord> records_;
     int skippedLineCount_ = 0;
+    bool hasMoreRecords_ = false;
 };
 
 std::string makeDirectConversationId(const std::string& localDeviceId,
@@ -192,7 +196,19 @@ void appendChatMessage(const AppPaths& appPaths,
 bool replaceChatMessage(const AppPaths& appPaths,
                         const std::string& peerDeviceId,
                         const ChatMessageRecord& record);
+std::optional<ChatMessageRecord> loadChatMessage(const AppPaths& appPaths,
+                                                 const std::string& peerDeviceId,
+                                                 const std::string& messageId);
 ChatHistoryLoadResult loadChatHistory(const AppPaths& appPaths,
                                       const std::string& peerDeviceId);
+ChatHistoryLoadResult loadRecentChatHistory(const AppPaths& appPaths,
+                                            const std::string& peerDeviceId,
+                                            std::size_t maxRecordCount);
+ChatHistoryLoadResult loadChatHistoryBefore(const AppPaths& appPaths,
+                                            const std::string& peerDeviceId,
+                                            const std::string& beforeMessageId,
+                                            std::size_t maxRecordCount);
+std::string loadLatestChatMessageCreatedAt(const AppPaths& appPaths,
+                                           const std::string& peerDeviceId);
 
 }

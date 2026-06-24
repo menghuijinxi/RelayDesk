@@ -50,6 +50,7 @@ namespace {
 using namespace std::chrono_literals;
 
 constexpr const char* kDiscoveryLogFileName = "discovery.log";
+constexpr std::size_t kSelectedPeerMessagePageSize = 30;
 constexpr auto kPeerOnlineTimeout = 10s;
 constexpr auto kPeerStatusRefreshInterval = 1s;
 #if defined(RELAYDESK_HAS_BOOST_ASIO)
@@ -193,24 +194,12 @@ bool isPeerListItemBefore(const PeerListItem& left,
     return left.GetDeviceId() < right.GetDeviceId();
 }
 
-std::string latestConversationAt(
-    const std::vector<relaydesk::storage::ChatMessageRecord>& records)
-{
-    std::string result;
-    for (const auto& record : records) {
-        if (record.GetCreatedAt() > result) {
-            result = record.GetCreatedAt();
-        }
-    }
-    return result;
-}
-
 std::string loadPeerLastConversationAt(
     const relaydesk::storage::AppPaths& appPaths,
     const std::string& peerDeviceId)
 {
-    return latestConversationAt(
-        relaydesk::storage::loadChatHistory(appPaths, peerDeviceId).GetRecords());
+    return relaydesk::storage::loadLatestChatMessageCreatedAt(appPaths,
+                                                              peerDeviceId);
 }
 
 #if defined(RELAYDESK_HAS_BOOST_ASIO)
@@ -2333,6 +2322,16 @@ PendingPeerProfile::PendingPeerProfile(
 {
 }
 
+PendingChatMessage::PendingChatMessage(
+    relaydesk::storage::ChatMessageRecord record,
+    bool persisted,
+    bool unreadCounted)
+    : record_(std::move(record)),
+      persisted_(persisted),
+      unreadCounted_(unreadCounted)
+{
+}
+
 RelayDeskRuntimeOptions::RelayDeskRuntimeOptions()
 {
 #if defined(RELAYDESK_HAS_BOOST_ASIO)
@@ -3693,7 +3692,6 @@ void RelayDeskRuntime::initialize()
         }
 #endif
 
-        recoverInterruptedTransfers();
         refreshPeers();
     } catch (const std::exception& error) {
         setStartupError(error.what());
@@ -3724,37 +3722,6 @@ void RelayDeskRuntime::refreshPeers()
     }
 }
 
-void RelayDeskRuntime::recoverInterruptedTransfers()
-{
-    if (!storageAvailable_) {
-        return;
-    }
-
-    const auto appPaths = relaydesk::storage::createAppPaths();
-    const std::vector<relaydesk::storage::PeerProfile> profiles =
-        relaydesk::storage::loadPeerProfiles(appPaths);
-    int recoveredCount = 0;
-    for (const auto& profile : profiles) {
-        const auto history =
-            relaydesk::storage::loadChatHistory(appPaths, profile.GetDeviceId());
-        for (auto record : history.GetRecords()) {
-            if (!recoverInterruptedTransferParts(record)) {
-                continue;
-            }
-            if (relaydesk::storage::replaceChatMessage(appPaths,
-                                                       profile.GetDeviceId(),
-                                                       record)) {
-                ++recoveredCount;
-            }
-        }
-    }
-
-    if (recoveredCount > 0) {
-        logDiagnostic("runtime.transfer.recovered_interrupted count="
-                      + std::to_string(recoveredCount));
-    }
-}
-
 void RelayDeskRuntime::setSelectedPeerDeviceId(std::string deviceId)
 {
     if (selectedPeerDeviceId_ == deviceId) {
@@ -3769,14 +3736,20 @@ void RelayDeskRuntime::loadSelectedPeerMessages()
 {
     if (selectedPeerDeviceId_.empty() || !storageAvailable_) {
         selectedPeerMessages_.clear();
+        selectedPeerHasMoreMessages_ = false;
         return;
     }
 
     try {
         const auto appPaths = relaydesk::storage::createAppPaths();
+        std::lock_guard lock(chatHistoryStorageMutex_);
         const auto result =
-            relaydesk::storage::loadChatHistory(appPaths, selectedPeerDeviceId_);
+            relaydesk::storage::loadRecentChatHistory(
+                appPaths,
+                selectedPeerDeviceId_,
+                kSelectedPeerMessagePageSize);
         selectedPeerMessages_ = result.GetRecords();
+        selectedPeerHasMoreMessages_ = result.GetHasMoreRecords();
         bool recovered = false;
         for (auto& record : selectedPeerMessages_) {
             if (recoverInterruptedTransferParts(record)) {
@@ -3797,6 +3770,70 @@ void RelayDeskRuntime::loadSelectedPeerMessages()
         }
     } catch (const std::exception& error) {
         selectedPeerMessages_.clear();
+        selectedPeerHasMoreMessages_ = false;
+        setStartupError(error.what());
+    }
+}
+
+void RelayDeskRuntime::loadMoreSelectedPeerMessages()
+{
+    if (selectedPeerDeviceId_.empty()
+        || !storageAvailable_
+        || !selectedPeerHasMoreMessages_
+        || selectedPeerMessages_.empty()) {
+        return;
+    }
+
+    try {
+        const std::string beforeMessageId =
+            selectedPeerMessages_.front().GetMessageId();
+        const auto appPaths = relaydesk::storage::createAppPaths();
+        std::lock_guard lock(chatHistoryStorageMutex_);
+        const auto result =
+            relaydesk::storage::loadChatHistoryBefore(
+                appPaths,
+                selectedPeerDeviceId_,
+                beforeMessageId,
+                kSelectedPeerMessagePageSize);
+        if (result.GetRecords().empty()) {
+            selectedPeerHasMoreMessages_ = false;
+            return;
+        }
+
+        std::vector<relaydesk::storage::ChatMessageRecord> olderMessages =
+            result.GetRecords();
+        bool recovered = false;
+        for (auto& record : olderMessages) {
+            if (recoverInterruptedTransferParts(record)) {
+                (void)relaydesk::storage::replaceChatMessage(
+                    appPaths,
+                    selectedPeerDeviceId_,
+                    record);
+                recovered = true;
+            }
+        }
+
+        std::vector<relaydesk::storage::ChatMessageRecord> mergedMessages;
+        mergedMessages.reserve(olderMessages.size() + selectedPeerMessages_.size());
+        for (auto& record : olderMessages) {
+            mergedMessages.push_back(std::move(record));
+        }
+        for (auto& record : selectedPeerMessages_) {
+            mergedMessages.push_back(std::move(record));
+        }
+        selectedPeerMessages_ = std::move(mergedMessages);
+        selectedPeerHasMoreMessages_ = result.GetHasMoreRecords();
+
+        if (recovered) {
+            logDiagnostic("runtime.transfer.recovered_selected_more device_id="
+                          + selectedPeerDeviceId_);
+        }
+        if (result.GetSkippedLineCount() > 0) {
+            logDiagnostic("runtime.chat.history_more_skipped count="
+                          + std::to_string(result.GetSkippedLineCount()));
+        }
+        requestUiRefresh();
+    } catch (const std::exception& error) {
         setStartupError(error.what());
     }
 }
@@ -3806,9 +3843,34 @@ void RelayDeskRuntime::enqueueIncomingChatMessage(
 {
     const std::string peerDeviceId =
         peerDeviceIdForRecord(record, localUser_.GetDeviceId());
+    bool persisted = false;
+    bool unreadCounted = false;
+    if (storageAvailable_) {
+        try {
+            const auto appPaths = relaydesk::storage::createAppPaths();
+            {
+                std::lock_guard lock(chatHistoryStorageMutex_);
+                relaydesk::storage::appendChatMessage(appPaths,
+                                                      peerDeviceId,
+                                                      record);
+                persisted = true;
+            }
+            if (peerDeviceId != selectedPeerDeviceId_) {
+                unreadCounted =
+                    incrementPersistedPeerUnreadMessageCount(peerDeviceId);
+            }
+        } catch (const std::exception& error) {
+            logDiagnostic("runtime.chat.persist_incoming_failed peer_device_id="
+                          + peerDeviceId
+                          + " message=" + error.what());
+        }
+    }
+
     {
         std::lock_guard lock(pendingChatMutex_);
-        pendingChatMessages_.push_back(std::move(record));
+        pendingChatMessages_.emplace_back(std::move(record),
+                                          persisted,
+                                          unreadCounted);
     }
 
     logDiagnostic("runtime.chat.enqueue_incoming peer_device_id=" + peerDeviceId);
@@ -4146,50 +4208,66 @@ void RelayDeskRuntime::handleIncomingPeerFrame(relaydesk::net::PeerFrame frame)
         bool interruptedTransferFound = false;
         if (!existingTransfer.has_value()) {
             auto findInterruptedPart =
-                [&](const std::vector<relaydesk::storage::ChatMessageRecord>& records) {
-                    for (const auto& record : records) {
-                        if (record.GetMessageId() != offer.GetMessageId()) {
+                [&](const relaydesk::storage::ChatMessageRecord& record) {
+                    if (record.GetMessageId() != offer.GetMessageId()) {
+                        return;
+                    }
+                    for (const auto& part : record.GetParts()) {
+                        const bool partMatches =
+                            part.GetPartId() == offer.GetPartId()
+                            || (part.GetTransferId().has_value()
+                                && part.GetTransferId().value()
+                                    == offer.GetTransferId());
+                        if (!partMatches
+                            || !part.GetTransferState().has_value()
+                            || part.GetTransferState().value()
+                                != relaydesk::storage::TransferState::Interrupted) {
                             continue;
                         }
-                        for (const auto& part : record.GetParts()) {
-                            const bool partMatches =
-                                part.GetPartId() == offer.GetPartId()
-                                || (part.GetTransferId().has_value()
-                                    && part.GetTransferId().value()
-                                        == offer.GetTransferId());
-                            if (!partMatches
-                                || !part.GetTransferState().has_value()
-                                || part.GetTransferState().value()
-                                    != relaydesk::storage::TransferState::Interrupted) {
-                                continue;
+                        interruptedTransferFound = true;
+                        interruptedFolderTransfer =
+                            part.GetType()
+                            == relaydesk::storage::MessagePartType::Folder;
+                        if (part.GetLocalPath().has_value()
+                            && !part.GetLocalPath().value().empty()) {
+                            const std::filesystem::path localPath =
+                                resolveLocalPath(appPaths,
+                                                 part.GetLocalPath().value());
+                            if (!isLegacyIncomingTempPath(appPaths, localPath)) {
+                                interruptedFinalPath = localPath;
                             }
-                            interruptedTransferFound = true;
-                            interruptedFolderTransfer =
-                                part.GetType()
-                                == relaydesk::storage::MessagePartType::Folder;
-                            if (part.GetLocalPath().has_value()
-                                && !part.GetLocalPath().value().empty()) {
-                                const std::filesystem::path localPath =
-                                    resolveLocalPath(appPaths,
-                                                     part.GetLocalPath().value());
-                                if (!isLegacyIncomingTempPath(appPaths,
-                                                              localPath)) {
-                                    interruptedFinalPath = localPath;
-                                }
-                            }
-                            return;
                         }
+                        return;
                     }
                 };
             if (selectedPeerDeviceId_ == offer.GetSenderDeviceId()) {
-                findInterruptedPart(selectedPeerMessages_);
+                for (const auto& record : selectedPeerMessages_) {
+                    findInterruptedPart(record);
+                    if (interruptedTransferFound) {
+                        break;
+                    }
+                }
             }
             if (!interruptedFinalPath.has_value() && storageAvailable_) {
                 try {
-                    const auto history = relaydesk::storage::loadChatHistory(
-                        appPaths,
-                        offer.GetSenderDeviceId());
-                    findInterruptedPart(history.GetRecords());
+                    std::optional<relaydesk::storage::ChatMessageRecord> record;
+                    {
+                        std::lock_guard lock(chatHistoryStorageMutex_);
+                        record = relaydesk::storage::loadChatMessage(
+                            appPaths,
+                            offer.GetSenderDeviceId(),
+                            offer.GetMessageId());
+                    }
+                    if (record.has_value()) {
+                        if (recoverInterruptedTransferParts(record.value())) {
+                            std::lock_guard lock(chatHistoryStorageMutex_);
+                            (void)relaydesk::storage::replaceChatMessage(
+                                appPaths,
+                                offer.GetSenderDeviceId(),
+                                record.value());
+                        }
+                        findInterruptedPart(record.value());
+                    }
                 } catch (const std::exception& error) {
                     logDiagnostic("runtime.transfer.resume_history_failed message="
                                   + std::string(error.what()));
@@ -4545,7 +4623,7 @@ void RelayDeskRuntime::enqueueTransferUpdate(PendingTransferUpdate update)
 
 void RelayDeskRuntime::drainPendingChatMessages()
 {
-    std::vector<relaydesk::storage::ChatMessageRecord> pendingMessages;
+    std::vector<PendingChatMessage> pendingMessages;
     {
         std::lock_guard lock(pendingChatMutex_);
         pendingMessages.swap(pendingChatMessages_);
@@ -4555,11 +4633,27 @@ void RelayDeskRuntime::drainPendingChatMessages()
         return;
     }
 
-    for (const auto& message : pendingMessages) {
+    for (auto& pendingMessage : pendingMessages) {
         try {
-            appendSelectedPeerMessage(
-                peerDeviceIdForRecord(message, localUser_.GetDeviceId()),
-                message);
+            auto& message = pendingMessage.GetRecord();
+            const std::string peerDeviceId =
+                peerDeviceIdForRecord(message, localUser_.GetDeviceId());
+            if (pendingMessage.GetPersisted()) {
+                if (peerDeviceId == selectedPeerDeviceId_) {
+                    selectedPeerMessages_.push_back(message);
+                } else if (message.GetDirection()
+                           == relaydesk::storage::MessageDirection::Incoming) {
+                    if (pendingMessage.GetUnreadCounted()) {
+                        incrementPeerUnreadMessageCountInMemory(peerDeviceId);
+                    } else {
+                        incrementPeerUnreadMessageCount(peerDeviceId);
+                    }
+                }
+                updatePeerLastConversationAt(peerDeviceId, message.GetCreatedAt());
+                continue;
+            }
+
+            appendSelectedPeerMessage(peerDeviceId, message);
         } catch (const std::exception& error) {
             setStartupError(error.what());
         }
@@ -4652,15 +4746,10 @@ void RelayDeskRuntime::sendOutgoingTransferRequest(
     }
     if (!record.has_value()) {
         const auto appPaths = relaydesk::storage::createAppPaths();
-        const auto history =
-            relaydesk::storage::loadChatHistory(appPaths,
-                                                request.GetReceiverDeviceId());
-        for (const auto& candidate : history.GetRecords()) {
-            if (candidate.GetMessageId() == request.GetMessageId()) {
-                record = candidate;
-                break;
-            }
-        }
+        std::lock_guard lock(chatHistoryStorageMutex_);
+        record = relaydesk::storage::loadChatMessage(appPaths,
+                                                     request.GetReceiverDeviceId(),
+                                                     request.GetMessageId());
     }
 
     if (!record.has_value()
@@ -4885,7 +4974,10 @@ void RelayDeskRuntime::appendSelectedPeerMessage(
     const relaydesk::storage::ChatMessageRecord& record)
 {
     const auto appPaths = relaydesk::storage::createAppPaths();
-    relaydesk::storage::appendChatMessage(appPaths, peerDeviceId, record);
+    {
+        std::lock_guard lock(chatHistoryStorageMutex_);
+        relaydesk::storage::appendChatMessage(appPaths, peerDeviceId, record);
+    }
     if (peerDeviceId == selectedPeerDeviceId_) {
         selectedPeerMessages_.push_back(record);
     } else if (record.GetDirection()
@@ -4901,13 +4993,17 @@ void RelayDeskRuntime::persistChatMessageRecord(
     bool replaceExistingRecord)
 {
     const auto appPaths = relaydesk::storage::createAppPaths();
-    if (replaceExistingRecord
-        && relaydesk::storage::replaceChatMessage(appPaths, peerDeviceId, record)) {
-        updatePeerLastConversationAt(peerDeviceId, record.GetCreatedAt());
-        return;
+    bool replaced = false;
+    {
+        std::lock_guard lock(chatHistoryStorageMutex_);
+        replaced = replaceExistingRecord
+            && relaydesk::storage::replaceChatMessage(appPaths,
+                                                      peerDeviceId,
+                                                      record);
+        if (!replaced) {
+            relaydesk::storage::appendChatMessage(appPaths, peerDeviceId, record);
+        }
     }
-
-    relaydesk::storage::appendChatMessage(appPaths, peerDeviceId, record);
     updatePeerLastConversationAt(peerDeviceId, record.GetCreatedAt());
 }
 
@@ -4917,7 +5013,8 @@ bool RelayDeskRuntime::updateChatMessageTransferPart(
     bool updatedPendingMessage = false;
     {
         std::lock_guard lock(pendingChatMutex_);
-        for (auto& message : pendingChatMessages_) {
+        for (auto& pendingMessage : pendingChatMessages_) {
+            auto& message = pendingMessage.GetRecord();
             if (applyTransferPartUpdate(message,
                                         update.GetMessageId(),
                                         update.GetPartId(),
@@ -4953,10 +5050,16 @@ bool RelayDeskRuntime::updateChatMessageTransferPart(
 
     if (!updatedPendingMessage && !recordToPersist.has_value()) {
         const auto appPaths = relaydesk::storage::createAppPaths();
-        const auto history =
-            relaydesk::storage::loadChatHistory(appPaths, update.GetPeerDeviceId());
-        for (auto message : history.GetRecords()) {
-            if (applyTransferPartUpdate(message,
+        std::optional<relaydesk::storage::ChatMessageRecord> message =
+            std::nullopt;
+        {
+            std::lock_guard lock(chatHistoryStorageMutex_);
+            message = relaydesk::storage::loadChatMessage(appPaths,
+                                                          update.GetPeerDeviceId(),
+                                                          update.GetMessageId());
+        }
+        if (message.has_value()) {
+            if (applyTransferPartUpdate(message.value(),
                                         update.GetMessageId(),
                                         update.GetPartId(),
                                         update.GetTransferId(),
@@ -4965,14 +5068,14 @@ bool RelayDeskRuntime::updateChatMessageTransferPart(
                                         update.GetLocalPath(),
                                         update.GetSha256(),
                                         update.GetTransferState())) {
-                recordToPersist = std::move(message);
-                break;
+                recordToPersist = std::move(message.value());
             }
         }
     }
 
     if (recordToPersist.has_value()) {
         const auto appPaths = relaydesk::storage::createAppPaths();
+        std::lock_guard lock(chatHistoryStorageMutex_);
         (void)relaydesk::storage::replaceChatMessage(appPaths,
                                                      update.GetPeerDeviceId(),
                                                      recordToPersist.value());
@@ -4995,7 +5098,8 @@ bool RelayDeskRuntime::updateChatMessageTransferState(
     bool updatedPendingMessage = false;
     {
         std::lock_guard lock(pendingChatMutex_);
-        for (auto& message : pendingChatMessages_) {
+        for (auto& pendingMessage : pendingChatMessages_) {
+            auto& message = pendingMessage.GetRecord();
             if (applyTransferPartStateUpdate(message,
                                              update.GetMessageId(),
                                              update.GetPartId(),
@@ -5030,29 +5134,35 @@ bool RelayDeskRuntime::updateChatMessageTransferState(
 
     if (!updatedPendingMessage && !recordToPersist.has_value()) {
         const auto appPaths = relaydesk::storage::createAppPaths();
-        const auto history =
-            relaydesk::storage::loadChatHistory(appPaths, update.GetPeerDeviceId());
-        for (auto message : history.GetRecords()) {
-            if (applyTransferPartStateUpdate(message,
+        std::optional<relaydesk::storage::ChatMessageRecord> message =
+            std::nullopt;
+        {
+            std::lock_guard lock(chatHistoryStorageMutex_);
+            message = relaydesk::storage::loadChatMessage(appPaths,
+                                                          update.GetPeerDeviceId(),
+                                                          update.GetMessageId());
+        }
+        if (message.has_value()) {
+            if (applyTransferPartStateUpdate(message.value(),
                                              update.GetMessageId(),
                                              update.GetPartId(),
                                              update.GetTransferId(),
                                              update.GetTransferState())) {
-                if (message.GetDirection()
+                if (message->GetDirection()
                     == relaydesk::storage::MessageDirection::Outgoing) {
                     if (markDeliverySent) {
-                        message.SetDeliveryState(
+                        message->SetDeliveryState(
                             relaydesk::storage::DeliveryState::Sent);
                     }
                 }
-                recordToPersist = std::move(message);
-                break;
+                recordToPersist = std::move(message.value());
             }
         }
     }
 
     if (recordToPersist.has_value()) {
         const auto appPaths = relaydesk::storage::createAppPaths();
+        std::lock_guard lock(chatHistoryStorageMutex_);
         (void)relaydesk::storage::replaceChatMessage(appPaths,
                                                      update.GetPeerDeviceId(),
                                                      recordToPersist.value());
@@ -5071,7 +5181,8 @@ bool RelayDeskRuntime::updateChatMessageTransferProgress(
     bool updatedPendingMessage = false;
     {
         std::lock_guard lock(pendingChatMutex_);
-        for (auto& message : pendingChatMessages_) {
+        for (auto& pendingMessage : pendingChatMessages_) {
+            auto& message = pendingMessage.GetRecord();
             if (applyTransferPartProgressUpdate(message,
                                                 update.GetMessageId(),
                                                 update.GetPartId(),
@@ -5263,6 +5374,7 @@ std::string RelayDeskRuntime::loadPeerLastConversationAtOrEmpty(
     const std::string& peerDeviceId) const
 {
     try {
+        std::lock_guard lock(chatHistoryStorageMutex_);
         return loadPeerLastConversationAt(appPaths, peerDeviceId);
     } catch (const std::exception& error) {
         logDiagnostic("runtime.peer.history_load_failed device_id="
@@ -5324,6 +5436,20 @@ void RelayDeskRuntime::incrementPeerUnreadMessageCount(
     savePeerUnreadMessageCount(peerDeviceId, unreadMessageCount);
 }
 
+void RelayDeskRuntime::incrementPeerUnreadMessageCountInMemory(
+    const std::string& peerDeviceId)
+{
+    const auto peer = std::find_if(
+        peers_.begin(),
+        peers_.end(),
+        [&peerDeviceId](const PeerListItem& item) {
+            return item.GetDeviceId() == peerDeviceId;
+        });
+    if (peer != peers_.end()) {
+        peer->SetUnreadMessageCount(peer->GetUnreadMessageCount() + 1);
+    }
+}
+
 void RelayDeskRuntime::clearPeerUnreadMessageCount(
     const std::string& peerDeviceId)
 {
@@ -5376,6 +5502,29 @@ void RelayDeskRuntime::savePeerUnreadMessageCount(
                       + peerDeviceId
                       + " message=" + error.what());
     }
+}
+
+bool RelayDeskRuntime::incrementPersistedPeerUnreadMessageCount(
+    const std::string& peerDeviceId)
+{
+    if (peerDeviceId.empty() || !storageAvailable_) {
+        return false;
+    }
+
+    try {
+        const auto appPaths = relaydesk::storage::createAppPaths();
+        relaydesk::storage::PeerProfile profile =
+            relaydesk::storage::loadPeerProfile(appPaths, peerDeviceId);
+        profile.SetUnreadMessageCount(profile.GetUnreadMessageCount() + 1);
+        relaydesk::storage::savePeerProfile(appPaths, profile);
+        return true;
+    } catch (const std::exception& error) {
+        logDiagnostic("runtime.peer.unread_increment_failed device_id="
+                      + peerDeviceId
+                      + " message=" + error.what());
+    }
+
+    return false;
 }
 
 void RelayDeskRuntime::syncSelectedPeer()

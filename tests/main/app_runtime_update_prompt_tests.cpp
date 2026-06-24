@@ -135,6 +135,40 @@ relaydesk::storage::ChatMessageRecord makeIncomingChatRecord(
     return record;
 }
 
+std::string makeIndexedMessageId(int index)
+{
+    std::ostringstream output;
+    output << "runtime-history-" << std::setw(2) << std::setfill('0') << index;
+    return output.str();
+}
+
+relaydesk::storage::ChatMessageRecord makeRuntimeHistoryTextRecord(
+    const relaydesk::runtime::LocalUserSummary& localUser,
+    int index)
+{
+    const std::string messageId = makeIndexedMessageId(index);
+    const int hour = 10 + index / 60;
+    const int minute = index % 60;
+    std::ostringstream createdAt;
+    createdAt << "2026-06-23T" << std::setw(2) << std::setfill('0') << hour
+              << ":" << std::setw(2) << std::setfill('0') << minute
+              << ":00Z";
+    relaydesk::storage::ChatMessageRecord record;
+    record.SetMessageId(messageId);
+    record.SetConversationId(
+        relaydesk::storage::makeDirectConversationId(localUser.GetDeviceId(),
+                                                     "runtime-transfer-peer"));
+    record.SetDirection(relaydesk::storage::MessageDirection::Incoming);
+    record.SetSenderDeviceId("runtime-transfer-peer");
+    record.SetReceiverDeviceId(localUser.GetDeviceId());
+    record.SetSenderDisplayNameSnapshot("Runtime Transfer Peer");
+    record.SetReceiverDisplayNameSnapshot(localUser.GetDisplayName());
+    record.SetCreatedAt(createdAt.str());
+    record.SetDeliveryState(relaydesk::storage::DeliveryState::Received);
+    record.AddPart(makeRuntimeTextPart("history-part", "message " + messageId));
+    return record;
+}
+
 std::string makeWorkRelativePath(const relaydesk::storage::AppPaths& appPaths,
                                  const std::filesystem::path& path)
 {
@@ -933,6 +967,141 @@ int queuesUserNotificationForIncomingChatMessage()
         if (const int result =
                 expect(runtime.ConsumePendingUserNotificationCount() == 0,
                        "User notification count was not consumed.");
+            result != 0) {
+            return result;
+        }
+    }
+
+    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    return 0;
+}
+
+int persistsIncomingChatMessageBeforeUiDrain()
+{
+    const relaydesk::storage::AppPaths appPaths =
+        relaydesk::storage::createAppPaths();
+    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    relaydesk::storage::ensureAppDirectories(appPaths);
+    relaydesk::storage::savePeerProfile(appPaths, makeTransferPeerProfile(39171));
+
+    {
+        TestableRelayDeskRuntime runtime;
+        if (!runtime.GetStartupErrorMessage().empty()) {
+            return fail("Runtime startup failed: "
+                        + runtime.GetStartupErrorMessage());
+        }
+
+        runtime.receivePeerFrame(relaydesk::net::makeChatMessageFrame(
+            makeIncomingChatRecord(runtime.GetLocalUser())));
+
+        const auto history =
+            relaydesk::storage::loadChatHistory(appPaths, "runtime-transfer-peer");
+        if (const int result =
+                expect(history.GetRecords().size() == 1,
+                       "Incoming chat message was not persisted before UI drain.");
+            result != 0) {
+            return result;
+        }
+
+        const auto profile =
+            relaydesk::storage::loadPeerProfile(appPaths, "runtime-transfer-peer");
+        if (const int result =
+                expect(profile.GetUnreadMessageCount() == 1,
+                       "Incoming chat unread count was not persisted before UI drain.");
+            result != 0) {
+            return result;
+        }
+
+        if (const int result =
+                expect(runtime.GetSelectedPeerMessages().empty(),
+                       "Unselected incoming chat message was rendered immediately.");
+            result != 0) {
+            return result;
+        }
+    }
+
+    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    return 0;
+}
+
+int selectsPeerWithPagedHistory()
+{
+    const relaydesk::storage::AppPaths appPaths =
+        relaydesk::storage::createAppPaths();
+    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    relaydesk::storage::ensureAppDirectories(appPaths);
+    relaydesk::storage::savePeerProfile(appPaths, makeTransferPeerProfile(39171));
+
+    {
+        TestableRelayDeskRuntime runtime;
+        if (!runtime.GetStartupErrorMessage().empty()) {
+            return fail("Runtime startup failed: "
+                        + runtime.GetStartupErrorMessage());
+        }
+
+        for (int index = 1; index <= 65; ++index) {
+            relaydesk::storage::appendChatMessage(
+                appPaths,
+                "runtime-transfer-peer",
+                makeRuntimeHistoryTextRecord(runtime.GetLocalUser(), index));
+        }
+
+        runtime.selectPeer("runtime-transfer-peer");
+        const auto& firstPage = runtime.GetSelectedPeerMessages();
+        if (const int result = expect(firstPage.size() == 30,
+                                      "Selected peer did not load 30 recent messages.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(firstPage.front().GetMessageId() == makeIndexedMessageId(36),
+                       "Selected peer first recent message mismatch.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(firstPage.back().GetMessageId() == makeIndexedMessageId(65),
+                       "Selected peer last recent message mismatch.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(runtime.GetSelectedPeerHasMoreMessages(),
+                       "Selected peer did not expose older history.");
+            result != 0) {
+            return result;
+        }
+
+        runtime.loadMoreSelectedPeerMessages();
+        const auto& secondPage = runtime.GetSelectedPeerMessages();
+        if (const int result = expect(secondPage.size() == 60,
+                                      "Loading older messages did not prepend a page.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(secondPage.front().GetMessageId() == makeIndexedMessageId(6),
+                       "Second history page first message mismatch.");
+            result != 0) {
+            return result;
+        }
+
+        runtime.loadMoreSelectedPeerMessages();
+        const auto& allMessages = runtime.GetSelectedPeerMessages();
+        if (const int result = expect(allMessages.size() == 65,
+                                      "Final history page size mismatch.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(allMessages.front().GetMessageId() == makeIndexedMessageId(1),
+                       "Final history page first message mismatch.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(!runtime.GetSelectedPeerHasMoreMessages(),
+                       "Runtime still reported older history after all messages loaded.");
             result != 0) {
             return result;
         }
@@ -2751,6 +2920,15 @@ int main(int argc, char** argv)
                 queuesUserNotificationForIncomingChatMessage();
             updatePromptResult != 0) {
             return updatePromptResult;
+        }
+        if (const int persistedIncomingResult =
+                persistsIncomingChatMessageBeforeUiDrain();
+            persistedIncomingResult != 0) {
+            return persistedIncomingResult;
+        }
+        if (const int pagedHistoryResult = selectsPeerWithPagedHistory();
+            pagedHistoryResult != 0) {
+            return pagedHistoryResult;
         }
         if (const int updatePromptResult =
                 offersAppUpdatePromptWhenOnlinePeerVersionIncreases();

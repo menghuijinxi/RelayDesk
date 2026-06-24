@@ -111,6 +111,26 @@ protected:
     bool online_ = false;
 };
 
+class PendingChatMessage {
+public:
+    PendingChatMessage(relaydesk::storage::ChatMessageRecord record,
+                       bool persisted,
+                       bool unreadCounted);
+
+    relaydesk::storage::ChatMessageRecord& GetRecord() { return record_; }
+    const relaydesk::storage::ChatMessageRecord& GetRecord() const
+    {
+        return record_;
+    }
+    bool GetPersisted() const { return persisted_; }
+    bool GetUnreadCounted() const { return unreadCounted_; }
+
+protected:
+    relaydesk::storage::ChatMessageRecord record_;
+    bool persisted_ = false;
+    bool unreadCounted_ = false;
+};
+
 class AppUpdatePrompt {
 public:
     const std::string& GetSourceDeviceId() const { return sourceDeviceId_; }
@@ -471,6 +491,10 @@ public:
     {
         return selectedPeerMessages_;
     }
+    bool GetSelectedPeerHasMoreMessages() const
+    {
+        return selectedPeerHasMoreMessages_;
+    }
     std::optional<PeerListItem> GetSelectedPeer() const;
     const std::string& GetSelectedPeerDeviceId() const { return selectedPeerDeviceId_; }
     const std::string& GetStartupErrorMessage() const { return startupErrorMessage_; }
@@ -484,6 +508,7 @@ public:
     void updateLocalDisplayName(std::string displayName);
     void refreshPeersIfNeeded();
     void selectPeer(std::string deviceId);
+    void loadMoreSelectedPeerMessages();
     void sendMessagePartsToSelectedPeer(
         std::vector<relaydesk::storage::ChatMessagePart> parts);
     void resendSelectedPeerMessage(const std::string& messageId);
@@ -537,11 +562,14 @@ protected:
     void updatePeerLastConversationAt(const std::string& peerDeviceId,
                                       const std::string& lastConversationAt);
     void incrementPeerUnreadMessageCount(const std::string& peerDeviceId);
+    void incrementPeerUnreadMessageCountInMemory(
+        const std::string& peerDeviceId);
     void clearPeerUnreadMessageCount(const std::string& peerDeviceId);
     void savePeerUnreadMessageCount(const std::string& peerDeviceId,
                                     int unreadMessageCount);
+    bool incrementPersistedPeerUnreadMessageCount(
+        const std::string& peerDeviceId);
     void syncSelectedPeer();
-    void recoverInterruptedTransfers();
     void setSelectedPeerDeviceId(std::string deviceId);
     void loadSelectedPeerMessages();
     void enqueueIncomingChatMessage(
@@ -596,7 +624,7 @@ protected:
     RelayDeskRuntimeOptions runtimeOptions_;
     std::vector<PeerListItem> peers_;
     std::vector<PendingPeerProfile> pendingPeerProfiles_;
-    std::vector<relaydesk::storage::ChatMessageRecord> pendingChatMessages_;
+    std::vector<PendingChatMessage> pendingChatMessages_;
     std::vector<PendingTransferUpdate> pendingTransferUpdates_;
     std::vector<PendingOutgoingTransferRequest> pendingOutgoingTransferRequests_;
     std::vector<PendingTransferStateUpdate> pendingTransferStateUpdates_;
@@ -624,11 +652,13 @@ protected:
     std::mutex pendingTransferMutex_;
     std::mutex pendingAppUpdateMutex_;
     std::mutex userNotificationMutex_;
+    mutable std::mutex chatHistoryStorageMutex_;
     std::atomic_bool uiRefreshPending_ = false;
     std::atomic_bool peerStatusRefreshPending_ = false;
     std::atomic<std::uint64_t> pendingUserNotificationCount_ = 0;
     bool storageAvailable_ = false;
     bool discoveryStarted_ = false;
+    bool selectedPeerHasMoreMessages_ = false;
     std::uint16_t discoveryUdpPort_ = 0;
     std::unique_ptr<DiscoveryWorkerHandle> discoveryWorker_;
     std::unique_ptr<TcpPeerTransportHandle> tcpPeerTransport_;

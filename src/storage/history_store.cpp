@@ -548,10 +548,13 @@ ChatMessageRecord fromJson(const nlohmann::json& value)
 
 } // namespace
 
-ChatHistoryLoadResult::ChatHistoryLoadResult(std::vector<ChatMessageRecord> records,
-                                             int skippedLineCount)
+ChatHistoryLoadResult::ChatHistoryLoadResult(
+    std::vector<ChatMessageRecord> records,
+    int skippedLineCount,
+    bool hasMoreRecords)
     : records_(std::move(records)),
-      skippedLineCount_(skippedLineCount)
+      skippedLineCount_(skippedLineCount),
+      hasMoreRecords_(hasMoreRecords)
 {
 }
 
@@ -661,6 +664,44 @@ bool replaceChatMessage(const AppPaths& appPaths,
     return true;
 }
 
+std::optional<ChatMessageRecord> loadChatMessage(const AppPaths& appPaths,
+                                                 const std::string& peerDeviceId,
+                                                 const std::string& messageId)
+{
+    if (messageId.empty()) {
+        return std::nullopt;
+    }
+
+    const std::filesystem::path messagesFilePath =
+        getPeerMessagesFilePath(appPaths, peerDeviceId);
+    if (!std::filesystem::exists(messagesFilePath)) {
+        return std::nullopt;
+    }
+
+    std::ifstream input(messagesFilePath, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("Failed to open chat history file for reading.");
+    }
+
+    std::string line;
+    while (std::getline(input, line)) {
+        if (line.empty()) {
+            continue;
+        }
+
+        try {
+            ChatMessageRecord record = fromJson(nlohmann::json::parse(line));
+            if (record.GetMessageId() == messageId) {
+                return record;
+            }
+        } catch (const std::exception&) {
+            continue;
+        }
+    }
+
+    return std::nullopt;
+}
+
 ChatHistoryLoadResult loadChatHistory(const AppPaths& appPaths,
                                       const std::string& peerDeviceId)
 {
@@ -691,6 +732,140 @@ ChatHistoryLoadResult loadChatHistory(const AppPaths& appPaths,
     }
 
     return ChatHistoryLoadResult(std::move(records), skippedLineCount);
+}
+
+ChatHistoryLoadResult loadRecentChatHistory(const AppPaths& appPaths,
+                                            const std::string& peerDeviceId,
+                                            std::size_t maxRecordCount)
+{
+    if (maxRecordCount == 0) {
+        return ChatHistoryLoadResult({}, 0);
+    }
+
+    const std::filesystem::path messagesFilePath =
+        getPeerMessagesFilePath(appPaths, peerDeviceId);
+    if (!std::filesystem::exists(messagesFilePath)) {
+        return ChatHistoryLoadResult({}, 0);
+    }
+
+    std::ifstream input(messagesFilePath, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("Failed to open chat history file for reading.");
+    }
+
+    std::vector<ChatMessageRecord> records;
+    int skippedLineCount = 0;
+    std::size_t validRecordCount = 0;
+    std::string line;
+    while (std::getline(input, line)) {
+        if (line.empty()) {
+            continue;
+        }
+
+        try {
+            records.push_back(fromJson(nlohmann::json::parse(line)));
+            ++validRecordCount;
+            if (records.size() > maxRecordCount) {
+                records.erase(records.begin());
+            }
+        } catch (const std::exception&) {
+            ++skippedLineCount;
+        }
+    }
+
+    return ChatHistoryLoadResult(std::move(records),
+                                 skippedLineCount,
+                                 validRecordCount > maxRecordCount);
+}
+
+ChatHistoryLoadResult loadChatHistoryBefore(const AppPaths& appPaths,
+                                            const std::string& peerDeviceId,
+                                            const std::string& beforeMessageId,
+                                            std::size_t maxRecordCount)
+{
+    if (beforeMessageId.empty() || maxRecordCount == 0) {
+        return ChatHistoryLoadResult({}, 0);
+    }
+
+    const std::filesystem::path messagesFilePath =
+        getPeerMessagesFilePath(appPaths, peerDeviceId);
+    if (!std::filesystem::exists(messagesFilePath)) {
+        return ChatHistoryLoadResult({}, 0);
+    }
+
+    std::ifstream input(messagesFilePath, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("Failed to open chat history file for reading.");
+    }
+
+    std::vector<ChatMessageRecord> records;
+    int skippedLineCount = 0;
+    std::size_t validRecordCount = 0;
+    bool foundBoundary = false;
+    std::string line;
+    while (std::getline(input, line)) {
+        if (line.empty()) {
+            continue;
+        }
+
+        try {
+            ChatMessageRecord record = fromJson(nlohmann::json::parse(line));
+            if (record.GetMessageId() == beforeMessageId) {
+                foundBoundary = true;
+                break;
+            }
+
+            records.push_back(std::move(record));
+            ++validRecordCount;
+            if (records.size() > maxRecordCount) {
+                records.erase(records.begin());
+            }
+        } catch (const std::exception&) {
+            ++skippedLineCount;
+        }
+    }
+
+    if (!foundBoundary) {
+        return ChatHistoryLoadResult({}, skippedLineCount);
+    }
+
+    return ChatHistoryLoadResult(std::move(records),
+                                 skippedLineCount,
+                                 validRecordCount > maxRecordCount);
+}
+
+std::string loadLatestChatMessageCreatedAt(const AppPaths& appPaths,
+                                           const std::string& peerDeviceId)
+{
+    const std::filesystem::path messagesFilePath =
+        getPeerMessagesFilePath(appPaths, peerDeviceId);
+    if (!std::filesystem::exists(messagesFilePath)) {
+        return {};
+    }
+
+    std::ifstream input(messagesFilePath, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("Failed to open chat history file for reading.");
+    }
+
+    std::string latestCreatedAt;
+    std::string line;
+    while (std::getline(input, line)) {
+        if (line.empty()) {
+            continue;
+        }
+
+        try {
+            const ChatMessageRecord record = fromJson(nlohmann::json::parse(line));
+            if (record.GetCreatedAt() > latestCreatedAt) {
+                latestCreatedAt = record.GetCreatedAt();
+            }
+        } catch (const std::exception&) {
+            continue;
+        }
+    }
+
+    return latestCreatedAt;
 }
 
 }
