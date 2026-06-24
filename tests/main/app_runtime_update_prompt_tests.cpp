@@ -70,6 +70,25 @@ relaydesk::storage::PeerProfile makePeerProfile(int appVersion,
     return profile;
 }
 
+relaydesk::storage::PeerProfile makePeerProfileForDevice(
+    const std::string& deviceId,
+    const std::string& displayName,
+    int appVersion,
+    const std::string& lastSeenAt)
+{
+    relaydesk::storage::PeerProfile profile;
+    profile.SetDeviceId(deviceId);
+    profile.SetHostName(displayName + "-HOST");
+    profile.SetDisplayName(displayName);
+    profile.SetLastAddresses({"127.0.0.1"});
+    profile.SetTcpPort(39171);
+    profile.SetAppVersion(appVersion);
+    profile.SetCapabilities({"text", "file"});
+    profile.SetFirstSeenAt("2026-06-18T10:00:00Z");
+    profile.SetLastSeenAt(lastSeenAt);
+    return profile;
+}
+
 relaydesk::storage::PeerProfile makeUpdatePeerProfile(std::uint16_t tcpPort,
                                                       int appVersion)
 {
@@ -1037,6 +1056,89 @@ int suppressesScheduledInstallOnExitVersionUntilHigherVersionArrives()
         }
 
         runtime.clearScheduledAppUpdate();
+    }
+
+    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    return 0;
+}
+
+int keepsHighestAppUpdatePromptAcrossMultiplePeers()
+{
+    const relaydesk::storage::AppPaths appPaths =
+        relaydesk::storage::createAppPaths();
+    std::filesystem::remove_all(appPaths.GetDataDirectory());
+
+    {
+        TestableRelayDeskRuntime runtime;
+        if (!runtime.GetStartupErrorMessage().empty()) {
+            return fail("Runtime startup failed: "
+                        + runtime.GetStartupErrorMessage());
+        }
+
+        runtime.receivePeerProfile(
+            makePeerProfileForDevice("runtime-update-peer-a",
+                                     "Runtime Update Peer A",
+                                     relaydesk::core::kAppVersion + 1,
+                                     "2026-06-18T10:20:00Z"),
+            true);
+        std::optional<relaydesk::runtime::AppUpdatePrompt> prompt =
+            runtime.GetAppUpdatePrompt();
+        if (const int result =
+                expect(prompt.has_value(),
+                       "Initial higher-version peer did not show prompt.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(prompt->GetAppVersion() == relaydesk::core::kAppVersion + 1,
+                       "Initial update prompt version mismatch.");
+            result != 0) {
+            return result;
+        }
+
+        runtime.receivePeerProfile(
+            makePeerProfileForDevice("runtime-update-peer-b",
+                                     "Runtime Update Peer B",
+                                     relaydesk::core::kAppVersion + 3,
+                                     "2026-06-18T10:21:00Z"),
+            true);
+        prompt = runtime.GetAppUpdatePrompt();
+        if (const int result =
+                expect(prompt.has_value()
+                           && prompt->GetSourceDeviceId()
+                               == "runtime-update-peer-b",
+                       "Higher-version peer did not become update source.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(prompt->GetAppVersion() == relaydesk::core::kAppVersion + 3,
+                       "Higher-version prompt app version mismatch.");
+            result != 0) {
+            return result;
+        }
+
+        runtime.receivePeerProfile(
+            makePeerProfileForDevice("runtime-update-peer-a",
+                                     "Runtime Update Peer A",
+                                     relaydesk::core::kAppVersion + 1,
+                                     "2026-06-18T10:22:00Z"),
+            true);
+        prompt = runtime.GetAppUpdatePrompt();
+        if (const int result =
+                expect(prompt.has_value()
+                           && prompt->GetSourceDeviceId()
+                               == "runtime-update-peer-b",
+                       "Lower-version peer downgraded the update source.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(prompt->GetAppVersion() == relaydesk::core::kAppVersion + 3,
+                       "Lower-version peer downgraded the prompt version.");
+            result != 0) {
+            return result;
+        }
     }
 
     std::filesystem::remove_all(appPaths.GetDataDirectory());
@@ -2659,6 +2761,11 @@ int main(int argc, char** argv)
                 suppressesScheduledInstallOnExitVersionUntilHigherVersionArrives();
             scheduledUpdateResult != 0) {
             return scheduledUpdateResult;
+        }
+        if (const int highestPromptResult =
+                keepsHighestAppUpdatePromptAcrossMultiplePeers();
+            highestPromptResult != 0) {
+            return highestPromptResult;
         }
         if (const int continuedTransferResult =
                 continuesInterruptedIncomingTransferFromAcceptedOffset();

@@ -2528,6 +2528,17 @@ std::vector<std::filesystem::path> selectAttachmentFilesFromDialog()
     return filePaths;
 }
 
+std::vector<std::filesystem::path> selectAttachmentFolderFromDialog()
+{
+    std::vector<std::filesystem::path> folderPaths;
+    const std::optional<std::filesystem::path> folderPath =
+        relaydesk::platform::selectFolderFromDialog();
+    if (folderPath.has_value()) {
+        folderPaths.push_back(folderPath.value());
+    }
+    return folderPaths;
+}
+
 StickerPickerItem makeStickerPickerItem(
     const relaydesk::storage::AppPaths& appPaths,
     const relaydesk::storage::StickerPack& pack,
@@ -7540,6 +7551,13 @@ void drawRuntimeComposer(
             selectAttachmentFilesFromDialog());
         emojiPickerOpen = false;
     };
+    auto selectAttachmentFolder = [&composerCaret, &draftItems, &emojiPickerOpen] {
+        insertComposerDraftAttachmentPathsAtCaret(
+            draftItems,
+            composerCaret,
+            selectAttachmentFolderFromDialog());
+        emojiPickerOpen = false;
+    };
     auto importStickers = [&emojiPickerTab,
                            &stickerImportStatus,
                            &stickerItems] {
@@ -7595,6 +7613,12 @@ void drawRuntimeComposer(
             .build();
         icon(ui, "composer.folder", firstIconX + iconGap * 2.0f, toolbarY,
              iconSize, 0xE8B7, kText);
+        ui.rect("composer.folder.hit")
+            .position(firstIconX + iconGap * 2.0f - 5.0f, toolbarY - 5.0f)
+            .size(iconSize + 10.0f, iconSize + 10.0f)
+            .color({0.0f, 0.0f, 0.0f, 0.0f})
+            .onClick(selectAttachmentFolder)
+            .build();
     }
     ui.rect("composer.send.bg")
         .position(sendX, toolbarY + 1.0f)

@@ -250,7 +250,7 @@ HWND findRelayDeskMainWindow()
     return context.window;
 }
 
-void setDialogDefaultFolder(IFileSaveDialog* dialog,
+void setDialogDefaultFolder(IFileDialog* dialog,
                             const std::filesystem::path& directoryPath)
 {
     if (dialog == nullptr || directoryPath.empty()) {
@@ -271,6 +271,23 @@ void setDialogDefaultFolder(IFileSaveDialog* dialog,
     if (SUCCEEDED(result)) {
         (void)dialog->SetDefaultFolder(folder.Get());
     }
+}
+
+std::optional<std::filesystem::path> shellItemFilesystemPath(IShellItem* item)
+{
+    if (item == nullptr) {
+        return std::nullopt;
+    }
+
+    PWSTR rawPath = nullptr;
+    const HRESULT result = item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath);
+    if (FAILED(result) || rawPath == nullptr) {
+        return std::nullopt;
+    }
+
+    const std::filesystem::path selectedPath(rawPath);
+    CoTaskMemFree(rawPath);
+    return selectedPath.lexically_normal();
 }
 
 std::uint32_t calculateDibPixelOffset(const BITMAPINFOHEADER& header)
@@ -836,15 +853,45 @@ std::optional<std::filesystem::path> selectSavePathFromDialog(
         return std::nullopt;
     }
 
-    PWSTR rawPath = nullptr;
-    result = item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath);
-    if (FAILED(result) || rawPath == nullptr) {
+    return shellItemFilesystemPath(item.Get());
+}
+
+std::optional<std::filesystem::path> selectFolderFromDialog()
+{
+    ComApartment apartment;
+    if (!apartment.GetAvailable()) {
         return std::nullopt;
     }
 
-    const std::filesystem::path selectedPath(rawPath);
-    CoTaskMemFree(rawPath);
-    return selectedPath.lexically_normal();
+    using Microsoft::WRL::ComPtr;
+    ComPtr<IFileOpenDialog> dialog;
+    HRESULT result = CoCreateInstance(CLSID_FileOpenDialog,
+                                      nullptr,
+                                      CLSCTX_INPROC_SERVER,
+                                      IID_PPV_ARGS(&dialog));
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    DWORD options = 0;
+    result = dialog->GetOptions(&options);
+    if (SUCCEEDED(result)) {
+        (void)dialog->SetOptions(
+            options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+    }
+
+    result = dialog->Show(findRelayDeskMainWindow());
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    ComPtr<IShellItem> item;
+    result = dialog->GetResult(&item);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    return shellItemFilesystemPath(item.Get());
 }
 
 bool isPasteShortcutDown()

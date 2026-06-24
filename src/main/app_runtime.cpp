@@ -2444,59 +2444,89 @@ std::optional<PeerListItem> RelayDeskRuntime::findPeerByDeviceId(
 void RelayDeskRuntime::maybeOfferAppUpdateFromPeer(const PeerListItem& peer)
 {
 #if defined(RELAYDESK_HAS_BOOST_ASIO)
-    if ((runtimeOptions_.GetNetworkEnabled() && !tcpPeerTransport_)
-        || !peer.GetOnline()
-        || peer.GetDeviceId().empty()
-        || peer.GetDeviceId() == localUser_.GetDeviceId()
-        || peer.GetAppVersion() <= relaydesk::core::kAppVersion
-        || peer.GetAddress().empty()
-        || peer.GetAddress() == "unknown"
-        || peer.GetTcpPort() == 0) {
-        return;
-    }
-
+    (void)peer;
+    std::optional<PeerListItem> promptedPeer;
     {
         std::lock_guard lock(pendingAppUpdateMutex_);
-        const auto dismissedVersion =
-            dismissedAppUpdateVersions_.find(peer.GetDeviceId());
-        if (dismissedVersion != dismissedAppUpdateVersions_.end()
-            && dismissedVersion->second >= peer.GetAppVersion()) {
-            return;
-        }
-        const auto requestedVersion =
-            requestedAppUpdateVersions_.find(peer.GetDeviceId());
-        if (requestedVersion != requestedAppUpdateVersions_.end()
-            && requestedVersion->second >= peer.GetAppVersion()) {
-            return;
-        }
-        if (scheduledAppUpdate_.has_value()
-            && scheduledAppUpdate_->GetAppVersion() >= peer.GetAppVersion()) {
-            return;
-        }
-        if (appUpdatePrompt_.has_value()
-            && appUpdatePrompt_->GetSourceDeviceId() == peer.GetDeviceId()
-            && appUpdatePrompt_->GetAppVersion() >= peer.GetAppVersion()) {
-            return;
-        }
         if (appUpdatePrompt_.has_value()
             && appUpdatePrompt_->GetState() == AppUpdatePromptState::Downloading) {
             return;
         }
 
+        auto isCandidate = [this](const PeerListItem& candidate) {
+            if ((runtimeOptions_.GetNetworkEnabled() && !tcpPeerTransport_)
+                || !candidate.GetOnline()
+                || candidate.GetDeviceId().empty()
+                || candidate.GetDeviceId() == localUser_.GetDeviceId()
+                || candidate.GetAppVersion() <= relaydesk::core::kAppVersion
+                || candidate.GetAddress().empty()
+                || candidate.GetAddress() == "unknown"
+                || candidate.GetTcpPort() == 0) {
+                return false;
+            }
+
+            const auto dismissedVersion =
+                dismissedAppUpdateVersions_.find(candidate.GetDeviceId());
+            if (dismissedVersion != dismissedAppUpdateVersions_.end()
+                && dismissedVersion->second >= candidate.GetAppVersion()) {
+                return false;
+            }
+
+            const auto requestedVersion =
+                requestedAppUpdateVersions_.find(candidate.GetDeviceId());
+            if (requestedVersion != requestedAppUpdateVersions_.end()
+                && requestedVersion->second >= candidate.GetAppVersion()) {
+                return false;
+            }
+
+            return !scheduledAppUpdate_.has_value()
+                || scheduledAppUpdate_->GetAppVersion() < candidate.GetAppVersion();
+        };
+
+        std::optional<PeerListItem> bestPeer;
+        for (const PeerListItem& candidate : peers_) {
+            if (!isCandidate(candidate)) {
+                continue;
+            }
+            if (!bestPeer.has_value()
+                || candidate.GetAppVersion() > bestPeer->GetAppVersion()) {
+                bestPeer = candidate;
+            }
+        }
+        if (!bestPeer.has_value()) {
+            return;
+        }
+
+        if (appUpdatePrompt_.has_value()
+            && appUpdatePrompt_->GetSourceDeviceId() == bestPeer->GetDeviceId()
+            && appUpdatePrompt_->GetAppVersion() == bestPeer->GetAppVersion()) {
+            return;
+        }
+        if (appUpdatePrompt_.has_value()
+            && appUpdatePrompt_->GetState() != AppUpdatePromptState::Failed
+            && appUpdatePrompt_->GetAppVersion() == bestPeer->GetAppVersion()) {
+            return;
+        }
+
         AppUpdatePrompt prompt;
-        prompt.SetSourceDeviceId(peer.GetDeviceId());
-        prompt.SetSourceDisplayName(peer.GetDisplayName().empty()
-                                        ? peer.GetHostName()
-                                        : peer.GetDisplayName());
+        prompt.SetSourceDeviceId(bestPeer->GetDeviceId());
+        prompt.SetSourceDisplayName(bestPeer->GetDisplayName().empty()
+                                        ? bestPeer->GetHostName()
+                                        : bestPeer->GetDisplayName());
         prompt.SetFileName("relaydesk.exe");
-        prompt.SetAppVersion(peer.GetAppVersion());
+        prompt.SetAppVersion(bestPeer->GetAppVersion());
         prompt.SetState(AppUpdatePromptState::Available);
         appUpdatePrompt_ = std::move(prompt);
+        promptedPeer = bestPeer;
     }
 
-    logDiagnostic("runtime.update.available device_id=" + peer.GetDeviceId()
+    if (!promptedPeer.has_value()) {
+        return;
+    }
+
+    logDiagnostic("runtime.update.available device_id=" + promptedPeer->GetDeviceId()
                   + " peer_app_version="
-                  + std::to_string(peer.GetAppVersion())
+                  + std::to_string(promptedPeer->GetAppVersion())
                   + " local_app_version="
                   + std::to_string(relaydesk::core::kAppVersion));
     requestUiRefresh();
