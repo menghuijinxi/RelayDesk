@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -97,6 +98,17 @@ void removeStaleProfilesForAnnouncement(
     }
 }
 
+std::optional<relaydesk::storage::PeerProfile> loadPeerProfileIfReadable(
+    const relaydesk::storage::AppPaths& appPaths,
+    const std::string& peerDeviceId)
+{
+    try {
+        return relaydesk::storage::loadPeerProfile(appPaths, peerDeviceId);
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
 } // namespace
 
 relaydesk::storage::PeerProfile upsertPeerProfileFromDiscovery(
@@ -106,7 +118,11 @@ relaydesk::storage::PeerProfile upsertPeerProfileFromDiscovery(
 {
     const std::filesystem::path profilePath =
         relaydesk::storage::getPeerProfileFilePath(appPaths, announcement.GetDeviceId());
-    if (!std::filesystem::exists(profilePath)) {
+    const std::optional<relaydesk::storage::PeerProfile> existingProfile =
+        std::filesystem::exists(profilePath)
+            ? loadPeerProfileIfReadable(appPaths, announcement.GetDeviceId())
+            : std::nullopt;
+    if (!existingProfile.has_value()) {
         removeStaleProfilesForAnnouncement(appPaths, announcement, observedAddress);
         relaydesk::storage::PeerProfile createdProfile = makeBaseProfile(
             announcement,
@@ -116,19 +132,17 @@ relaydesk::storage::PeerProfile upsertPeerProfileFromDiscovery(
         return createdProfile;
     }
 
-    const relaydesk::storage::PeerProfile existingProfile =
-        relaydesk::storage::loadPeerProfile(appPaths, announcement.GetDeviceId());
-    if (shouldIgnoreProfileUpdate(announcement, existingProfile)) {
-        return existingProfile;
+    if (shouldIgnoreProfileUpdate(announcement, existingProfile.value())) {
+        return existingProfile.value();
     }
 
     removeStaleProfilesForAnnouncement(appPaths, announcement, observedAddress);
     relaydesk::storage::PeerProfile updatedProfile = makeBaseProfile(
         announcement,
-        existingProfile.GetFirstSeenAt(),
-        mergeObservedAddress(existingProfile.GetLastAddresses(), observedAddress));
-    updatedProfile.SetLastSeenAt(resolveLastSeenAt(announcement, existingProfile));
-    updatedProfile.SetUnreadMessageCount(existingProfile.GetUnreadMessageCount());
+        existingProfile->GetFirstSeenAt(),
+        mergeObservedAddress(existingProfile->GetLastAddresses(), observedAddress));
+    updatedProfile.SetLastSeenAt(resolveLastSeenAt(announcement, existingProfile.value()));
+    updatedProfile.SetUnreadMessageCount(existingProfile->GetUnreadMessageCount());
     relaydesk::storage::savePeerProfile(appPaths, updatedProfile);
     return updatedProfile;
 }

@@ -1,6 +1,7 @@
 #include "net/discovery_peer_profile.h"
 
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -167,6 +168,53 @@ int updatesPeerProfileAndPreservesFirstSeen()
                   "Previous observed address should be retained.");
 }
 
+int repairsCorruptPeerProfileFromDiscovery()
+{
+    const auto appPaths = makeAppPaths("repair-corrupt-profile");
+    const std::filesystem::path profilePath =
+        relaydesk::storage::getPeerProfileFilePath(appPaths, "peer-device");
+    std::filesystem::create_directories(profilePath.parent_path());
+    {
+        std::ofstream output(profilePath, std::ios::binary | std::ios::trunc);
+        output << "{invalid json";
+    }
+
+    relaydesk::storage::PeerProfile profile;
+    try {
+        profile = relaydesk::net::upsertPeerProfileFromDiscovery(
+            appPaths,
+            makeAnnouncement("2026-06-12T10:20:00Z"),
+            "192.168.1.77");
+    } catch (const std::exception& exception) {
+        std::cerr << "Corrupt peer profile repair threw: "
+                  << exception.what() << '\n';
+        return 1;
+    }
+
+    if (const int result = expect(profile.GetDeviceId() == "peer-device",
+                                  "Corrupt peer profile was not repaired.");
+        result != 0) {
+        return result;
+    }
+
+    if (const int result = expect(profile.GetLastAddresses().size() == 1,
+                                  "Repaired peer address count mismatch.");
+        result != 0) {
+        return result;
+    }
+
+    if (const int result = expect(profile.GetLastAddresses()[0] == "192.168.1.77",
+                                  "Repaired peer observed address mismatch.");
+        result != 0) {
+        return result;
+    }
+
+    const auto loaded =
+        relaydesk::storage::loadPeerProfile(appPaths, "peer-device");
+    return expect(loaded.GetDisplayName() == "Alice-PC",
+                  "Repaired peer profile was not persisted.");
+}
+
 int deduplicatesObservedAddress()
 {
     const auto appPaths = makeAppPaths("deduplicate");
@@ -323,6 +371,10 @@ int main()
     }
 
     if (const int result = updatesPeerProfileAndPreservesFirstSeen(); result != 0) {
+        return result;
+    }
+
+    if (const int result = repairsCorruptPeerProfileFromDiscovery(); result != 0) {
         return result;
     }
 
