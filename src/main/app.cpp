@@ -507,6 +507,16 @@ bool isEmojiCodepointText(const std::string& value)
         || codepoint == 0x20E3u;
 }
 
+bool isStandaloneEmojiCodepointText(const std::string& value)
+{
+    const unsigned int codepoint = utf8CodepointValue(value);
+    if (codepoint == 0x200Du || codepoint == 0x20E3u
+        || (codepoint >= 0xFE00u && codepoint <= 0xFE0Fu)) {
+        return false;
+    }
+    return isEmojiCodepointText(value);
+}
+
 std::string makeAvatarText(const std::string& displayName)
 {
     const std::size_t first = displayName.find_first_not_of(" \t\r\n");
@@ -3569,6 +3579,9 @@ struct ComposerEditorTextAtom {
     float x = 0.0f;
     float y = 0.0f;
     float width = 0.0f;
+    float fontSize = 14.0f;
+    float lineHeight = 22.0f;
+    bool emoji = false;
     std::string linkUrl;
 };
 
@@ -3590,6 +3603,8 @@ struct ComposerEditorLayout {
 
 constexpr float kComposerEditorFontSize = 14.0f;
 constexpr float kComposerEditorLineHeight = 22.0f;
+constexpr float kComposerEditorEmojiFontSize = 24.0f;
+constexpr float kComposerEditorEmojiLineHeight = 32.0f;
 constexpr float kComposerEditorScrollbarWidth = 7.0f;
 constexpr float kComposerEditorScrollbarGap = 6.0f;
 constexpr float kComposerEditorImageMaxWidth = 260.0f;
@@ -3597,19 +3612,40 @@ constexpr float kComposerEditorImageMaxHeight = 104.0f;
 constexpr float kComposerEditorImageFallbackWidth = 156.0f;
 constexpr float kComposerEditorImageFallbackHeight = 88.0f;
 
+float composerEditorTextAtomFontSize(const std::string& value)
+{
+    return isStandaloneEmojiCodepointText(value)
+        ? kComposerEditorEmojiFontSize
+        : kComposerEditorFontSize;
+}
+
+float composerEditorTextAtomLineHeight(const std::string& value)
+{
+    return isStandaloneEmojiCodepointText(value)
+        ? kComposerEditorEmojiLineHeight
+        : kComposerEditorLineHeight;
+}
+
 float composerEditorTextAtomWidth(const std::string& value)
 {
     if (value.empty() || value == "\n") {
         return 0.0f;
     }
 
+    const bool emoji = isStandaloneEmojiCodepointText(value);
+    const float fontSize = composerEditorTextAtomFontSize(value);
     const float measuredWidth =
-        core::TextPrimitive::measureTextWidth(value, "", kComposerEditorFontSize);
+        core::TextPrimitive::measureTextWidth(value, "", fontSize);
     if (std::isfinite(measuredWidth) && measuredWidth > 0.0f) {
-        return measuredWidth;
+        return emoji
+            ? std::max(measuredWidth, kComposerEditorEmojiFontSize * 0.85f)
+            : measuredWidth;
     }
-    return std::max(4.0f,
-                    static_cast<float>(utf8CodepointCount(value)) * 8.5f);
+    const float fallbackWidth =
+        static_cast<float>(utf8CodepointCount(value)) * fontSize * 0.62f;
+    return emoji
+        ? std::max(kComposerEditorEmojiFontSize * 0.85f, fallbackWidth)
+        : std::max(4.0f, fallbackWidth);
 }
 
 float composerAttachmentAspectRatio(const PendingAttachmentItem& attachment)
@@ -3722,7 +3758,11 @@ ComposerEditorLayout makeComposerEditorLayout(
                     continue;
                 }
 
+                const bool emoji = isStandaloneEmojiCodepointText(codepoint);
                 const float atomWidth = composerEditorTextAtomWidth(codepoint);
+                const float atomFontSize = composerEditorTextAtomFontSize(codepoint);
+                const float atomLineHeight =
+                    composerEditorTextAtomLineHeight(codepoint);
                 if (cursor.x > 0.0f && cursor.x + atomWidth > width) {
                     advanceComposerEditorLine(cursor, 0.0f, rowGap);
                 }
@@ -3731,26 +3771,29 @@ ComposerEditorLayout makeComposerEditorLayout(
                                                documentPosition,
                                                cursor.x,
                                                cursor.y,
-                                               kComposerEditorLineHeight);
+                                               atomLineHeight);
                 const std::string linkUrl =
-                    linkUrlForByteOffset(linkSpans, byteOffset);
+                    emoji ? std::string{} : linkUrlForByteOffset(linkSpans, byteOffset);
                 layout.textAtoms.push_back(
                     {documentPosition,
                      codepoint,
                      cursor.x,
                      cursor.y,
                      atomWidth,
+                     atomFontSize,
+                     atomLineHeight,
+                     emoji,
                      linkUrl});
                 cursor.x += atomWidth;
                 cursor.lineHeight =
-                    std::max(cursor.lineHeight, kComposerEditorLineHeight);
+                    std::max(cursor.lineHeight, atomLineHeight);
                 ++documentPosition;
                 byteOffset += codepoint.size();
                 setComposerEditorCaretLocation(layout,
                                                documentPosition,
                                                cursor.x,
                                                cursor.y,
-                                               kComposerEditorLineHeight);
+                                               atomLineHeight);
             }
             continue;
         }
@@ -4134,7 +4177,7 @@ void drawComposerEditorSelectionHighlight(eui::Ui& ui,
              atom.x,
              atom.y + 2.0f,
              std::max(1.0f, atom.width),
-             std::max(16.0f, kComposerEditorLineHeight - 4.0f),
+             std::max(16.0f, atom.lineHeight - 4.0f),
              kSelectionFill,
              2.0f);
         ++selectionIndex;
@@ -4163,6 +4206,9 @@ void drawComposerEditorTextAtoms(eui::Ui& ui,
     float fragmentX = 0.0f;
     float fragmentY = 0.0f;
     float fragmentWidth = 0.0f;
+    float fragmentFontSize = kComposerEditorFontSize;
+    float fragmentLineHeight = kComposerEditorLineHeight;
+    bool fragmentEmoji = false;
     std::string fragmentLinkUrl;
     std::size_t fragmentIndex = 0;
     auto flushFragment = [&] {
@@ -4174,16 +4220,16 @@ void drawComposerEditorTextAtoms(eui::Ui& ui,
                       fragmentX,
                       fragmentY,
                       fragmentWidth + 6.0f,
-                      kComposerEditorLineHeight,
+                      fragmentLineHeight,
                       fragmentText,
-                      kComposerEditorFontSize,
-                      kComposerEditorLineHeight,
+                      fragmentFontSize,
+                      fragmentLineHeight,
                       fragmentLinkUrl.empty() ? kText : kLinkText);
         if (!fragmentLinkUrl.empty()) {
             rect(ui,
                  id + ".text.link.underline." + std::to_string(fragmentIndex),
                  fragmentX,
-                 fragmentY + kComposerEditorLineHeight - 4.0f,
+                 fragmentY + fragmentLineHeight - 4.0f,
                  std::max(1.0f, fragmentWidth),
                  1.0f,
                  kLinkText,
@@ -4199,11 +4245,17 @@ void drawComposerEditorTextAtoms(eui::Ui& ui,
         const bool sameLine = !fragmentText.empty()
             && std::fabs(atom.y - fragmentY) < 0.5f
             && std::fabs(atom.x - (fragmentX + fragmentWidth)) < 1.5f
+            && std::fabs(atom.fontSize - fragmentFontSize) < 0.5f
+            && std::fabs(atom.lineHeight - fragmentLineHeight) < 0.5f
+            && atom.emoji == fragmentEmoji
             && atom.linkUrl == fragmentLinkUrl;
         if (!sameLine) {
             flushFragment();
             fragmentX = atom.x;
             fragmentY = atom.y;
+            fragmentFontSize = atom.fontSize;
+            fragmentLineHeight = atom.lineHeight;
+            fragmentEmoji = atom.emoji;
             fragmentLinkUrl = atom.linkUrl;
         }
         fragmentText += atom.text;
@@ -4848,7 +4900,7 @@ float messageTextPartFontSize(
     const relaydesk::storage::ChatMessagePart& part)
 {
     return part.GetType() == relaydesk::storage::MessagePartType::Emoji
-        ? 24.0f
+        ? kComposerEditorEmojiFontSize
         : kComposerEditorFontSize;
 }
 
@@ -4856,7 +4908,7 @@ float messageTextPartLineHeight(
     const relaydesk::storage::ChatMessagePart& part)
 {
     return part.GetType() == relaydesk::storage::MessagePartType::Emoji
-        ? 32.0f
+        ? kComposerEditorEmojiLineHeight
         : kComposerEditorLineHeight;
 }
 
@@ -5057,14 +5109,14 @@ void addMessageTextPartToLayout(
     const std::string value = messageTextPartValue(part);
     const std::vector<MessageTextLinkSpan> linkSpans =
         findMessageTextLinkSpans(value);
-    const float fontSize = messageTextPartFontSize(part);
-    const float lineHeight = messageTextPartLineHeight(part);
+    const float partFontSize = messageTextPartFontSize(part);
+    const float partLineHeight = messageTextPartLineHeight(part);
     std::size_t byteOffset = 0;
     addMessageFlowTextCaret(layout,
                             textPosition,
                             cursor.x,
                             cursor.y,
-                            lineHeight);
+                            partLineHeight);
     for (const std::string& codepoint : splitUtf8Codepoints(value)) {
         if (codepoint == "\n") {
             expandMessageFlowContentWidth(layout, cursor.x);
@@ -5076,11 +5128,19 @@ void addMessageTextPartToLayout(
                                     textPosition,
                                     cursor.x,
                                     cursor.y,
-                                    lineHeight);
+                                    partLineHeight);
             continue;
         }
 
-        const float atomWidth = messageTextAtomWidth(codepoint, fontSize);
+        const bool emoji = part.GetType() == relaydesk::storage::MessagePartType::Emoji
+            || isStandaloneEmojiCodepointText(codepoint);
+        const float atomFontSize = emoji
+            ? kComposerEditorEmojiFontSize
+            : partFontSize;
+        const float atomLineHeight = emoji
+            ? kComposerEditorEmojiLineHeight
+            : partLineHeight;
+        const float atomWidth = messageTextAtomWidth(codepoint, atomFontSize);
         if (cursor.x > 0.0f && cursor.x + atomWidth > width) {
             expandMessageFlowContentWidth(layout, cursor.x);
             advanceComposerEditorLine(cursor, 0.0f, kMessageFlowRowGap);
@@ -5088,11 +5148,9 @@ void addMessageTextPartToLayout(
                                     textPosition,
                                     cursor.x,
                                     cursor.y,
-                                    lineHeight);
+                                    atomLineHeight);
         }
 
-        const bool emoji = part.GetType() == relaydesk::storage::MessagePartType::Emoji
-            || isEmojiCodepointText(codepoint);
         const std::string linkUrl =
             emoji ? std::string{} : linkUrlForByteOffset(linkSpans, byteOffset);
         layout.textAtoms.push_back(
@@ -5102,13 +5160,13 @@ void addMessageTextPartToLayout(
              cursor.x,
              cursor.y,
              atomWidth,
-             fontSize,
-             lineHeight,
+             atomFontSize,
+             atomLineHeight,
              emoji,
              linkUrl});
         cursor.x += atomWidth;
         expandMessageFlowContentWidth(layout, cursor.x);
-        cursor.lineHeight = std::max(cursor.lineHeight, lineHeight);
+        cursor.lineHeight = std::max(cursor.lineHeight, atomLineHeight);
         hasVisiblePart = true;
         byteOffset += codepoint.size();
         ++textPosition;
@@ -5116,7 +5174,7 @@ void addMessageTextPartToLayout(
                                 textPosition,
                                 cursor.x,
                                 cursor.y,
-                                lineHeight);
+                                atomLineHeight);
     }
 }
 

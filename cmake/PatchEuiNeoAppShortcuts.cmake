@@ -17,6 +17,48 @@ function(relaydesk_patch_eui_neo_app_shortcuts eui_source_dir)
     endif()
 
     set(eui_patched_app_shortcuts OFF)
+    set(eui_runtime_lifecycle_source "${eui_source_dir}/core/runtime/runtime_lifecycle.h")
+    if(EXISTS "${eui_runtime_lifecycle_source}")
+        file(READ "${eui_runtime_lifecycle_source}" eui_runtime_lifecycle_content)
+        string(CONCAT eui_focus_clear_on_interactive_block
+            "    if (event.pressedThisFrame) {\n"
+            "        setFocusedId(hitTestFocusable(event, dpiScale));\n"
+            "    }\n"
+            "\n"
+            "    const std::string capturedId = capturedInteractionId();\n"
+            "    const std::string hoverTargetId = !capturedId.empty() ? capturedId : hitTestInteractive(event, dpiScale);\n"
+        )
+        string(CONCAT eui_preserve_focus_on_interactive_block
+            "    const std::string interactiveTargetId = hitTestInteractive(event, dpiScale);\n"
+            "    if (event.pressedThisFrame) {\n"
+            "        const std::string focusTargetId = hitTestFocusable(event, dpiScale);\n"
+            "        if (!focusTargetId.empty() || interactiveTargetId.empty()) {\n"
+            "            setFocusedId(focusTargetId);\n"
+            "        }\n"
+            "    }\n"
+            "\n"
+            "    const std::string capturedId = capturedInteractionId();\n"
+            "    const std::string hoverTargetId = !capturedId.empty() ? capturedId : interactiveTargetId;\n"
+        )
+        string(FIND "${eui_runtime_lifecycle_content}"
+                    "interactiveTargetId = hitTestInteractive(event, dpiScale)"
+                    eui_preserve_focus_pos)
+        if(eui_preserve_focus_pos LESS 0)
+            string(FIND "${eui_runtime_lifecycle_content}"
+                        "${eui_focus_clear_on_interactive_block}"
+                        eui_focus_clear_on_interactive_pos)
+            if(eui_focus_clear_on_interactive_pos GREATER_EQUAL 0)
+                string(REPLACE "${eui_focus_clear_on_interactive_block}"
+                               "${eui_preserve_focus_on_interactive_block}"
+                               eui_runtime_lifecycle_content
+                               "${eui_runtime_lifecycle_content}")
+                file(WRITE "${eui_runtime_lifecycle_source}"
+                           "${eui_runtime_lifecycle_content}")
+                set(eui_patched_app_shortcuts ON)
+            endif()
+        endif()
+    endif()
+
     set(eui_glfw_app_source "${eui_source_dir}/core/app/glfw_app_main.cpp")
     if(EXISTS "${eui_glfw_app_source}")
         file(READ "${eui_glfw_app_source}" eui_glfw_app_content)
@@ -201,6 +243,26 @@ function(relaydesk_patch_eui_neo_app_shortcuts eui_source_dir)
             file(WRITE "${eui_glfw_app_source}" "${eui_glfw_app_content}")
             set(eui_patched_app_shortcuts ON)
         endif()
+
+        string(CONCAT eui_glfw_iconify_hide_to_tray_block
+            "    glfwSetWindowIconifyCallback(window, [](GLFWwindow* currentWindow, int iconified) {\n"
+            "        WindowState* state = static_cast<WindowState*>(glfwGetWindowUserPointer(currentWindow));\n"
+            "        if (state && state->trayAvailable && iconified && !state->forceClose) {\n"
+            "            state->hideToTrayRequested = true;\n"
+            "        }\n"
+            "    });\n"
+        )
+        string(FIND "${eui_glfw_app_content}"
+                    "${eui_glfw_iconify_hide_to_tray_block}"
+                    eui_glfw_iconify_hide_to_tray_pos)
+        if(eui_glfw_iconify_hide_to_tray_pos GREATER_EQUAL 0)
+            string(REPLACE "${eui_glfw_iconify_hide_to_tray_block}"
+                           ""
+                           eui_glfw_app_content
+                           "${eui_glfw_app_content}")
+            file(WRITE "${eui_glfw_app_source}" "${eui_glfw_app_content}")
+            set(eui_patched_app_shortcuts ON)
+        endif()
     endif()
 
     set(eui_sdl_app_source "${eui_source_dir}/core/app/sdl2_app_main.cpp")
@@ -272,7 +334,7 @@ function(relaydesk_patch_eui_neo_app_shortcuts eui_source_dir)
     endif()
 
     if(eui_patched_app_shortcuts)
-        message(STATUS "Patched EUI-NEO app main to ignore Escape close shortcut")
+        message(STATUS "Patched EUI-NEO app main shortcuts and tray behavior")
     endif()
 endfunction()
 

@@ -250,6 +250,13 @@ endif()
 
 enable_testing()
 
+add_test(NAME relaydesk_patch_eui_neo_app_shortcuts_tests
+    COMMAND ${CMAKE_COMMAND}
+        "-DRELAYDESK_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
+        "-DRELAYDESK_PATCH_TEST_WORK_DIR=${CMAKE_SOURCE_DIR}/tmp/tests/patch_eui_neo_app_shortcuts"
+        -P "${CMAKE_SOURCE_DIR}/tests/cmake/patch_eui_neo_app_shortcuts_tests.cmake"
+)
+
 add_executable(relaydesk_storage_tests
     tests/storage/app_paths_tests.cpp
     src/storage/app_paths.cpp
