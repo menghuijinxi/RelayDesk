@@ -37,6 +37,8 @@ constexpr WORD kBitmapFileSignature = 0x4D42u;
 constexpr DWORD kBitmapAlphaBitfieldsCompression = 6u;
 constexpr unsigned int kMinimumThumbnailSide = 1u;
 constexpr float kJpegThumbnailQuality = 0.78f;
+constexpr wchar_t kClipboardBitmapFileName[] = L"clipboard.bmp";
+constexpr wchar_t kScreenshotBitmapFileName[] = L"screenshot.bmp";
 
 std::mutex gDroppedAttachmentPathsMutex;
 std::vector<std::filesystem::path> gDroppedAttachmentPaths;
@@ -309,7 +311,13 @@ std::uint32_t calculateDibPixelOffset(const BITMAPINFOHEADER& header)
     return offset;
 }
 
-std::optional<std::filesystem::path> saveClipboardDibToOutbox()
+bool shellExecuteSucceeded(HINSTANCE result)
+{
+    return reinterpret_cast<std::intptr_t>(result) > 32;
+}
+
+std::optional<std::filesystem::path> saveClipboardDibToOutbox(
+    const std::wstring& fileName)
 {
     HANDLE dibHandle = GetClipboardData(CF_DIB);
     if (dibHandle == nullptr) {
@@ -341,7 +349,7 @@ std::optional<std::filesystem::path> saveClipboardDibToOutbox()
     const std::filesystem::path targetDirectory =
         appPaths.GetOutboxDirectory() / relaydesk::core::createUuidV4();
     std::filesystem::create_directories(targetDirectory);
-    const std::filesystem::path targetPath = targetDirectory / "clipboard.bmp";
+    const std::filesystem::path targetPath = targetDirectory / fileName;
 
     BITMAPFILEHEADER fileHeader{};
     fileHeader.bfType = kBitmapFileSignature;
@@ -534,12 +542,57 @@ std::vector<std::filesystem::path> collectClipboardAttachmentPaths()
     }
 
     if (IsClipboardFormatAvailable(CF_DIB)) {
-        std::optional<std::filesystem::path> imagePath = saveClipboardDibToOutbox();
+        std::optional<std::filesystem::path> imagePath =
+            saveClipboardDibToOutbox(kClipboardBitmapFileName);
         if (imagePath.has_value()) {
             paths.push_back(std::move(imagePath.value()));
         }
     }
     return paths;
+}
+
+std::vector<std::filesystem::path> collectClipboardImageAttachmentPaths()
+{
+    std::vector<std::filesystem::path> paths;
+    ClipboardScope clipboard;
+    if (!clipboard.GetOpened()) {
+        return paths;
+    }
+
+    if (IsClipboardFormatAvailable(CF_DIB)) {
+        std::optional<std::filesystem::path> imagePath =
+            saveClipboardDibToOutbox(kScreenshotBitmapFileName);
+        if (imagePath.has_value()) {
+            paths.push_back(std::move(imagePath.value()));
+        }
+    }
+    return paths;
+}
+
+std::uint32_t getClipboardSequenceNumber()
+{
+    return static_cast<std::uint32_t>(GetClipboardSequenceNumber());
+}
+
+bool startScreenClipCapture()
+{
+    HINSTANCE result = ShellExecuteW(nullptr,
+                                     L"open",
+                                     L"ms-screenclip:",
+                                     nullptr,
+                                     nullptr,
+                                     SW_SHOWNORMAL);
+    if (shellExecuteSucceeded(result)) {
+        return true;
+    }
+
+    result = ShellExecuteW(nullptr,
+                           L"open",
+                           L"SnippingTool.exe",
+                           L"/clip",
+                           nullptr,
+                           SW_SHOWNORMAL);
+    return shellExecuteSucceeded(result);
 }
 
 bool copyImageFileToClipboard(const std::filesystem::path& sourcePath)

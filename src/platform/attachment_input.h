@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -15,6 +16,9 @@ struct ImageSize {
 void initializeAttachmentDropTarget();
 std::vector<std::filesystem::path> consumeDroppedAttachmentPaths();
 std::vector<std::filesystem::path> collectClipboardAttachmentPaths();
+std::vector<std::filesystem::path> collectClipboardImageAttachmentPaths();
+std::uint32_t getClipboardSequenceNumber();
+bool startScreenClipCapture();
 std::optional<ImageSize> probeImageSize(const std::filesystem::path& sourcePath);
 std::optional<std::filesystem::path> createImageThumbnail(
     const std::filesystem::path& sourcePath,

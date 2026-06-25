@@ -104,6 +104,7 @@ constexpr const char* kFileTypeIconAssetDirectory =
     "assets/third_party/vscode-icons/icons";
 constexpr std::size_t kMaxRecentEmojiCount = 10;
 constexpr std::size_t kMaxPendingAttachmentCount = 8;
+constexpr std::chrono::seconds kScreenClipImportTimeout{90};
 
 struct EmojiEntry {
     const char* glyph;
@@ -1018,14 +1019,6 @@ bool isPathUnderDirectory(const std::filesystem::path& filePath,
         && !isParentTraversalPath(relativePath);
 }
 
-bool shouldMoveComposerImageSource(
-    const relaydesk::storage::AppPaths& appPaths,
-    const std::filesystem::path& sourcePath)
-{
-    return sourcePath.filename().string() == "clipboard.bmp"
-        && isPathUnderDirectory(sourcePath, appPaths.GetOutboxDirectory());
-}
-
 std::string lowerAscii(std::string value)
 {
     std::transform(
@@ -1036,6 +1029,17 @@ std::string lowerAscii(std::string value)
             return static_cast<char>(std::tolower(ch));
         });
     return value;
+}
+
+bool shouldMoveComposerImageSource(
+    const relaydesk::storage::AppPaths& appPaths,
+    const std::filesystem::path& sourcePath)
+{
+    const std::string fileName = lowerAscii(sourcePath.filename().string());
+    const bool generatedOutboxImage =
+        fileName == "clipboard.bmp" || fileName == "screenshot.bmp";
+    return generatedOutboxImage
+        && isPathUnderDirectory(sourcePath, appPaths.GetOutboxDirectory());
 }
 
 bool isImageAttachmentPath(const std::filesystem::path& filePath)
@@ -2414,6 +2418,44 @@ void insertComposerDraftAttachmentPathsAtCaret(
     for (const auto& filePath : filePaths) {
         insertComposerDraftAttachmentPathAtCaret(draftItems, caret, filePath);
     }
+}
+
+void pollPendingScreenClipCapture(
+    bool& pending,
+    std::uint32_t& clipboardSequence,
+    std::chrono::steady_clock::time_point& startedAt,
+    std::vector<ComposerDraftItem>& draftItems,
+    ComposerCaretState& composerCaret)
+{
+    if (!pending) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (startedAt.time_since_epoch().count() != 0
+        && now - startedAt > kScreenClipImportTimeout) {
+        pending = false;
+        return;
+    }
+
+    const std::uint32_t currentSequence =
+        relaydesk::platform::getClipboardSequenceNumber();
+    if (currentSequence == 0 || currentSequence == clipboardSequence) {
+        return;
+    }
+
+    clipboardSequence = currentSequence;
+    const std::vector<std::filesystem::path> imagePaths =
+        relaydesk::platform::collectClipboardImageAttachmentPaths();
+    if (imagePaths.empty()) {
+        return;
+    }
+
+    insertComposerDraftAttachmentPathsAtCaret(
+        draftItems,
+        composerCaret,
+        imagePaths);
+    pending = false;
 }
 
 bool removeComposerDraftAtomAt(std::vector<ComposerDraftItem>& draftItems,
@@ -7553,6 +7595,11 @@ void drawRuntimeComposer(
     std::string& stickerImportStatus =
         ui.state<std::string>("composer.stickers.import.status");
     bool& pasteShortcutDown = ui.state<bool>("composer.clipboard.paste.down");
+    bool& screenClipPending = ui.state<bool>("composer.screenshot.pending");
+    std::uint32_t& screenClipClipboardSequence =
+        ui.state<std::uint32_t>("composer.screenshot.clipboard.sequence");
+    std::chrono::steady_clock::time_point& screenClipStartedAt =
+        ui.state<std::chrono::steady_clock::time_point>("composer.screenshot.started");
     loadRecentEmojisOnce(ui, recentEmojis);
     loadStoredStickerPickerItemsOnce(ui, stickerItems);
     if (!composerText.empty()) {
@@ -7571,6 +7618,11 @@ void drawRuntimeComposer(
             relaydesk::platform::collectClipboardAttachmentPaths());
     }
     pasteShortcutDown = pasteShortcutNow;
+    pollPendingScreenClipCapture(screenClipPending,
+                                 screenClipClipboardSequence,
+                                 screenClipStartedAt,
+                                 draftItems,
+                                 composerCaret);
     clampComposerCaret(draftItems, composerCaret);
     const bool hasMessageContent = hasComposerDraftContent(draftItems);
     const bool sendEnabled = selectedPeer.has_value() && hasMessageContent;
@@ -7636,6 +7688,28 @@ void drawRuntimeComposer(
             selectAttachmentFolderFromDialog());
         emojiPickerOpen = false;
     };
+    auto startScreenClip = [&composerCaret,
+                            &draftItems,
+                            &emojiPickerOpen,
+                            &screenClipClipboardSequence,
+                            &screenClipPending,
+                            &screenClipStartedAt] {
+        if (composerDraftAttachmentCount(draftItems) >= kMaxPendingAttachmentCount) {
+            return;
+        }
+
+        screenClipClipboardSequence =
+            relaydesk::platform::getClipboardSequenceNumber();
+        if (!relaydesk::platform::startScreenClipCapture()) {
+            screenClipPending = false;
+            return;
+        }
+
+        screenClipPending = true;
+        screenClipStartedAt = std::chrono::steady_clock::now();
+        clearComposerSelection(composerCaret);
+        emojiPickerOpen = false;
+    };
     auto importStickers = [&emojiPickerTab,
                            &stickerImportStatus,
                            &stickerItems] {
@@ -7662,10 +7736,20 @@ void drawRuntimeComposer(
                        placeholder,
                        submitMessage);
     if (width < 560.0f) {
-        icon(ui, "composer.file", composerX + 16.0f, toolbarY, iconSize,
+        const float firstIconX = composerX + 16.0f;
+        const float iconGap = 42.0f;
+        icon(ui, "composer.screenshot", firstIconX, toolbarY, iconSize,
+             0xE722, screenClipPending ? kTeal : kText);
+        ui.rect("composer.screenshot.hit")
+            .position(firstIconX - 5.0f, toolbarY - 5.0f)
+            .size(iconSize + 10.0f, iconSize + 10.0f)
+            .color({0.0f, 0.0f, 0.0f, 0.0f})
+            .onClick(startScreenClip)
+            .build();
+        icon(ui, "composer.file", firstIconX + iconGap, toolbarY, iconSize,
              0xE723, kText);
         ui.rect("composer.file.hit")
-            .position(composerX + 11.0f, toolbarY - 5.0f)
+            .position(firstIconX + iconGap - 5.0f, toolbarY - 5.0f)
             .size(iconSize + 10.0f, iconSize + 10.0f)
             .color({0.0f, 0.0f, 0.0f, 0.0f})
             .onClick(selectAttachmentFiles)
@@ -7681,18 +7765,26 @@ void drawRuntimeComposer(
             .color({0.0f, 0.0f, 0.0f, 0.0f})
             .onClick(toggleEmojiPicker)
             .build();
-        icon(ui, "composer.file", firstIconX + iconGap, toolbarY, iconSize,
+        icon(ui, "composer.screenshot", firstIconX + iconGap, toolbarY, iconSize,
+             0xE722, screenClipPending ? kTeal : kText);
+        ui.rect("composer.screenshot.hit")
+            .position(firstIconX + iconGap - 5.0f, toolbarY - 5.0f)
+            .size(iconSize + 10.0f, iconSize + 10.0f)
+            .color({0.0f, 0.0f, 0.0f, 0.0f})
+            .onClick(startScreenClip)
+            .build();
+        icon(ui, "composer.file", firstIconX + iconGap * 2.0f, toolbarY, iconSize,
              0xE723, kText);
         ui.rect("composer.file.hit")
-            .position(firstIconX + iconGap - 5.0f, toolbarY - 5.0f)
+            .position(firstIconX + iconGap * 2.0f - 5.0f, toolbarY - 5.0f)
             .size(iconSize + 10.0f, iconSize + 10.0f)
             .color({0.0f, 0.0f, 0.0f, 0.0f})
             .onClick(selectAttachmentFiles)
             .build();
-        icon(ui, "composer.folder", firstIconX + iconGap * 2.0f, toolbarY,
+        icon(ui, "composer.folder", firstIconX + iconGap * 3.0f, toolbarY,
              iconSize, 0xE8B7, kText);
         ui.rect("composer.folder.hit")
-            .position(firstIconX + iconGap * 2.0f - 5.0f, toolbarY - 5.0f)
+            .position(firstIconX + iconGap * 3.0f - 5.0f, toolbarY - 5.0f)
             .size(iconSize + 10.0f, iconSize + 10.0f)
             .color({0.0f, 0.0f, 0.0f, 0.0f})
             .onClick(selectAttachmentFolder)
