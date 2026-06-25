@@ -8773,6 +8773,9 @@ void handleIncomingUserNotification()
     playRelayDeskNotificationSound();
 
     HWND window = relayDeskMainWindow();
+    if (window == nullptr || !IsWindowVisible(window)) {
+        core::platform::requestTrayShowMinimized();
+    }
     if (!isRelayDeskMainWindowActive(window)) {
         setRelayDeskTaskbarFlash(window, true);
         setRelayDeskTrayAttention(true);
@@ -8832,7 +8835,7 @@ BOOL CALLBACK relayDeskTrayWindowEnumProc(HWND window, LPARAM contextAddress)
         window,
         className,
         static_cast<int>(sizeof(className) / sizeof(className[0])));
-    if (classLength <= 0 || std::wstring(className) != L"TRAY") {
+    if (classLength <= 0 || std::wstring(className) != L"RelayDeskTrayWindow") {
         return TRUE;
     }
 
