@@ -90,6 +90,7 @@ constexpr float kFileDocumentCardCompactHeight = 48.0f;
 constexpr float kFileDocumentCardTitleLineHeight = 22.0f;
 constexpr float kFileDocumentCardCompactTitleLineHeight = 21.0f;
 constexpr std::size_t kFileDocumentCardMaxTitleLines = 3;
+constexpr std::size_t kPeerPreviewMaxCodepointsBeforeMeasure = 96u;
 constexpr float kMessageFileProgressGap = 6.0f;
 constexpr float kMessageFileProgressTrackHeight = 6.0f;
 constexpr float kMessageFileProgressDetailGap = 5.0f;
@@ -3223,6 +3224,12 @@ std::string fitSingleLinePreviewText(std::string value,
     if (value.empty()) {
         return value;
     }
+    if (utf8CodepointCount(value) > kPeerPreviewMaxCodepointsBeforeMeasure) {
+        value = utf8SubstringByCodepointRange(
+            value,
+            0u,
+            kPeerPreviewMaxCodepointsBeforeMeasure);
+    }
     return fitTextToMeasuredWidth(std::move(value), width, fontSize);
 }
 
@@ -4982,6 +4989,16 @@ struct MessageDocumentBubbleMetrics {
     float height = 0.0f;
 };
 
+struct MessageDocumentBubbleMetricsCacheEntry {
+    std::string key;
+    MessageDocumentBubbleMetrics metrics;
+};
+
+struct MessageTextCacheEntry {
+    std::string key;
+    std::string text;
+};
+
 struct MessageTextSelectionState {
     std::string messageId;
     std::size_t anchor = 0;
@@ -5744,6 +5761,82 @@ MessageDocumentBubbleMetrics makeMessageDocumentBubbleMetrics(
         + kMessageBubblePadding * 2.0f
         + messageDeliveryStateFooterHeight(message, outgoing);
     return metrics;
+}
+
+std::string messageDocumentBubbleMetricsCacheKey(
+    const relaydesk::storage::ChatMessageRecord& message,
+    float maxWidth,
+    bool outgoing)
+{
+    const int widthKey = static_cast<int>(std::ceil(maxWidth));
+    std::string key = message.GetMessageId()
+        + "|"
+        + message.GetCreatedAt()
+        + "|"
+        + std::to_string(widthKey)
+        + "|"
+        + std::to_string(static_cast<int>(message.GetDeliveryState()))
+        + "|"
+        + (outgoing ? "out" : "in");
+    for (const relaydesk::storage::ChatMessagePart& part : message.GetParts()) {
+        key += "|p:";
+        key += std::to_string(static_cast<int>(part.GetType()));
+        key += ":";
+        key += part.GetTransferState().has_value()
+            ? std::to_string(static_cast<int>(part.GetTransferState().value()))
+            : "-";
+        key += ":";
+        key += std::to_string(part.GetTransferredSize().value_or(0u));
+    }
+    return key;
+}
+
+const MessageDocumentBubbleMetrics& cachedMessageDocumentBubbleMetrics(
+    eui::Ui& ui,
+    const relaydesk::storage::ChatMessageRecord& message,
+    float maxWidth,
+    bool outgoing)
+{
+    auto& cache = ui.state<
+        std::unordered_map<std::string, MessageDocumentBubbleMetricsCacheEntry>>(
+            "chat.runtime.message.metrics.cache");
+    const std::string& messageId = message.GetMessageId();
+    const std::string key =
+        messageDocumentBubbleMetricsCacheKey(message, maxWidth, outgoing);
+    MessageDocumentBubbleMetricsCacheEntry& entry = cache[messageId];
+    if (entry.key != key) {
+        entry.key = key;
+        entry.metrics =
+            makeMessageDocumentBubbleMetrics(message, maxWidth, outgoing);
+    }
+    return entry.metrics;
+}
+
+std::string messageTextCacheKey(
+    const relaydesk::storage::ChatMessageRecord& message)
+{
+    return message.GetMessageId()
+        + "|"
+        + message.GetCreatedAt()
+        + "|"
+        + std::to_string(message.GetParts().size());
+}
+
+const std::string& cachedMessageText(eui::Ui& ui,
+                                     const relaydesk::storage::ChatMessageRecord& message)
+{
+    auto& cache =
+        ui.state<std::unordered_map<std::string, MessageTextCacheEntry>>(
+            "chat.runtime.message.text.cache");
+    const std::string& messageId = message.GetMessageId();
+    const std::string key = messageTextCacheKey(message);
+    MessageTextCacheEntry& entry = cache[messageId];
+    if (entry.key != key) {
+        const std::size_t messageTextLength = messageTextDocumentLength(message);
+        entry.key = key;
+        entry.text = messageTextRangeText(message, 0u, messageTextLength);
+    }
+    return entry.text;
 }
 
 void drawMessageImagePart(eui::Ui& ui,
@@ -6711,9 +6804,7 @@ float drawMessageDocumentBubble(
     const float bubbleHeight = metrics.height;
     const MessageFlowLayout& layout = metrics.layout;
     const Color fill = outgoing ? kTealSoft : Color{0.990f, 0.990f, 0.992f, 1.0f};
-    const std::size_t messageTextLength = messageTextDocumentLength(message);
-    const std::string messageText =
-        messageTextRangeText(message, 0u, messageTextLength);
+    const std::string& messageText = cachedMessageText(ui, message);
 
     rect(ui, id + ".bg", x, y, width, bubbleHeight, fill, 9.0f, kBorder);
 
@@ -7391,10 +7482,11 @@ void drawRuntimeChatTimelineContent(
         const auto& message = messages[index];
         const bool outgoing =
             message.GetDirection() == relaydesk::storage::MessageDirection::Outgoing;
-        const MessageDocumentBubbleMetrics metrics =
-            makeMessageDocumentBubbleMetrics(message,
-                                             messageBubbleMaxWidth,
-                                             outgoing);
+        const MessageDocumentBubbleMetrics& metrics =
+            cachedMessageDocumentBubbleMetrics(ui,
+                                               message,
+                                               messageBubbleMaxWidth,
+                                               outgoing);
         const float bubbleWidth = metrics.width;
         const float avatarX = outgoing
             ? width - sidePadding - avatarSize
@@ -7518,22 +7610,6 @@ void drawRuntimeChatTimeline(
                          - kMessageTimestampWidth);
         const float messageBubbleMaxWidth =
             runtimeMessageBubbleMaxWidth(width, availableBubbleWidth);
-        float measuredContentHeight = 42.0f;
-        for (const auto& message : messages) {
-            const bool outgoing =
-                message.GetDirection()
-                == relaydesk::storage::MessageDirection::Outgoing;
-            const MessageDocumentBubbleMetrics metrics =
-                makeMessageDocumentBubbleMetrics(message,
-                                                 messageBubbleMaxWidth,
-                                                 outgoing);
-            const bool failedStateInside =
-                shouldDrawFailedDeliveryStateInsideBubble(message, outgoing);
-            measuredContentHeight += metrics.height
-                + (outgoing && !failedStateInside ? 24.0f : 16.0f);
-        }
-        const float contentHeight = std::max(height, measuredContentHeight);
-        const float maxScrollOffset = std::max(0.0f, contentHeight - height);
         std::string& scrollPeerDeviceId =
             ui.state<std::string>("chat.runtime.scroll.peer.device_id");
         std::string& scrollTailMessageId =
@@ -7552,6 +7628,31 @@ void drawRuntimeChatTimeline(
         const std::string& headMessageId = messages.front().GetMessageId();
         const std::string& tailMessageId = messages.back().GetMessageId();
         const bool peerChanged = scrollPeerDeviceId != peerDeviceId;
+        if (peerChanged) {
+            ui.state<std::unordered_map<
+                std::string,
+                MessageDocumentBubbleMetricsCacheEntry>>(
+                    "chat.runtime.message.metrics.cache").clear();
+            ui.state<std::unordered_map<std::string, MessageTextCacheEntry>>(
+                "chat.runtime.message.text.cache").clear();
+        }
+        float measuredContentHeight = 42.0f;
+        for (const auto& message : messages) {
+            const bool outgoing =
+                message.GetDirection()
+                == relaydesk::storage::MessageDirection::Outgoing;
+            const MessageDocumentBubbleMetrics& metrics =
+                cachedMessageDocumentBubbleMetrics(ui,
+                                                   message,
+                                                   messageBubbleMaxWidth,
+                                                   outgoing);
+            const bool failedStateInside =
+                shouldDrawFailedDeliveryStateInsideBubble(message, outgoing);
+            measuredContentHeight += metrics.height
+                + (outgoing && !failedStateInside ? 24.0f : 16.0f);
+        }
+        const float contentHeight = std::max(height, measuredContentHeight);
+        const float maxScrollOffset = std::max(0.0f, contentHeight - height);
         const bool tailMessageChanged = scrollTailMessageId != tailMessageId;
         const bool messageCountChanged = scrollMessageCount != messages.size();
         const bool tailChanged = tailMessageChanged || messageCountChanged;
