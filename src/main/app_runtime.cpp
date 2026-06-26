@@ -912,6 +912,19 @@ void prepareIncomingFolderTransferRoot(const std::filesystem::path& targetRoot)
     }
 }
 
+void prepareIncomingFolderTransferRootForResume(
+    const std::filesystem::path& targetRoot,
+    bool resumeTransfer)
+{
+    if (resumeTransfer) {
+        std::error_code error;
+        if (std::filesystem::is_directory(targetRoot, error)) {
+            return;
+        }
+    }
+    prepareIncomingFolderTransferRoot(targetRoot);
+}
+
 void replaceIncomingTransferPayload(const std::filesystem::path& sourcePath,
                                    const std::filesystem::path& targetPath)
 {
@@ -1077,31 +1090,68 @@ std::string appUpdatePackageFileName(
     return sanitizeFileName(executableFileName);
 }
 
-std::string escapedBatchValue(const std::string& value)
+std::string base64EncodeBytes(const std::vector<std::uint8_t>& bytes)
 {
+    constexpr char kAlphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     std::string result;
-    result.reserve(value.size());
-    for (char character : value) {
-        if (character == '%') {
-            result += "%%";
-        } else {
-            result.push_back(character);
-        }
+    result.reserve(((bytes.size() + 2) / 3) * 4);
+    for (std::size_t index = 0; index < bytes.size(); index += 3) {
+        const std::uint32_t first = bytes[index];
+        const std::uint32_t second =
+            index + 1 < bytes.size() ? bytes[index + 1] : 0;
+        const std::uint32_t third =
+            index + 2 < bytes.size() ? bytes[index + 2] : 0;
+        const std::uint32_t combined =
+            (first << 16) | (second << 8) | third;
+        result.push_back(kAlphabet[(combined >> 18) & 0x3F]);
+        result.push_back(kAlphabet[(combined >> 12) & 0x3F]);
+        result.push_back(index + 1 < bytes.size()
+                             ? kAlphabet[(combined >> 6) & 0x3F]
+                             : '=');
+        result.push_back(index + 2 < bytes.size()
+                             ? kAlphabet[combined & 0x3F]
+                             : '=');
     }
     return result;
 }
 
-std::string batchPathFromScriptDirectory(
-    const std::filesystem::path& scriptDirectory,
-    const std::filesystem::path& path)
+std::wstring powershellSingleQuotedString(const std::wstring& value)
 {
-    (void)scriptDirectory;
+    std::wstring quoted;
+    quoted.reserve(value.size() + 2);
+    quoted.push_back(L'\'');
+    for (wchar_t character : value) {
+        quoted.push_back(character);
+        if (character == L'\'') {
+            quoted.push_back(L'\'');
+        }
+    }
+    quoted.push_back(L'\'');
+    return quoted;
+}
+
+std::wstring powershellPathLiteral(const std::filesystem::path& path)
+{
     std::error_code error;
     std::filesystem::path absolutePath = std::filesystem::absolute(path, error);
     if (error || absolutePath.empty()) {
         absolutePath = path;
     }
-    return filesystemPathToUtf8String(absolutePath.lexically_normal());
+    return powershellSingleQuotedString(
+        absolutePath.lexically_normal().wstring());
+}
+
+std::string powershellEncodedCommand(const std::wstring& script)
+{
+    std::vector<std::uint8_t> bytes;
+    bytes.reserve(script.size() * 2);
+    for (wchar_t character : script) {
+        const auto codeUnit = static_cast<std::uint16_t>(character);
+        bytes.push_back(static_cast<std::uint8_t>(codeUnit & 0xFF));
+        bytes.push_back(static_cast<std::uint8_t>((codeUnit >> 8) & 0xFF));
+    }
+    return base64EncodeBytes(bytes);
 }
 
 std::uint32_t currentProcessId()
@@ -1147,75 +1197,85 @@ void writeAppUpdateScript(const std::filesystem::path& scriptPath,
     const std::filesystem::path logPath =
         scriptDirectory /
         filesystemPathFromUtf8String(kAppUpdateScriptLogFileName);
-    const std::string targetBatchPath =
-        batchPathFromScriptDirectory(scriptDirectory, targetPath);
-    const std::string updateBatchPath =
-        batchPathFromScriptDirectory(scriptDirectory, updatePath);
-    const std::string startDirectoryBatchPath =
-        batchPathFromScriptDirectory(scriptDirectory, startDirectory);
-    const std::string logBatchPath =
-        batchPathFromScriptDirectory(scriptDirectory, logPath);
-
-    const std::array<unsigned char, 3> bom{0xEF, 0xBB, 0xBF};
-    output.write(reinterpret_cast<const char*>(bom.data()),
-                 static_cast<std::streamsize>(bom.size()));
+    std::wstring script;
+    script += L"$ErrorActionPreference = 'Stop'\n";
+    script += L"$targetProcessId = "
+        + std::to_wstring(currentProcessId()) + L"\n";
+    script += L"$target = " + powershellPathLiteral(targetPath) + L"\n";
+    script += L"$update = " + powershellPathLiteral(updatePath) + L"\n";
+    script += L"$startDirectory = "
+        + powershellPathLiteral(startDirectory) + L"\n";
+    script += L"$log = " + powershellPathLiteral(logPath) + L"\n";
+    script += L"function Write-RelayDeskUpdateLog([string]$message) {\n";
+    script += L"  Add-Content -LiteralPath $log -Encoding UTF8 "
+              L"-Value ('[{0}] {1}' -f (Get-Date), $message)\n";
+    script += L"}\n";
+    script += L"New-Item -ItemType Directory -Force "
+              L"-LiteralPath (Split-Path -LiteralPath $log -Parent) "
+              L"| Out-Null\n";
+    script += L"Set-Content -LiteralPath $log -Encoding UTF8 "
+              L"-Value ('[{0}] RelayDesk update started' -f (Get-Date))\n";
+    script += L"Write-RelayDeskUpdateLog ('target=' + $target)\n";
+    script += L"Write-RelayDeskUpdateLog ('update=' + $update)\n";
+    script += L"Write-RelayDeskUpdateLog ('startdir=' + $startDirectory)\n";
+    script += L"Write-RelayDeskUpdateLog ('pid=' + $targetProcessId)\n";
+    script += L"if (-not (Test-Path -LiteralPath $update -PathType Leaf)) {\n";
+    script += L"  Write-RelayDeskUpdateLog 'update file missing'\n";
+    script += L"  exit 2\n";
+    script += L"}\n";
+    script += L"try { Stop-Process -Id $targetProcessId -Force "
+              L"-ErrorAction SilentlyContinue } catch {}\n";
+    script += L"for ($i = 1; $i -le 60; $i++) {\n";
+    script += L"  if (-not (Get-Process -Id $targetProcessId "
+              L"-ErrorAction SilentlyContinue)) { break }\n";
+    script += L"  Start-Sleep -Seconds 1\n";
+    script += L"}\n";
+    script += L"if (Get-Process -Id $targetProcessId "
+              L"-ErrorAction SilentlyContinue) {\n";
+    script += L"  Write-RelayDeskUpdateLog 'process did not exit'\n";
+    script += L"  exit 3\n";
+    script += L"}\n";
+    script += L"try { if (Test-Path -LiteralPath $target) { "
+              L"attrib.exe -R $target | Out-Null } } catch {}\n";
+    script += L"$copied = $false\n";
+    script += L"for ($i = 1; $i -le 60; $i++) {\n";
+    script += L"  Write-RelayDeskUpdateLog ('copy attempt ' + $i)\n";
+    script += L"  try {\n";
+    script += L"    Copy-Item -LiteralPath $update -Destination $target -Force\n";
+    script += L"    $copied = $true\n";
+    script += L"    break\n";
+    script += L"  } catch {\n";
+    script += L"    Write-RelayDeskUpdateLog "
+              L"('copy failed: ' + $_.Exception.Message)\n";
+    script += L"    Start-Sleep -Seconds 1\n";
+    script += L"  }\n";
+    script += L"}\n";
+    script += L"if (-not $copied) {\n";
+    script += L"  Write-RelayDeskUpdateLog 'copy failed after 60 attempts'\n";
+    script += L"  exit 4\n";
+    script += L"}\n";
+    script += L"Write-RelayDeskUpdateLog 'copy succeeded'\n";
+    if (restartAfterApply) {
+        script += L"try {\n";
+        script += L"  Start-Process -FilePath $target "
+                  L"-WorkingDirectory $startDirectory\n";
+        script += L"  Write-RelayDeskUpdateLog 'restart requested'\n";
+        script += L"} catch {\n";
+        script += L"  Write-RelayDeskUpdateLog "
+                  L"('restart failed: ' + $_.Exception.Message)\n";
+        script += L"  exit 5\n";
+        script += L"}\n";
+    } else {
+        script += L"Write-RelayDeskUpdateLog 'restart skipped'\n";
+    }
+    script += L"Write-RelayDeskUpdateLog 'update script finished'\n";
+    script += L"exit 0\n";
 
     output << "@echo off\n";
-    output << "setlocal EnableExtensions DisableDelayedExpansion\n";
-    output << "chcp 65001 >nul\n";
-    output << "set \"SCRIPT_DIR=%~dp0\"\n";
-    output << "set \"PID=" << currentProcessId() << "\"\n";
-    output << "setlocal EnableDelayedExpansion\n";
-    output << "set \"TARGET="
-           << escapedBatchValue(targetBatchPath) << "\"\n";
-    output << "set \"UPDATE="
-           << escapedBatchValue(updateBatchPath) << "\"\n";
-    output << "set \"STARTDIR="
-           << escapedBatchValue(startDirectoryBatchPath) << "\"\n";
-    output << "set \"LOG="
-           << escapedBatchValue(logBatchPath) << "\"\n";
-    output << "> \"!LOG!\" echo [%date% %time%] RelayDesk update started\n";
-    output << ">> \"!LOG!\" echo script=%~f0\n";
-    output << ">> \"!LOG!\" echo target=!TARGET!\n";
-    output << ">> \"!LOG!\" echo update=!UPDATE!\n";
-    output << ">> \"!LOG!\" echo startdir=!STARTDIR!\n";
-    output << ">> \"!LOG!\" echo pid=!PID!\n";
-    output << "if not exist \"!UPDATE!\" (\n";
-    output << "  >> \"!LOG!\" echo update file missing\n";
-    output << "  exit /b 2\n";
-    output << ")\n";
-    output << "taskkill /pid !PID! /f >> \"!LOG!\" 2>&1\n";
-    output << "for /l %%i in (1,1,60) do (\n";
-    output << "  tasklist /fi \"PID eq !PID!\" | findstr /r /c:\"!PID!\" >nul\n";
-    output << "  if errorlevel 1 goto copy_update\n";
-    output << "  timeout /t 1 /nobreak >nul\n";
-    output << ")\n";
-    output << ">> \"!LOG!\" echo process did not exit\n";
-    output << "exit /b 3\n";
-    output << ":copy_update\n";
-    output << "attrib -R \"!TARGET!\" >> \"!LOG!\" 2>&1\n";
-    output << "for /l %%i in (1,1,60) do (\n";
-    output << "  >> \"!LOG!\" echo copy attempt %%i\n";
-    output << "  copy /y \"!UPDATE!\" \"!TARGET!\" >> \"!LOG!\" 2>&1\n";
-    output << "  if not errorlevel 1 goto copy_done\n";
-    output << "  timeout /t 1 /nobreak >nul\n";
-    output << ")\n";
-    output << ">> \"!LOG!\" echo copy failed after 60 attempts\n";
-    output << "exit /b 4\n";
-    output << ":copy_done\n";
-    output << ">> \"!LOG!\" echo copy succeeded\n";
-    if (restartAfterApply) {
-        output << "start \"\" /D \"!STARTDIR!\" \"!TARGET!\"\n";
-        output << "if errorlevel 1 (\n";
-        output << "  >> \"!LOG!\" echo restart failed\n";
-        output << "  exit /b 5\n";
-        output << ")\n";
-        output << ">> \"!LOG!\" echo restart requested\n";
-    } else {
-        output << ">> \"!LOG!\" echo restart skipped\n";
-    }
-    output << ">> \"!LOG!\" echo update script finished\n";
-    output << "exit /b 0\n";
+    output << "powershell.exe -NoProfile -NonInteractive "
+              "-ExecutionPolicy Bypass -EncodedCommand "
+           << powershellEncodedCommand(script) << "\n";
+    output << "exit /b %errorlevel%\n";
     if (!output) {
         throw std::runtime_error("Failed to write app update script.");
     }
@@ -1413,6 +1473,28 @@ std::filesystem::path resolveIncomingFolderEntryPath(
         throw std::runtime_error("Folder transfer path escapes target directory.");
     }
     return targetPath;
+}
+
+std::uintmax_t existingIncomingFolderPayloadSize(
+    const std::filesystem::path& targetRoot,
+    std::uintmax_t expectedSize)
+{
+    if (!std::filesystem::is_directory(targetRoot)) {
+        return 0;
+    }
+
+    const std::vector<FolderPackageEntry> receivedEntries =
+        collectFolderPackageEntries(targetRoot);
+    std::uintmax_t receivedSize = 0;
+    for (const FolderPackageEntry& entry : receivedEntries) {
+        if (entry.type == FolderPackageEntryType::File) {
+            receivedSize += entry.fileSize;
+        }
+        if (receivedSize >= expectedSize) {
+            return expectedSize;
+        }
+    }
+    return std::min(receivedSize, expectedSize);
 }
 
 void writeIncomingFolderTransferChunk(
@@ -3047,24 +3129,28 @@ void RelayDeskRuntime::acceptSelectedPeerFileTransferToPath(
         folderTransfer,
         false);
     const bool resumeInterrupted =
-        !folderTransfer
-        && part->GetTransferState().value()
-            == relaydesk::storage::TransferState::Interrupted;
+        part->GetTransferState().value()
+        == relaydesk::storage::TransferState::Interrupted;
     const std::uintmax_t expectedSize = part->GetFileSize().value_or(0);
     std::uintmax_t resumeOffset = 0;
     if (resumeInterrupted) {
-        resumeOffset = existingIncomingPayloadSize(payloadPath, expectedSize);
-        if (resumeOffset == 0) {
-            resumeOffset = migrateLegacyIncomingPayload(
-                appPaths,
-                payloadPath,
-                part->GetTransferId().value(),
-                part->GetFileName().value(),
-                expectedSize);
+        if (folderTransfer) {
+            resumeOffset =
+                existingIncomingFolderPayloadSize(payloadPath, expectedSize);
+        } else {
+            resumeOffset = existingIncomingPayloadSize(payloadPath, expectedSize);
+            if (resumeOffset == 0) {
+                resumeOffset = migrateLegacyIncomingPayload(
+                    appPaths,
+                    payloadPath,
+                    part->GetTransferId().value(),
+                    part->GetFileName().value(),
+                    expectedSize);
+            }
         }
     }
     if (folderTransfer) {
-        prepareIncomingFolderTransferRoot(payloadPath);
+        prepareIncomingFolderTransferRootForResume(payloadPath, resumeInterrupted);
     } else if (!resumeInterrupted) {
         createIncomingPayloadFile(payloadPath);
     }
@@ -4321,23 +4407,30 @@ void RelayDeskRuntime::handleIncomingPeerFrame(relaydesk::net::PeerFrame frame)
                                             offer.GetImageTransfer());
 
         const bool resumeInterruptedTransfer =
-            !folderTransfer
-            && (existingTransfer.has_value()
-                || (offer.GetResumeRequest() && interruptedTransferFound));
+            existingTransfer.has_value()
+            || (offer.GetResumeRequest() && interruptedTransferFound);
         std::uintmax_t receivedSize = 0;
         if (resumeInterruptedTransfer) {
-            receivedSize =
-                existingIncomingPayloadSize(payloadPath, offer.GetFileSize());
-            if (receivedSize == 0) {
-                receivedSize = migrateLegacyIncomingPayload(appPaths,
-                                                            payloadPath,
-                                                            offer.GetTransferId(),
-                                                            offer.GetFileName(),
-                                                            offer.GetFileSize());
+            if (folderTransfer) {
+                receivedSize =
+                    existingIncomingFolderPayloadSize(payloadPath,
+                                                      offer.GetFileSize());
+            } else {
+                receivedSize =
+                    existingIncomingPayloadSize(payloadPath, offer.GetFileSize());
+                if (receivedSize == 0) {
+                    receivedSize = migrateLegacyIncomingPayload(
+                        appPaths,
+                        payloadPath,
+                        offer.GetTransferId(),
+                        offer.GetFileName(),
+                        offer.GetFileSize());
+                }
             }
         }
         if (folderTransfer) {
-            prepareIncomingFolderTransferRoot(payloadPath);
+            prepareIncomingFolderTransferRootForResume(payloadPath,
+                                                       resumeInterruptedTransfer);
         } else if (receivedSize == 0) {
             createIncomingPayloadFile(payloadPath);
         }

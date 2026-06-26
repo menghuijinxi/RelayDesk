@@ -568,6 +568,40 @@ relaydesk::storage::ChatMessageRecord makeInterruptedIncomingTransferRecord(
     return record;
 }
 
+relaydesk::storage::ChatMessageRecord makeInterruptedIncomingFolderTransferRecord(
+    const relaydesk::storage::AppPaths& appPaths,
+    const relaydesk::runtime::LocalUserSummary& localUser,
+    const std::filesystem::path& localPath,
+    const std::string& messageId,
+    const std::string& partId,
+    const std::string& transferId)
+{
+    relaydesk::storage::ChatMessagePart part;
+    part.SetPartId(partId);
+    part.SetType(relaydesk::storage::MessagePartType::Folder);
+    part.SetTransferId(transferId);
+    part.SetTransferState(relaydesk::storage::TransferState::Interrupted);
+    part.SetFileName("Project");
+    part.SetFileSize(4);
+    part.SetTransferredSize(2);
+    part.SetLocalPath(makeWorkRelativePath(appPaths, localPath));
+
+    relaydesk::storage::ChatMessageRecord record;
+    record.SetMessageId(messageId);
+    record.SetConversationId(
+        relaydesk::storage::makeDirectConversationId(localUser.GetDeviceId(),
+                                                     "runtime-transfer-peer"));
+    record.SetDirection(relaydesk::storage::MessageDirection::Incoming);
+    record.SetSenderDeviceId("runtime-transfer-peer");
+    record.SetReceiverDeviceId(localUser.GetDeviceId());
+    record.SetSenderDisplayNameSnapshot("Runtime Transfer Peer");
+    record.SetReceiverDisplayNameSnapshot(localUser.GetDisplayName());
+    record.SetCreatedAt("2026-06-20T10:30:00Z");
+    record.SetDeliveryState(relaydesk::storage::DeliveryState::Received);
+    record.SetParts({part});
+    return record;
+}
+
 relaydesk::runtime::RelayDeskRuntimeOptions makeTransferRuntimeOptions()
 {
     relaydesk::runtime::RelayDeskRuntimeOptions options = makeTestRuntimeOptions();
@@ -687,6 +721,40 @@ relaydesk::storage::ChatMessageRecord makeOutgoingFolderTransferRecord(
     record.SetReceiverDisplayNameSnapshot("Runtime Transfer Peer");
     record.SetCreatedAt("2026-06-22T11:00:00Z");
     record.SetDeliveryState(relaydesk::storage::DeliveryState::Sent);
+    record.SetParts({part});
+    return record;
+}
+
+relaydesk::storage::ChatMessageRecord makeOutgoingInterruptedFolderTransferRecord(
+    const relaydesk::storage::AppPaths& appPaths,
+    const relaydesk::runtime::LocalUserSummary& localUser,
+    const std::filesystem::path& localPath,
+    const std::string& messageId,
+    const std::string& partId,
+    const std::string& transferId)
+{
+    relaydesk::storage::ChatMessagePart part;
+    part.SetPartId(partId);
+    part.SetType(relaydesk::storage::MessagePartType::Folder);
+    part.SetTransferId(transferId);
+    part.SetTransferState(relaydesk::storage::TransferState::Interrupted);
+    part.SetFileName("Project");
+    part.SetFileSize(4);
+    part.SetTransferredSize(2);
+    part.SetLocalPath(makeWorkRelativePath(appPaths, localPath));
+
+    relaydesk::storage::ChatMessageRecord record;
+    record.SetMessageId(messageId);
+    record.SetConversationId(
+        relaydesk::storage::makeDirectConversationId(localUser.GetDeviceId(),
+                                                     "runtime-transfer-peer"));
+    record.SetDirection(relaydesk::storage::MessageDirection::Outgoing);
+    record.SetSenderDeviceId(localUser.GetDeviceId());
+    record.SetReceiverDeviceId("runtime-transfer-peer");
+    record.SetSenderDisplayNameSnapshot(localUser.GetDisplayName());
+    record.SetReceiverDisplayNameSnapshot("Runtime Transfer Peer");
+    record.SetCreatedAt("2026-06-22T12:00:00Z");
+    record.SetDeliveryState(relaydesk::storage::DeliveryState::Pending);
     record.SetParts({part});
     return record;
 }
@@ -2065,6 +2133,168 @@ int acceptsIncomingFolderTransferAndExtractsPayload()
     return 0;
 }
 
+int resumesInterruptedIncomingFolderTransferFromExistingFiles()
+{
+    const relaydesk::storage::AppPaths appPaths =
+        relaydesk::storage::createAppPaths();
+    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    relaydesk::storage::ensureAppDirectories(appPaths);
+
+    const std::filesystem::path targetRoot =
+        appPaths.GetInboxDirectory() / "Project";
+    writeBytes(targetRoot / "a-root.txt", {'A', 'B'});
+
+    const std::uint16_t runtimeListenPort = reserveAvailableTcpPort();
+    relaydesk::runtime::RelayDeskRuntimeOptions options =
+        makeTransferRuntimeOptions();
+    options.SetTcpListenPort(runtimeListenPort);
+
+    struct ReceivedTransferFrames {
+        std::mutex mutex;
+        std::vector<relaydesk::net::PeerFrame> frames;
+    };
+
+    ReceivedTransferFrames received;
+    relaydesk::net::BoostAsioTcpPeerTransport sender(0);
+    sender.SetFrameCallback(
+        [&received](relaydesk::net::PeerFrame frame,
+                    std::string,
+                    std::uint16_t) {
+            std::lock_guard lock(received.mutex);
+            received.frames.push_back(std::move(frame));
+        });
+    sender.start();
+
+    struct SenderStopper {
+        relaydesk::net::BoostAsioTcpPeerTransport& sender;
+
+        ~SenderStopper()
+        {
+            sender.stop();
+        }
+    } senderStopper{sender};
+
+    const std::string messageId = "incoming-folder-resume-message";
+    const std::string partId = "incoming-folder-resume-part";
+    const std::string transferId = "incoming-folder-resume-transfer";
+    constexpr std::uintmax_t folderPayloadSize = 4;
+
+    {
+        TestableRelayDeskRuntime runtime(options);
+        if (!runtime.GetStartupErrorMessage().empty()) {
+            return fail("Runtime startup failed: "
+                        + runtime.GetStartupErrorMessage());
+        }
+
+        runtime.receivePeerProfile(
+            makeTransferPeerProfile(sender.GetLocalPort()),
+            true);
+        runtime.loadSelectedTransferRecord(
+            makeInterruptedIncomingFolderTransferRecord(appPaths,
+                                                        runtime.GetLocalUser(),
+                                                        targetRoot,
+                                                        messageId,
+                                                        partId,
+                                                        transferId));
+
+        runtime.acceptSelectedPeerFileTransfer(messageId, partId, true);
+        if (!waitForCondition(runtime, [&received] {
+                std::lock_guard lock(received.mutex);
+                return !received.frames.empty();
+            })) {
+            return fail("Interrupted folder accept frame was not sent.");
+        }
+
+        {
+            std::lock_guard lock(received.mutex);
+            const relaydesk::net::TransferAcceptMessage accept =
+                relaydesk::net::parseTransferAcceptFrame(received.frames.front());
+            if (const int result =
+                    expect(accept.GetResumeOffset() == 2,
+                           "Interrupted folder accept offset mismatch.");
+                result != 0) {
+                return result;
+            }
+        }
+
+        std::vector<relaydesk::net::PeerFrame> payloadFrames;
+        payloadFrames.push_back(
+            relaydesk::net::makeTransferOfferFrame(
+                makeFolderTransferOffer(messageId,
+                                        partId,
+                                        transferId,
+                                        folderPayloadSize)));
+        payloadFrames.push_back(
+            relaydesk::net::makeTransferChunkFrame(
+                makeFolderTransferChunk(messageId,
+                                        partId,
+                                        transferId,
+                                        2,
+                                        "nested/child.txt",
+                                        0,
+                                        false),
+                std::vector<std::uint8_t>({'C', 'D'})));
+        payloadFrames.push_back(
+            relaydesk::net::makeTransferCompleteFrame(
+                makeFolderTransferComplete(messageId,
+                                           partId,
+                                           transferId,
+                                           folderPayloadSize)));
+        std::size_t payloadFrameIndex = 0;
+        sender.sendFramesTo(
+            "127.0.0.1",
+            runtimeListenPort,
+            [&payloadFrames,
+             &payloadFrameIndex]() -> std::optional<relaydesk::net::PeerFrame> {
+                if (payloadFrameIndex >= payloadFrames.size()) {
+                    return std::nullopt;
+                }
+                return payloadFrames[payloadFrameIndex++];
+            });
+
+        if (!waitForCondition(runtime, [&runtime] {
+                const auto& messages = runtime.GetSelectedPeerMessages();
+                if (messages.empty() || messages.front().GetParts().empty()) {
+                    return false;
+                }
+                const auto& part = messages.front().GetParts().front();
+                return part.GetTransferState().has_value()
+                    && part.GetTransferState().value()
+                        == relaydesk::storage::TransferState::Completed;
+            })) {
+            return fail("Interrupted folder transfer did not resume.");
+        }
+
+        if (const int result = expect(readTextFile(targetRoot / "a-root.txt") == "AB",
+                                      "Resumed folder root file was lost.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(readTextFile(targetRoot / "nested" / "child.txt") == "CD",
+                       "Resumed folder nested file mismatch.");
+            result != 0) {
+            return result;
+        }
+
+        const auto& part = runtime.GetSelectedPeerMessages()
+                               .front()
+                               .GetParts()
+                               .front();
+        if (const int result =
+                expect(part.GetTransferredSize().has_value()
+                           && part.GetTransferredSize().value()
+                               == folderPayloadSize,
+                       "Resumed folder progress did not reach content size.");
+            result != 0) {
+            return result;
+        }
+    }
+
+    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    return 0;
+}
+
 int sendsOutgoingFolderTransferWithPackageProgressAndSourcePath()
 {
     const relaydesk::storage::AppPaths appPaths =
@@ -2518,12 +2748,81 @@ int runProcessResumeChild(std::uint16_t receiverPort,
     return 0;
 }
 
+int runProcessFolderResumeChild(std::uint16_t receiverPort,
+                                std::uint16_t listenPort,
+                                const std::filesystem::path& statusFile)
+{
+    const relaydesk::storage::AppPaths appPaths =
+        relaydesk::storage::createAppPaths();
+    const std::filesystem::path sourceFolder =
+        appPaths.GetWorkDirectory() / "Project";
+    if (!std::filesystem::is_regular_file(sourceFolder / "a-root.txt")
+        || !std::filesystem::is_regular_file(sourceFolder / "nested" / "child.txt")) {
+        return fail("Folder resume child source folder was not prepared.");
+    }
+
+    relaydesk::runtime::RelayDeskRuntimeOptions options =
+        makeTransferRuntimeOptions();
+    options.SetTcpListenPort(listenPort);
+    TestableRelayDeskRuntime runtime(options);
+    if (!runtime.GetStartupErrorMessage().empty()) {
+        return fail("Runtime startup failed: "
+                    + runtime.GetStartupErrorMessage());
+    }
+
+    runtime.receivePeerProfile(
+        makeTransferPeerProfile(receiverPort),
+        true);
+    if (!waitForCondition(runtime, [&runtime] {
+            return !runtime.GetPeers().empty();
+        })) {
+        return fail("Folder resume child did not receive peer profile.");
+    }
+
+    runtime.selectPeer("runtime-transfer-peer");
+    if (!waitForCondition(runtime, [&runtime] {
+            return runtime.GetSelectedPeer().has_value()
+                && !runtime.GetSelectedPeerMessages().empty();
+        })) {
+        return fail("Folder resume child did not load persisted transfer history.");
+    }
+
+    const std::string messageId = "process-folder-resume-message";
+    const std::string partId = "process-folder-resume-part";
+    runtime.sendSelectedPeerFileTransfer(messageId, partId);
+    if (!waitForCondition(runtime, [&runtime, &messageId, &partId] {
+            for (const auto& message : runtime.GetSelectedPeerMessages()) {
+                if (message.GetMessageId() != messageId) {
+                    continue;
+                }
+                for (const auto& part : message.GetParts()) {
+                    if (part.GetPartId() != partId) {
+                        continue;
+                    }
+                    return part.GetTransferState().has_value()
+                        && part.GetTransferState().value()
+                            == relaydesk::storage::TransferState::Completed
+                        && part.GetTransferredSize().has_value()
+                        && part.GetTransferredSize().value() == 4;
+                }
+            }
+            return false;
+        })) {
+        return fail("Folder resume child did not complete resumed transfer.");
+    }
+
+    writeTextFile(statusFile, "ok=1\ncompleted=1\n");
+    return 0;
+}
+
 int runsAppUpdateAcrossProcesses()
 {
     const std::filesystem::path scenarioRoot =
         makeUniqueProcessScenarioRoot("app-update");
+    const std::filesystem::path childInstallRoot =
+        scenarioRoot / L"中文更新路径";
     const std::filesystem::path childExecutablePath =
-        copyExecutableToScenarioRoot(scenarioRoot);
+        copyExecutableToScenarioRoot(childInstallRoot);
     const std::filesystem::path statusFile = scenarioRoot / "child-status.txt";
     const std::vector<std::uint8_t> expectedPayload =
         readBytes(currentExecutablePath());
@@ -2896,6 +3195,264 @@ int resumesInterruptedOutgoingTransferAcrossProcesses()
     return 0;
 }
 
+int resumesInterruptedOutgoingFolderTransferAcrossProcesses()
+{
+    const std::filesystem::path scenarioRoot =
+        makeUniqueProcessScenarioRoot("folder-transfer-resume");
+    const std::filesystem::path childExecutablePath =
+        copyExecutableToScenarioRoot(scenarioRoot);
+    const std::uint16_t childListenPort = reserveAvailableTcpPort();
+    const relaydesk::storage::AppPaths childAppPaths(childExecutablePath);
+    relaydesk::storage::ensureAppDirectories(childAppPaths);
+
+    const std::filesystem::path sourceFolder =
+        childAppPaths.GetWorkDirectory() / "Project";
+    writeBytes(sourceFolder / "a-root.txt", {'A', 'B'});
+    writeBytes(sourceFolder / "nested" / "child.txt", {'C', 'D'});
+
+    const std::string messageId = "process-folder-resume-message";
+    const std::string partId = "process-folder-resume-part";
+    const std::string transferId = "process-folder-resume-transfer";
+    relaydesk::runtime::LocalUserSummary localUser;
+    localUser.SetDeviceId("process-sender-device");
+    localUser.SetDisplayName("Process Sender");
+    localUser.SetHostName("PROCESS-SENDER-HOST");
+    relaydesk::storage::appendChatMessage(
+        childAppPaths,
+        "runtime-transfer-peer",
+        makeOutgoingInterruptedFolderTransferRecord(childAppPaths,
+                                                    localUser,
+                                                    sourceFolder,
+                                                    messageId,
+                                                    partId,
+                                                    transferId));
+
+    struct ReceivedTransferFrames {
+        std::mutex mutex;
+        std::vector<relaydesk::net::PeerFrame> frames;
+        std::string errorMessage;
+    };
+
+    ReceivedTransferFrames received;
+    relaydesk::net::BoostAsioTcpPeerTransport receiver(0);
+    receiver.SetFrameCallback(
+        [childListenPort,
+         &messageId,
+         &partId,
+         &received,
+         &receiver,
+         &transferId](
+            relaydesk::net::PeerFrame frame,
+            std::string address,
+            std::uint16_t) {
+            std::optional<relaydesk::net::TransferOfferMessage> offer;
+            {
+                std::lock_guard lock(received.mutex);
+                received.frames.push_back(frame);
+                if (frame.GetType()
+                    == relaydesk::net::PeerFrameType::TransferOffer) {
+                    try {
+                        offer = relaydesk::net::parseTransferOfferFrame(frame);
+                    } catch (const std::exception& error) {
+                        received.errorMessage = error.what();
+                        return;
+                    }
+                }
+            }
+
+            if (offer.has_value() && offer->GetResumeRequest()) {
+                receiver.sendFrameTo(
+                    address,
+                    childListenPort,
+                    makeTransferAcceptFrame(messageId,
+                                            partId,
+                                            transferId,
+                                            "runtime-transfer-peer",
+                                            2));
+            }
+        });
+    receiver.start();
+
+    struct ReceiverStopper {
+        relaydesk::net::BoostAsioTcpPeerTransport& receiver;
+
+        ~ReceiverStopper()
+        {
+            receiver.stop();
+        }
+    } receiverStopper{receiver};
+
+    const std::filesystem::path statusFile = scenarioRoot / "child-status.txt";
+    ChildProcessHandle childProcess = startChildProcess(
+        childExecutablePath,
+        {L"--process-folder-resume-child",
+         std::to_wstring(receiver.GetLocalPort()),
+         std::to_wstring(childListenPort),
+         statusFile.wstring()});
+    const DWORD exitCode =
+        waitForChildProcess(childProcess, std::chrono::seconds(30));
+
+    if (!waitForPredicate(
+            [&received] {
+                std::lock_guard lock(received.mutex);
+                for (const auto& frame : received.frames) {
+                    if (frame.GetType()
+                        == relaydesk::net::PeerFrameType::TransferComplete) {
+                        return true;
+                    }
+                }
+                return false;
+            },
+            std::chrono::seconds(5))) {
+        removeScenarioRoot(scenarioRoot);
+        return fail("Resumed folder transfer never reached completion.");
+    }
+
+    const std::string status = readTextFileIfExists(statusFile);
+    if (exitCode != 0) {
+        removeScenarioRoot(scenarioRoot);
+        return fail("Folder resume child process failed with exit code "
+                    + std::to_string(exitCode) + ". Status: " + status);
+    }
+    if (const int result = expect(status.find("ok=1") != std::string::npos,
+                                  "Folder resume child status file mismatch.");
+        result != 0) {
+        removeScenarioRoot(scenarioRoot);
+        return result;
+    }
+
+    {
+        std::lock_guard lock(received.mutex);
+        if (const int result =
+                expect(received.errorMessage.empty(),
+                       "Folder resume receiver failed to parse a frame: "
+                       + received.errorMessage);
+            result != 0) {
+            removeScenarioRoot(scenarioRoot);
+            return result;
+        }
+
+        bool sawResumeOffer = false;
+        bool sawDataOffer = false;
+        bool sawRemainingFileChunk = false;
+        bool sawComplete = false;
+        for (const auto& frame : received.frames) {
+            switch (frame.GetType()) {
+            case relaydesk::net::PeerFrameType::TransferOffer: {
+                const relaydesk::net::TransferOfferMessage offer =
+                    relaydesk::net::parseTransferOfferFrame(frame);
+                if (offer.GetResumeRequest()) {
+                    sawResumeOffer = true;
+                    if (const int result =
+                            expect(offer.GetFolderTransfer(),
+                                   "Folder resume offer was not marked as folder.");
+                        result != 0) {
+                        removeScenarioRoot(scenarioRoot);
+                        return result;
+                    }
+                } else {
+                    sawDataOffer = true;
+                    if (const int result =
+                            expect(offer.GetFolderTransfer(),
+                                   "Folder data offer was not marked as folder.");
+                        result != 0) {
+                        removeScenarioRoot(scenarioRoot);
+                        return result;
+                    }
+                }
+                if (const int result = expect(
+                        offer.GetMessageId() == messageId
+                            && offer.GetPartId() == partId
+                            && offer.GetTransferId() == transferId,
+                        "Folder resume offer fields mismatch.");
+                    result != 0) {
+                    removeScenarioRoot(scenarioRoot);
+                    return result;
+                }
+                break;
+            }
+            case relaydesk::net::PeerFrameType::TransferChunk: {
+                const relaydesk::net::TransferChunkMessage chunk =
+                    relaydesk::net::parseTransferChunkFrame(frame);
+                if (chunk.GetFolderDirectory()) {
+                    break;
+                }
+                if (const int result =
+                        expect(chunk.GetOffset() == 2,
+                               "Resumed folder chunk offset mismatch.");
+                    result != 0) {
+                    removeScenarioRoot(scenarioRoot);
+                    return result;
+                }
+                if (const int result =
+                        expect(chunk.GetFolderRelativePath().has_value()
+                                   && chunk.GetFolderRelativePath().value()
+                                       == "nested/child.txt",
+                               "Resumed folder chunk path mismatch.");
+                    result != 0) {
+                    removeScenarioRoot(scenarioRoot);
+                    return result;
+                }
+                if (const int result =
+                        expect(frame.GetBody()
+                                   == std::vector<std::uint8_t>({'C', 'D'}),
+                               "Resumed folder chunk payload mismatch.");
+                    result != 0) {
+                    removeScenarioRoot(scenarioRoot);
+                    return result;
+                }
+                sawRemainingFileChunk = true;
+                break;
+            }
+            case relaydesk::net::PeerFrameType::TransferComplete: {
+                const relaydesk::net::TransferCompleteMessage complete =
+                    relaydesk::net::parseTransferCompleteFrame(frame);
+                if (const int result =
+                        expect(complete.GetFileSize() == 4,
+                               "Resumed folder complete size mismatch.");
+                    result != 0) {
+                    removeScenarioRoot(scenarioRoot);
+                    return result;
+                }
+                sawComplete = true;
+                break;
+            }
+            default:
+                break;
+            }
+        }
+
+        if (const int result = expect(sawResumeOffer,
+                                      "Folder resume request was never observed.");
+            result != 0) {
+            removeScenarioRoot(scenarioRoot);
+            return result;
+        }
+        if (const int result = expect(sawDataOffer,
+                                      "Resumed folder transfer never sent data.");
+            result != 0) {
+            removeScenarioRoot(scenarioRoot);
+            return result;
+        }
+        if (const int result = expect(
+                sawRemainingFileChunk,
+                "Resumed folder transfer never sent remaining file chunk.");
+            result != 0) {
+            removeScenarioRoot(scenarioRoot);
+            return result;
+        }
+        if (const int result = expect(sawComplete,
+                                      "Resumed folder transfer never completed.");
+            result != 0) {
+            removeScenarioRoot(scenarioRoot);
+            return result;
+        }
+    }
+
+    removeScenarioRoot(scenarioRoot);
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -2924,6 +3481,15 @@ int main(int argc, char** argv)
                     return fail("Resume child mode expects ports and status file.");
                 }
                 return runProcessResumeChild(
+                    static_cast<std::uint16_t>(std::stoi(argv[2])),
+                    static_cast<std::uint16_t>(std::stoi(argv[3])),
+                    std::filesystem::path(argv[4]));
+            }
+            if (mode == "--process-folder-resume-child") {
+                if (argc != 5) {
+                    return fail("Folder resume child mode expects ports and status file.");
+                }
+                return runProcessFolderResumeChild(
                     static_cast<std::uint16_t>(std::stoi(argv[2])),
                     static_cast<std::uint16_t>(std::stoi(argv[3])),
                     std::filesystem::path(argv[4]));
@@ -2994,6 +3560,11 @@ int main(int argc, char** argv)
             incomingFolderResult != 0) {
             return incomingFolderResult;
         }
+        if (const int resumeIncomingFolderResult =
+                resumesInterruptedIncomingFolderTransferFromExistingFiles();
+            resumeIncomingFolderResult != 0) {
+            return resumeIncomingFolderResult;
+        }
         if (const int outgoingFolderResult =
                 sendsOutgoingFolderTransferWithPackageProgressAndSourcePath();
             outgoingFolderResult != 0) {
@@ -3009,7 +3580,12 @@ int main(int argc, char** argv)
             appUpdateProcessResult != 0) {
             return appUpdateProcessResult;
         }
-        return resumesInterruptedOutgoingTransferAcrossProcesses();
+        if (const int processResumeResult =
+                resumesInterruptedOutgoingTransferAcrossProcesses();
+            processResumeResult != 0) {
+            return processResumeResult;
+        }
+        return resumesInterruptedOutgoingFolderTransferAcrossProcesses();
     } catch (const std::exception& error) {
         return fail(std::string("Unhandled exception: ") + error.what());
     } catch (...) {
