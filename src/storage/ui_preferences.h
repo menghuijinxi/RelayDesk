@@ -12,5 +12,7 @@ void saveRecentEmojis(const AppPaths& appPaths,
                       const std::vector<std::string>& recentEmojis);
 bool loadLaunchAtStartupEnabled(const AppPaths& appPaths);
 void saveLaunchAtStartupEnabled(const AppPaths& appPaths, bool enabled);
+bool loadDarkModeEnabled(const AppPaths& appPaths);
+void saveDarkModeEnabled(const AppPaths& appPaths, bool enabled);
 
 }

@@ -209,6 +209,7 @@ if(RELAYDESK_HAS_EUI_NEO)
             ole32
             advapi32
             bcrypt
+            dwmapi
             winmm
         )
     else()

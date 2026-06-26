@@ -44,6 +44,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <dwmapi.h>
 #include <shellapi.h>
 #include <mmsystem.h>
 #endif
@@ -52,23 +53,24 @@ namespace {
 
 using eui::Color;
 
-constexpr Color kWindowBackground{0.972f, 0.976f, 0.980f, 1.0f};
-constexpr Color kPanelBackground{0.996f, 0.997f, 0.998f, 1.0f};
-constexpr Color kBorder{0.830f, 0.850f, 0.870f, 1.0f};
-constexpr Color kText{0.080f, 0.095f, 0.115f, 1.0f};
-constexpr Color kMutedText{0.360f, 0.390f, 0.430f, 1.0f};
-constexpr Color kSubtleText{0.560f, 0.590f, 0.620f, 1.0f};
-constexpr Color kTeal{0.000f, 0.590f, 0.590f, 1.0f};
-constexpr Color kTealSoft{0.860f, 0.965f, 0.960f, 1.0f};
-constexpr Color kSelectionFill{0.000f, 0.590f, 0.590f, 0.18f};
-constexpr Color kLinkText{0.000f, 0.440f, 0.720f, 1.0f};
-constexpr Color kAmber{0.890f, 0.560f, 0.000f, 1.0f};
-constexpr Color kAmberSoft{1.000f, 0.970f, 0.900f, 1.0f};
-constexpr Color kDanger{0.820f, 0.190f, 0.120f, 1.0f};
-constexpr Color kDangerSoft{1.000f, 0.925f, 0.900f, 1.0f};
-constexpr Color kGreen{0.250f, 0.660f, 0.160f, 1.0f};
-constexpr Color kOffline{0.630f, 0.650f, 0.670f, 1.0f};
-constexpr Color kAvatarGreen{0.080f, 0.600f, 0.440f, 1.0f};
+Color kWindowBackground{0.972f, 0.976f, 0.980f, 1.0f};
+Color kPanelBackground{0.996f, 0.997f, 0.998f, 1.0f};
+Color kBorder{0.830f, 0.850f, 0.870f, 1.0f};
+Color kText{0.080f, 0.095f, 0.115f, 1.0f};
+Color kMutedText{0.360f, 0.390f, 0.430f, 1.0f};
+Color kSubtleText{0.560f, 0.590f, 0.620f, 1.0f};
+Color kTeal{0.000f, 0.590f, 0.590f, 1.0f};
+Color kTealSoft{0.860f, 0.965f, 0.960f, 1.0f};
+Color kSelectionFill{0.000f, 0.590f, 0.590f, 0.18f};
+Color kLinkText{0.000f, 0.440f, 0.720f, 1.0f};
+Color kAmber{0.890f, 0.560f, 0.000f, 1.0f};
+Color kAmberSoft{1.000f, 0.970f, 0.900f, 1.0f};
+Color kDanger{0.820f, 0.190f, 0.120f, 1.0f};
+Color kDangerSoft{1.000f, 0.925f, 0.900f, 1.0f};
+Color kGreen{0.250f, 0.660f, 0.160f, 1.0f};
+Color kOffline{0.630f, 0.650f, 0.670f, 1.0f};
+Color kAvatarGreen{0.080f, 0.600f, 0.440f, 1.0f};
+bool kDarkModeEnabled = false;
 constexpr unsigned int kRefreshIconCodePoint = 0xE72C;
 constexpr float kContentTop = 0.0f;
 constexpr float kChatHeaderHeight = 118.0f;
@@ -620,9 +622,15 @@ components::ContextMenuStyle stickerContextMenuStyle()
 components::InputStyle settingsInputStyle()
 {
     components::InputStyle style;
-    style.background = {1.0f, 1.0f, 1.0f, 1.0f};
-    style.hover = {1.0f, 1.0f, 1.0f, 1.0f};
-    style.focused = {0.985f, 1.0f, 0.998f, 1.0f};
+    style.background = kDarkModeEnabled
+        ? Color{0.095f, 0.112f, 0.128f, 1.0f}
+        : Color{1.0f, 1.0f, 1.0f, 1.0f};
+    style.hover = kDarkModeEnabled
+        ? Color{0.115f, 0.135f, 0.150f, 1.0f}
+        : Color{1.0f, 1.0f, 1.0f, 1.0f};
+    style.focused = kDarkModeEnabled
+        ? Color{0.105f, 0.150f, 0.155f, 1.0f}
+        : Color{0.985f, 1.0f, 0.998f, 1.0f};
     style.pressed = style.focused;
     style.border = kBorder;
     style.focusBorder = kTeal;
@@ -637,10 +645,16 @@ components::InputStyle settingsInputStyle()
 components::DropdownStyle settingsDropdownStyle()
 {
     components::DropdownStyle style;
-    style.field = {1.0f, 1.0f, 1.0f, 1.0f};
-    style.fieldHover = {0.985f, 1.0f, 0.998f, 1.0f};
-    style.fieldPressed = {0.950f, 0.985f, 0.980f, 1.0f};
-    style.popup = {1.0f, 1.0f, 1.0f, 1.0f};
+    style.field = kDarkModeEnabled
+        ? Color{0.095f, 0.112f, 0.128f, 1.0f}
+        : Color{1.0f, 1.0f, 1.0f, 1.0f};
+    style.fieldHover = kDarkModeEnabled
+        ? Color{0.115f, 0.135f, 0.150f, 1.0f}
+        : Color{0.985f, 1.0f, 0.998f, 1.0f};
+    style.fieldPressed = kDarkModeEnabled
+        ? Color{0.105f, 0.150f, 0.155f, 1.0f}
+        : Color{0.950f, 0.985f, 0.980f, 1.0f};
+    style.popup = style.field;
     style.optionHover = kTealSoft;
     style.optionPressed = {0.790f, 0.940f, 0.930f, 1.0f};
     style.selected = {0.790f, 0.940f, 0.930f, 1.0f};
@@ -659,15 +673,25 @@ components::ButtonStyle settingsButtonStyle(bool primary)
     components::ButtonStyle style;
     if (primary) {
         style.normal = kTeal;
-        style.hover = {0.000f, 0.670f, 0.660f, 1.0f};
-        style.pressed = {0.000f, 0.500f, 0.500f, 1.0f};
+        style.hover = kDarkModeEnabled
+            ? Color{0.100f, 0.780f, 0.770f, 1.0f}
+            : Color{0.000f, 0.670f, 0.660f, 1.0f};
+        style.pressed = kDarkModeEnabled
+            ? Color{0.060f, 0.590f, 0.590f, 1.0f}
+            : Color{0.000f, 0.500f, 0.500f, 1.0f};
         style.text = {1.0f, 1.0f, 1.0f, 1.0f};
         style.icon = style.text;
         style.border = {1.0f, style.normal};
     } else {
-        style.normal = {1.0f, 1.0f, 1.0f, 1.0f};
-        style.hover = {0.985f, 1.0f, 0.998f, 1.0f};
-        style.pressed = {0.950f, 0.985f, 0.980f, 1.0f};
+        style.normal = kDarkModeEnabled
+            ? Color{0.095f, 0.112f, 0.128f, 1.0f}
+            : Color{1.0f, 1.0f, 1.0f, 1.0f};
+        style.hover = kDarkModeEnabled
+            ? Color{0.120f, 0.145f, 0.160f, 1.0f}
+            : Color{0.985f, 1.0f, 0.998f, 1.0f};
+        style.pressed = kDarkModeEnabled
+            ? Color{0.105f, 0.150f, 0.155f, 1.0f}
+            : Color{0.950f, 0.985f, 0.980f, 1.0f};
         style.text = kText;
         style.icon = kTeal;
         style.border = {1.0f, kBorder};
@@ -681,12 +705,20 @@ components::ButtonStyle settingsButtonStyle(bool primary)
 components::SwitchStyle settingsSwitchStyle()
 {
     components::SwitchStyle style;
-    style.off = {0.820f, 0.850f, 0.870f, 1.0f};
+    style.off = kDarkModeEnabled
+        ? Color{0.250f, 0.290f, 0.320f, 1.0f}
+        : Color{0.820f, 0.850f, 0.870f, 1.0f};
     style.on = kTeal;
-    style.knob = {1.0f, 1.0f, 1.0f, 1.0f};
+    style.knob = kDarkModeEnabled
+        ? Color{0.900f, 0.935f, 0.945f, 1.0f}
+        : Color{1.0f, 1.0f, 1.0f, 1.0f};
     style.text = kText;
-    style.rowHover = {0.900f, 0.955f, 0.950f, 1.0f};
-    style.rowPressed = {0.820f, 0.925f, 0.920f, 1.0f};
+    style.rowHover = kDarkModeEnabled
+        ? Color{0.110f, 0.145f, 0.155f, 1.0f}
+        : Color{0.900f, 0.955f, 0.950f, 1.0f};
+    style.rowPressed = kDarkModeEnabled
+        ? Color{0.085f, 0.125f, 0.135f, 1.0f}
+        : Color{0.820f, 0.925f, 0.920f, 1.0f};
     return style;
 }
 
@@ -756,6 +788,72 @@ void saveStoredRecentEmojis(const std::vector<std::string>& recentEmojis)
     }
 }
 
+void applyThemeColors(bool darkModeEnabled)
+{
+    kDarkModeEnabled = darkModeEnabled;
+    if (darkModeEnabled) {
+        kWindowBackground = {0.055f, 0.068f, 0.078f, 1.0f};
+        kPanelBackground = {0.075f, 0.089f, 0.102f, 1.0f};
+        kBorder = {0.180f, 0.215f, 0.235f, 1.0f};
+        kText = {0.910f, 0.930f, 0.945f, 1.0f};
+        kMutedText = {0.680f, 0.720f, 0.755f, 1.0f};
+        kSubtleText = {0.500f, 0.545f, 0.585f, 1.0f};
+        kTeal = {0.080f, 0.700f, 0.690f, 1.0f};
+        kTealSoft = {0.060f, 0.245f, 0.250f, 1.0f};
+        kSelectionFill = {0.080f, 0.700f, 0.690f, 0.24f};
+        kLinkText = {0.260f, 0.760f, 0.980f, 1.0f};
+        kAmber = {0.960f, 0.650f, 0.160f, 1.0f};
+        kAmberSoft = {0.250f, 0.180f, 0.085f, 1.0f};
+        kDanger = {0.960f, 0.390f, 0.310f, 1.0f};
+        kDangerSoft = {0.280f, 0.110f, 0.090f, 1.0f};
+        kGreen = {0.340f, 0.860f, 0.410f, 1.0f};
+        kOffline = {0.400f, 0.440f, 0.470f, 1.0f};
+        kAvatarGreen = {0.070f, 0.540f, 0.470f, 1.0f};
+        return;
+    }
+
+    kWindowBackground = {0.972f, 0.976f, 0.980f, 1.0f};
+    kPanelBackground = {0.996f, 0.997f, 0.998f, 1.0f};
+    kBorder = {0.830f, 0.850f, 0.870f, 1.0f};
+    kText = {0.080f, 0.095f, 0.115f, 1.0f};
+    kMutedText = {0.360f, 0.390f, 0.430f, 1.0f};
+    kSubtleText = {0.560f, 0.590f, 0.620f, 1.0f};
+    kTeal = {0.000f, 0.590f, 0.590f, 1.0f};
+    kTealSoft = {0.860f, 0.965f, 0.960f, 1.0f};
+    kSelectionFill = {0.000f, 0.590f, 0.590f, 0.18f};
+    kLinkText = {0.000f, 0.440f, 0.720f, 1.0f};
+    kAmber = {0.890f, 0.560f, 0.000f, 1.0f};
+    kAmberSoft = {1.000f, 0.970f, 0.900f, 1.0f};
+    kDanger = {0.820f, 0.190f, 0.120f, 1.0f};
+    kDangerSoft = {1.000f, 0.925f, 0.900f, 1.0f};
+    kGreen = {0.250f, 0.660f, 0.160f, 1.0f};
+    kOffline = {0.630f, 0.650f, 0.670f, 1.0f};
+    kAvatarGreen = {0.080f, 0.600f, 0.440f, 1.0f};
+}
+
+bool loadStoredDarkModeEnabled()
+{
+    try {
+        const auto paths = relaydesk::storage::createAppPaths();
+        return relaydesk::storage::loadDarkModeEnabled(paths);
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+void applyRelayDeskTitleBarTheme(bool darkModeEnabled);
+
+bool saveStoredDarkModeEnabled(bool enabled)
+{
+    try {
+        const auto paths = relaydesk::storage::createAppPaths();
+        relaydesk::storage::saveDarkModeEnabled(paths, enabled);
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 bool loadStoredLaunchAtStartupEnabled()
 {
     try {
@@ -799,6 +897,17 @@ void syncLaunchAtStartupOnAppStart()
 
     applyLaunchAtStartupEnabled(loadStoredLaunchAtStartupEnabled());
     synced = true;
+}
+
+void syncDarkModeState(eui::Ui& ui)
+{
+    bool& loaded = ui.state<bool>("settings.appearance.dark_mode.loaded");
+    bool& enabled = ui.state<bool>("settings.appearance.dark_mode");
+    if (!loaded) {
+        enabled = loadStoredDarkModeEnabled();
+        loaded = true;
+    }
+    applyThemeColors(enabled);
 }
 
 std::string filesystemPathToUtf8String(const std::filesystem::path& filePath)
@@ -4823,7 +4932,10 @@ void messageBubble(eui::Ui& ui,
                    const char* value,
                    bool outgoing)
 {
-    const Color fill = outgoing ? kTealSoft : Color{0.990f, 0.990f, 0.992f, 1.0f};
+    const Color fill = outgoing
+        ? kTealSoft
+        : (kDarkModeEnabled ? Color{0.115f, 0.135f, 0.150f, 1.0f}
+                            : Color{0.990f, 0.990f, 0.992f, 1.0f});
     rect(ui, id + ".bg", x, y, width, 42.0f, fill, 7.0f, kBorder);
     text(ui, id + ".text", x + 12.0f, y + 9.0f, width - 24.0f, 22.0f, value, 14.0f);
 }
@@ -6022,7 +6134,10 @@ void drawTransferActionButton(eui::Ui& ui,
                               bool primary,
                               const std::function<void()>& onClick)
 {
-    const Color fill = primary ? kTeal : Color{1.0f, 1.0f, 1.0f, 0.86f};
+    const Color fill = primary
+        ? kTeal
+        : (kDarkModeEnabled ? Color{0.095f, 0.112f, 0.128f, 0.92f}
+                            : Color{1.0f, 1.0f, 1.0f, 0.86f});
     const Color border = primary ? kTeal : kBorder;
     const Color foreground = primary ? Color{1.0f, 1.0f, 1.0f, 1.0f} : kText;
     rect(ui, id + ".bg", x, y, width, 22.0f, fill, 6.0f, border);
@@ -6888,7 +7003,10 @@ float drawMessageDocumentBubble(
     const float width = metrics.width;
     const float bubbleHeight = metrics.height;
     const MessageFlowLayout& layout = metrics.layout;
-    const Color fill = outgoing ? kTealSoft : Color{0.990f, 0.990f, 0.992f, 1.0f};
+    const Color fill = outgoing
+        ? kTealSoft
+        : (kDarkModeEnabled ? Color{0.115f, 0.135f, 0.150f, 1.0f}
+                            : Color{0.990f, 0.990f, 0.992f, 1.0f});
     const std::string& messageText = cachedMessageText(ui, message);
 
     rect(ui, id + ".bg", x, y, width, bubbleHeight, fill, 9.0f, kBorder);
@@ -7192,7 +7310,9 @@ void drawPeerList(eui::Ui& ui, float x, float width, float height)
     rect(ui, "peers.line", x + width, kContentTop, 1.0f, height, kBorder);
     drawLocalUserHeader(ui, x, kContentTop, width);
     rect(ui, "peers.search.bg", x + 20.0f, kContentTop + 96.0f, width - 40.0f,
-         42.0f, {1.0f, 1.0f, 1.0f, 1.0f}, 7.0f, kBorder);
+         42.0f, kDarkModeEnabled ? Color{0.095f, 0.112f, 0.128f, 1.0f}
+                                 : Color{1.0f, 1.0f, 1.0f, 1.0f},
+         7.0f, kBorder);
     icon(ui, "peers.search.icon", x + 32.0f, kContentTop + 102.0f, 30.0f, 0xE721,
          kText);
     text(ui, "peers.search.placeholder", x + 74.0f, kContentTop + 105.0f,
@@ -7619,7 +7739,7 @@ void drawChatTimelineContent(eui::Ui& ui, float width)
 
 void drawChatTimeline(eui::Ui& ui, float x, float y, float width, float height)
 {
-    rect(ui, "chat.bg", x, y, width, height, {1.0f, 1.0f, 1.0f, 1.0f});
+    rect(ui, "chat.bg", x, y, width, height, kWindowBackground);
 
     float& scrollOffset = ui.state<float>("chat.timeline.scroll.offset");
     ui.stack("chat.timeline.scroll.pos")
@@ -7757,7 +7877,8 @@ void drawRuntimeMessageDeliveryState(
          statusY,
          kFailedDeliveryStateRetryButtonSize,
          kFailedDeliveryStateRetryButtonSize,
-         Color{1.0f, 1.0f, 1.0f, 0.82f},
+         kDarkModeEnabled ? Color{0.105f, 0.125f, 0.140f, 0.92f}
+                          : Color{1.0f, 1.0f, 1.0f, 0.82f},
          10.0f,
          kBorder);
     icon(ui,
@@ -7969,7 +8090,7 @@ void drawRuntimeChatTimeline(
     const std::vector<relaydesk::storage::ChatMessageRecord>& messages,
     relaydesk::runtime::RelayDeskRuntime& runtime)
 {
-    rect(ui, "chat.bg", x, y, width, height, {1.0f, 1.0f, 1.0f, 1.0f});
+    rect(ui, "chat.bg", x, y, width, height, kWindowBackground);
 
     if (selectedPeer.has_value() && !messages.empty()) {
         float& scrollOffset = ui.state<float>("chat.runtime.scroll.offset");
@@ -8607,7 +8728,9 @@ void drawSettingsCategoryRail(eui::Ui& ui,
         const Color rowNormalFill =
             active ? kTealSoft : Color{0.0f, 0.0f, 0.0f, 0.0f};
         const Color rowHoverFill =
-            active ? kTealSoft : Color{0.955f, 0.975f, 0.975f, 1.0f};
+            active ? kTealSoft
+                   : (kDarkModeEnabled ? Color{0.105f, 0.130f, 0.145f, 1.0f}
+                                       : Color{0.955f, 0.975f, 0.975f, 1.0f});
         ui.rect("settings.rail.hit." + std::to_string(index))
             .position(rowX, rowY)
             .size(rowW, rowH)
@@ -8826,20 +8949,44 @@ void drawSettingsAppearancePage(eui::Ui& ui,
     if (fontSize < 12 || fontSize > 22) {
         fontSize = 14;
     }
+    bool& darkModeEnabled = ui.state<bool>("settings.appearance.dark_mode");
 
     drawSettingsTitle(ui, "settings.appearance.header", x, y, width,
-                      "外观", "字体大小控件先只影响这个设置页的预览。");
+                      "外观", "暗色模式会立即应用并保存到本机配置。");
     const float rowY = y + 86.0f;
     const float labelW = std::min(180.0f, width * 0.34f);
     const float fieldX = x + labelW + 26.0f;
     const float controlW = std::min(300.0f, width - labelW - 26.0f);
 
-    drawSettingsRowLabel(ui, "settings.appearance.font.label", x, rowY, labelW,
+    drawSettingsRowLabel(ui, "settings.appearance.theme.label", x, rowY, labelW,
+                         "暗色模式", "使用深色背景与低对比边框。");
+    ui.stack("settings.appearance.dark.switch.pos")
+        .position(fieldX, rowY + 3.0f)
+        .size(180.0f, 30.0f)
+        .content([&] {
+            components::toggleSwitch(ui, "settings.appearance.dark.switch")
+                .size(180.0f, 30.0f)
+                .checked(darkModeEnabled)
+                .label(darkModeEnabled ? "已开启" : "已关闭")
+                .fontSize(13.0f)
+                .style(settingsSwitchStyle())
+                .onChange([&darkModeEnabled](bool enabled) {
+                    darkModeEnabled = enabled;
+                    applyThemeColors(enabled);
+                    applyRelayDeskTitleBarTheme(enabled);
+                    saveStoredDarkModeEnabled(enabled);
+                })
+                .build();
+        })
+        .build();
+
+    const float fontRowY = rowY + 76.0f;
+    drawSettingsRowLabel(ui, "settings.appearance.font.label", x, fontRowY, labelW,
                          "字体大小", "范围先固定在 12 到 22。");
     drawSettingsButton(ui,
                        "settings.appearance.font.minus",
                        fieldX,
-                       rowY,
+                       fontRowY,
                        38.0f,
                        36.0f,
                        "-",
@@ -8850,7 +8997,7 @@ void drawSettingsAppearancePage(eui::Ui& ui,
     text(ui,
          "settings.appearance.font.value",
          fieldX + 48.0f,
-         rowY + 4.0f,
+         fontRowY + 4.0f,
          84.0f,
          28.0f,
          std::to_string(fontSize) + " px",
@@ -8860,7 +9007,7 @@ void drawSettingsAppearancePage(eui::Ui& ui,
     drawSettingsButton(ui,
                        "settings.appearance.font.plus",
                        fieldX + 142.0f,
-                       rowY,
+                       fontRowY,
                        38.0f,
                        36.0f,
                        "+",
@@ -8870,7 +9017,7 @@ void drawSettingsAppearancePage(eui::Ui& ui,
                        });
 
     const float trackX = fieldX;
-    const float trackY = rowY + 62.0f;
+    const float trackY = fontRowY + 62.0f;
     const float trackW = std::max(160.0f, controlW);
     const float progress =
         static_cast<float>(fontSize - 12) / static_cast<float>(22 - 12);
@@ -8882,11 +9029,13 @@ void drawSettingsAppearancePage(eui::Ui& ui,
          trackX + std::max(0.0f, trackW * progress - 6.0f), trackY - 5.0f,
          15.0f, 15.0f, kTeal, 8.0f);
 
-    rect(ui, "settings.appearance.preview.bg", x, rowY + 106.0f, width, 92.0f,
-         {1.0f, 1.0f, 1.0f, 1.0f}, 7.0f, kBorder);
-    text(ui, "settings.appearance.preview.title", x + 18.0f, rowY + 120.0f,
+    rect(ui, "settings.appearance.preview.bg", x, fontRowY + 106.0f, width, 92.0f,
+         kDarkModeEnabled ? Color{0.095f, 0.112f, 0.128f, 1.0f}
+                          : Color{1.0f, 1.0f, 1.0f, 1.0f},
+         7.0f, kBorder);
+    text(ui, "settings.appearance.preview.title", x + 18.0f, fontRowY + 120.0f,
          width - 36.0f, 24.0f, "预览文本", 13.0f, kMutedText);
-    text(ui, "settings.appearance.preview.text", x + 18.0f, rowY + 150.0f,
+    text(ui, "settings.appearance.preview.text", x + 18.0f, fontRowY + 150.0f,
          width - 36.0f, 30.0f, "RelayDesk 消息字体大小预览", static_cast<float>(fontSize),
          kText);
 }
@@ -9127,8 +9276,7 @@ void drawSettingsContent(eui::Ui& ui,
                          int selectedCategory,
                          relaydesk::runtime::RelayDeskRuntime& runtime)
 {
-    rect(ui, "settings.content.bg", x, y, width, height,
-         {1.0f, 1.0f, 1.0f, 1.0f});
+    rect(ui, "settings.content.bg", x, y, width, height, kWindowBackground);
     const float insetX = width < 620.0f ? 22.0f : 34.0f;
     const float contentX = x + insetX;
     const float contentY = y + 100.0f;
@@ -9172,7 +9320,7 @@ void drawSettingsPage(eui::Ui& ui,
         std::clamp(selectedCategory, 0,
                    static_cast<int>(kSettingsCategories.size()) - 1);
 
-    rect(ui, "settings.bg", x, y, width, height, {1.0f, 1.0f, 1.0f, 1.0f});
+    rect(ui, "settings.bg", x, y, width, height, kWindowBackground);
     const float railWidth = std::clamp(width * 0.27f, 184.0f, 238.0f);
     drawSettingsCategoryRail(ui, x, y, railWidth, height, selectedCategory);
 
@@ -9192,8 +9340,10 @@ void drawSettingsPage(eui::Ui& ui,
         .position(contentX + contentW - 58.0f, y + 16.0f)
         .size(42.0f, 42.0f)
         .states(Color{0.0f, 0.0f, 0.0f, 0.0f},
-                Color{0.930f, 0.960f, 0.960f, 1.0f},
-                Color{0.850f, 0.925f, 0.920f, 1.0f})
+                kDarkModeEnabled ? Color{0.105f, 0.130f, 0.145f, 1.0f}
+                                 : Color{0.930f, 0.960f, 0.960f, 1.0f},
+                kDarkModeEnabled ? Color{0.085f, 0.120f, 0.130f, 1.0f}
+                                 : Color{0.850f, 0.925f, 0.920f, 1.0f})
         .radius(21.0f)
         .onClick([&settingsOpen] {
             settingsOpen = false;
@@ -9445,6 +9595,7 @@ void drawRelayDesk(eui::Ui& ui,
 
 constexpr int kRelayDeskAppIconResourceId = 1;
 constexpr int kRelayDeskNotificationSoundResourceId = 2;
+constexpr DWORD kDwmWindowAttributeUseImmersiveDarkMode = 20;
 
 struct RelayDeskIconWindowSearchContext {
     HWND window = nullptr;
@@ -9491,6 +9642,20 @@ HWND relayDeskMainWindow()
 
     cachedWindow = findRelayDeskMainWindowForIcon();
     return cachedWindow;
+}
+
+void applyRelayDeskTitleBarTheme(bool darkModeEnabled)
+{
+    HWND window = relayDeskMainWindow();
+    if (window == nullptr) {
+        return;
+    }
+
+    const BOOL enabled = darkModeEnabled ? TRUE : FALSE;
+    (void)DwmSetWindowAttribute(window,
+                                kDwmWindowAttributeUseImmersiveDarkMode,
+                                &enabled,
+                                sizeof(enabled));
 }
 
 bool isRelayDeskMainWindowActive(HWND window)
@@ -9707,6 +9872,7 @@ void applyEmbeddedWindowIconOnce()
     static HICON largeIcon = nullptr;
     static HICON smallIcon = nullptr;
     if (applied) {
+        applyRelayDeskTitleBarTheme(kDarkModeEnabled);
         return;
     }
 
@@ -9750,6 +9916,7 @@ void applyEmbeddedWindowIconOnce()
     }
 
     applied = true;
+    applyRelayDeskTitleBarTheme(kDarkModeEnabled);
 }
 
 #else
@@ -9764,6 +9931,11 @@ void processPendingUserNotifications(
     relaydesk::runtime::RelayDeskRuntime& runtime)
 {
     (void)runtime.ConsumePendingUserNotificationCount();
+}
+
+void applyRelayDeskTitleBarTheme(bool darkModeEnabled)
+{
+    (void)darkModeEnabled;
 }
 
 #endif
@@ -9789,6 +9961,7 @@ const DslAppConfig& dslAppConfig()
 {
     ensureAppStorage();
     syncLaunchAtStartupOnAppStart();
+    applyThemeColors(loadStoredDarkModeEnabled());
     static const DslAppConfig config = DslAppConfig{}
         .title("RelayDesk")
         .pageId("relaydesk")
@@ -9815,6 +9988,8 @@ void compose(eui::Ui& ui, const eui::Screen& screen)
     bool& notificationSoundEnabled = notificationSoundEnabledState(ui);
     notificationSoundEnabledFlag().store(notificationSoundEnabled,
                                          std::memory_order_relaxed);
+    syncDarkModeState(ui);
+    applyRelayDeskTitleBarTheme(kDarkModeEnabled);
     ensureUserNotificationHandlerInstalled(runtime);
     processPendingUserNotifications(runtime);
 

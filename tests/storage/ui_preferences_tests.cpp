@@ -124,6 +124,29 @@ int roundTripsLaunchAtStartup()
                   "Enabled startup preference did not round-trip.");
 }
 
+int defaultsDarkModeToDisabled()
+{
+    const auto appPaths = makeAppPaths("dark-mode-default");
+    return expect(!relaydesk::storage::loadDarkModeEnabled(appPaths),
+                  "Missing dark mode preference should default to disabled.");
+}
+
+int roundTripsDarkMode()
+{
+    const auto appPaths = makeAppPaths("dark-mode-round-trip");
+    relaydesk::storage::saveDarkModeEnabled(appPaths, true);
+    if (const int result =
+            expect(relaydesk::storage::loadDarkModeEnabled(appPaths),
+                   "Enabled dark mode preference did not round-trip.");
+        result != 0) {
+        return result;
+    }
+
+    relaydesk::storage::saveDarkModeEnabled(appPaths, false);
+    return expect(!relaydesk::storage::loadDarkModeEnabled(appPaths),
+                  "Disabled dark mode preference did not round-trip.");
+}
+
 } // namespace
 
 int main()
@@ -147,6 +170,14 @@ int main()
     }
 
     if (const int result = roundTripsLaunchAtStartup(); result != 0) {
+        return result;
+    }
+
+    if (const int result = defaultsDarkModeToDisabled(); result != 0) {
+        return result;
+    }
+
+    if (const int result = roundTripsDarkMode(); result != 0) {
         return result;
     }
 

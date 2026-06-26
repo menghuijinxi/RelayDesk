@@ -81,6 +81,19 @@ bool readLaunchAtStartupEnabled(const nlohmann::json& value)
     return value["launch_at_startup"].get<bool>();
 }
 
+bool readDarkModeEnabled(const nlohmann::json& value)
+{
+    if (!value.contains("dark_mode")) {
+        return false;
+    }
+
+    if (!value["dark_mode"].is_boolean()) {
+        throw std::runtime_error("UI config dark mode field is invalid.");
+    }
+
+    return value["dark_mode"].get<bool>();
+}
+
 void writeConfigJson(const std::filesystem::path& filePath,
                      const nlohmann::json& value)
 {
@@ -128,6 +141,22 @@ void saveLaunchAtStartupEnabled(const AppPaths& appPaths, bool enabled)
     validateSchemaVersion(value);
     value["schema_version"] = kSchemaVersion;
     value["launch_at_startup"] = enabled;
+    writeConfigJson(appPaths.GetConfigFilePath(), value);
+}
+
+bool loadDarkModeEnabled(const AppPaths& appPaths)
+{
+    const nlohmann::json value = readConfigJson(appPaths.GetConfigFilePath());
+    validateSchemaVersion(value);
+    return readDarkModeEnabled(value);
+}
+
+void saveDarkModeEnabled(const AppPaths& appPaths, bool enabled)
+{
+    nlohmann::json value = readConfigJson(appPaths.GetConfigFilePath());
+    validateSchemaVersion(value);
+    value["schema_version"] = kSchemaVersion;
+    value["dark_mode"] = enabled;
     writeConfigJson(appPaths.GetConfigFilePath(), value);
 }
 
