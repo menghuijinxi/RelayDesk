@@ -7016,13 +7016,14 @@ void drawRuntimeLocalUserHeader(eui::Ui& ui,
     constexpr float settingsIconSize = 32.0f;
     const float settingsCenterX = x + width - 37.0f;
     const float settingsCenterY = y + 36.0f;
+    const Color settingsButtonFill =
+        settingsOpen ? kTealSoft : Color{0.0f, 0.0f, 0.0f, 0.0f};
     ui.rect("local.settings.hit")
         .position(settingsCenterX - settingsButtonSize * 0.5f,
                   settingsCenterY - settingsButtonSize * 0.5f)
         .size(settingsButtonSize, settingsButtonSize)
-        .states(settingsOpen ? kTealSoft : Color{0.0f, 0.0f, 0.0f, 0.0f},
-                kTealSoft,
-                {0.790f, 0.940f, 0.930f, 1.0f})
+        .states(settingsButtonFill, kTealSoft, kTealSoft)
+        .instantStates()
         .radius(settingsButtonSize * 0.5f)
         .onClick([&settingsOpen] {
             settingsOpen = true;
@@ -7071,6 +7072,27 @@ std::vector<PeerPreview> makePeerPreviews(
     return result;
 }
 
+std::vector<PeerPreview> filterPeerPreviewsByName(
+    const std::vector<PeerPreview>& peers,
+    const std::string& query)
+{
+    const std::string trimmedQuery = trimSearchQuery(query);
+    if (trimmedQuery.empty()) {
+        return peers;
+    }
+
+    const std::string lowercaseQuery = asciiLowercase(trimmedQuery);
+    std::vector<PeerPreview> result;
+    result.reserve(peers.size());
+    for (const PeerPreview& peer : peers) {
+        const std::string lowercaseName = asciiLowercase(peer.name);
+        if (lowercaseName.find(lowercaseQuery) != std::string::npos) {
+            result.push_back(peer);
+        }
+    }
+    return result;
+}
+
 void peerRowHitTarget(eui::Ui& ui,
                       const PeerPreview& peer,
                       int index,
@@ -7103,19 +7125,37 @@ void drawDiscoveredPeerList(eui::Ui& ui,
     rect(ui, "peers.bg", x, kContentTop, width, height, kPanelBackground);
     rect(ui, "peers.line", x + width, kContentTop, 1.0f, height, kBorder);
     drawRuntimeLocalUserHeader(ui, runtime, x, kContentTop, width);
-    rect(ui, "peers.search.bg", x + 20.0f, kContentTop + 96.0f, width - 40.0f,
-         42.0f, {1.0f, 1.0f, 1.0f, 1.0f}, 7.0f, kBorder);
-    icon(ui, "peers.search.icon", x + 32.0f, kContentTop + 102.0f, 30.0f, 0xE721,
-         kText);
-    text(ui, "peers.search.placeholder", x + 74.0f, kContentTop + 105.0f,
-         width - 112.0f, 24.0f,
-         "搜索设备", 14.0f, kSubtleText);
+    std::string& searchQuery = ui.state<std::string>("peers.search.query");
+    const float searchX = x + 20.0f;
+    const float searchY = kContentTop + 96.0f;
+    const float searchWidth = width - 40.0f;
+    ui.stack("peers.search.input.pos")
+        .position(searchX, searchY)
+        .size(searchWidth, 42.0f)
+        .content([&] {
+            components::input(ui, "peers.search.input")
+                .size(searchWidth, 42.0f)
+                .text(searchQuery)
+                .placeholder("搜索设备")
+                .fontSize(14.0f)
+                .inset(54.0f)
+                .style(settingsInputStyle())
+                .onChange([&searchQuery](const std::string& next) {
+                    searchQuery = next;
+                })
+                .build();
+        })
+        .build();
+    icon(ui, "peers.search.icon", searchX + 12.0f, searchY + 6.0f, 30.0f,
+         0xE721, kText);
 
-    const std::vector<PeerPreview> peers = makePeerPreviews(runtime);
+    const std::vector<PeerPreview> allPeers = makePeerPreviews(runtime);
+    const std::vector<PeerPreview> peers =
+        filterPeerPreviewsByName(allPeers, searchQuery);
     text(ui, "peers.online.title", x + 42.0f, kContentTop + 166.0f, 180.0f, 24.0f,
          std::string("已发现 (") + std::to_string(peers.size()) + ")", 15.0f);
 
-    if (peers.empty()) {
+    if (allPeers.empty()) {
         text(ui, "peers.empty.title", x + 42.0f, kContentTop + 214.0f,
              width - 84.0f, 24.0f, "暂无已发现设备", 14.0f, kMutedText);
         const std::string detail = runtime.GetStartupErrorMessage().empty()
@@ -7123,6 +7163,11 @@ void drawDiscoveredPeerList(eui::Ui& ui,
             : runtime.GetStartupErrorMessage();
         text(ui, "peers.empty.detail", x + 42.0f, kContentTop + 242.0f,
              width - 84.0f, 22.0f, detail, 12.0f, kSubtleText);
+        return;
+    }
+    if (peers.empty()) {
+        text(ui, "peers.empty.search", x + 42.0f, kContentTop + 214.0f,
+             width - 84.0f, 24.0f, "没有匹配的用户名", 14.0f, kMutedText);
         return;
     }
 
@@ -8559,15 +8604,21 @@ void drawSettingsCategoryRail(eui::Ui& ui,
         const auto& item = kSettingsCategories[static_cast<std::size_t>(index)];
         const float rowY = firstY + static_cast<float>(index) * (rowH + rowGap);
         const bool active = index == selectedCategory;
+        const Color rowNormalFill =
+            active ? kTealSoft : Color{0.0f, 0.0f, 0.0f, 0.0f};
+        const Color rowHoverFill =
+            active ? kTealSoft : Color{0.955f, 0.975f, 0.975f, 1.0f};
+        ui.rect("settings.rail.hit." + std::to_string(index))
+            .position(rowX, rowY)
+            .size(rowW, rowH)
+            .states(rowNormalFill, rowHoverFill, rowHoverFill)
+            .instantStates()
+            .radius(7.0f)
+            .onClick([&selectedCategory, index] {
+                selectedCategory = index;
+            })
+            .build();
         if (active) {
-            rect(ui,
-                 "settings.rail.active." + std::to_string(index),
-                 rowX,
-                 rowY,
-                 rowW,
-                 rowH,
-                 kTealSoft,
-                 7.0f);
             rect(ui,
                  "settings.rail.active.mark." + std::to_string(index),
                  rowX,
@@ -8577,18 +8628,6 @@ void drawSettingsCategoryRail(eui::Ui& ui,
                  kTeal,
                  2.0f);
         }
-        ui.rect("settings.rail.hit." + std::to_string(index))
-            .position(rowX, rowY)
-            .size(rowW, rowH)
-            .states(Color{0.0f, 0.0f, 0.0f, 0.0f},
-                    active ? kTealSoft
-                           : Color{0.955f, 0.975f, 0.975f, 1.0f},
-                    Color{0.900f, 0.955f, 0.950f, 1.0f})
-            .radius(7.0f)
-            .onClick([&selectedCategory, index] {
-                selectedCategory = index;
-            })
-            .build();
         icon(ui,
              "settings.rail.icon." + std::to_string(index),
              rowX + 12.0f,
