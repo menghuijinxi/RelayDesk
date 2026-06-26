@@ -509,6 +509,7 @@ public:
     void refreshPeersIfNeeded();
     void selectPeer(std::string deviceId);
     void loadMoreSelectedPeerMessages();
+    bool loadSelectedPeerMessagesAround(const std::string& messageId);
     void sendMessagePartsToSelectedPeer(
         std::vector<relaydesk::storage::ChatMessagePart> parts);
     void resendSelectedPeerMessage(const std::string& messageId);

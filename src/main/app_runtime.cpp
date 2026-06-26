@@ -3838,6 +3838,48 @@ void RelayDeskRuntime::loadMoreSelectedPeerMessages()
     }
 }
 
+bool RelayDeskRuntime::loadSelectedPeerMessagesAround(const std::string& messageId)
+{
+    if (selectedPeerDeviceId_.empty()
+        || !storageAvailable_
+        || messageId.empty()) {
+        return false;
+    }
+
+    try {
+        const auto appPaths = relaydesk::storage::createAppPaths();
+        std::lock_guard lock(chatHistoryStorageMutex_);
+        const auto history =
+            relaydesk::storage::loadChatHistory(appPaths, selectedPeerDeviceId_);
+        const auto& records = history.GetRecords();
+        const auto target = std::find_if(
+            records.begin(),
+            records.end(),
+            [&messageId](const relaydesk::storage::ChatMessageRecord& record) {
+                return record.GetMessageId() == messageId;
+            });
+        if (target == records.end()) {
+            return false;
+        }
+
+        const std::size_t targetIndex =
+            static_cast<std::size_t>(target - records.begin());
+        const std::size_t halfPage = kSelectedPeerMessagePageSize / 2u;
+        const std::size_t firstIndex =
+            targetIndex > halfPage ? targetIndex - halfPage : 0u;
+        const std::size_t lastIndex =
+            std::min(records.size(), firstIndex + kSelectedPeerMessagePageSize);
+        selectedPeerMessages_.assign(records.begin() + firstIndex,
+                                     records.begin() + lastIndex);
+        selectedPeerHasMoreMessages_ = firstIndex > 0u;
+        requestUiRefresh();
+        return true;
+    } catch (const std::exception& error) {
+        setStartupError(error.what());
+        return false;
+    }
+}
+
 void RelayDeskRuntime::enqueueIncomingChatMessage(
     relaydesk::storage::ChatMessageRecord record)
 {

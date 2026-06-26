@@ -91,6 +91,7 @@ constexpr float kFileDocumentCardTitleLineHeight = 22.0f;
 constexpr float kFileDocumentCardCompactTitleLineHeight = 21.0f;
 constexpr std::size_t kFileDocumentCardMaxTitleLines = 3;
 constexpr std::size_t kPeerPreviewMaxCodepointsBeforeMeasure = 96u;
+constexpr std::size_t kChatSearchMaxResults = 50u;
 constexpr float kMessageFileProgressGap = 6.0f;
 constexpr float kMessageFileProgressTrackHeight = 6.0f;
 constexpr float kMessageFileProgressDetailGap = 5.0f;
@@ -219,6 +220,13 @@ struct PeerPreview {
     bool online;
     bool selected;
     int unreadCount;
+};
+
+struct ChatSearchResult {
+    std::string messageId;
+    std::string createdAt;
+    std::string senderName;
+    std::string preview;
 };
 
 struct TransferPreview {
@@ -3199,6 +3207,35 @@ std::string singleLinePreviewText(std::string value)
     return value;
 }
 
+std::string asciiLowercase(std::string value)
+{
+    for (char& current : value) {
+        current = static_cast<char>(
+            std::tolower(static_cast<unsigned char>(current)));
+    }
+    return value;
+}
+
+std::string trimSearchQuery(std::string value)
+{
+    const auto first = std::find_if(
+        value.begin(),
+        value.end(),
+        [](unsigned char current) {
+            return std::isspace(current) == 0;
+        });
+    const auto last = std::find_if(
+        value.rbegin(),
+        value.rend(),
+        [](unsigned char current) {
+            return std::isspace(current) == 0;
+        }).base();
+    if (first >= last) {
+        return {};
+    }
+    return std::string(first, last);
+}
+
 std::string messageListPreview(
     const relaydesk::storage::ChatMessageRecord& message)
 {
@@ -3215,6 +3252,54 @@ std::string messageListPreview(
         preview += partPreview;
     }
     return preview;
+}
+
+bool chatMessageMatchesSearch(const relaydesk::storage::ChatMessageRecord& message,
+                              const std::string& lowercaseQuery,
+                              std::string& preview)
+{
+    preview = messageListPreview(message);
+    if (preview.empty()) {
+        return false;
+    }
+    return asciiLowercase(preview).find(lowercaseQuery) != std::string::npos;
+}
+
+std::vector<ChatSearchResult> searchPeerChatMessages(
+    const std::string& peerDeviceId,
+    const std::string& query)
+{
+    const std::string trimmedQuery = trimSearchQuery(query);
+    if (peerDeviceId.empty() || trimmedQuery.empty()) {
+        return {};
+    }
+
+    std::vector<ChatSearchResult> results;
+    try {
+        const auto appPaths = relaydesk::storage::createAppPaths();
+        const auto history =
+            relaydesk::storage::loadChatHistory(appPaths, peerDeviceId);
+        const std::string lowercaseQuery = asciiLowercase(trimmedQuery);
+        const auto& records = history.GetRecords();
+        for (auto iterator = records.rbegin();
+             iterator != records.rend() && results.size() < kChatSearchMaxResults;
+             ++iterator) {
+            std::string preview;
+            if (!chatMessageMatchesSearch(*iterator, lowercaseQuery, preview)) {
+                continue;
+            }
+            results.push_back(ChatSearchResult{
+                iterator->GetMessageId(),
+                iterator->GetCreatedAt(),
+                iterator->GetSenderDisplayNameSnapshot(),
+                std::move(preview),
+            });
+        }
+    } catch (const std::exception&) {
+        return {};
+    }
+
+    return results;
 }
 
 std::string fitSingleLinePreviewText(std::string value,
@@ -6927,18 +7012,28 @@ void drawRuntimeLocalUserHeader(eui::Ui& ui,
          displayName, 17.0f);
     text(ui, "local.address", x + 78.0f, y + 41.0f, width - 132.0f, 22.0f,
          makeLocalStatusText(runtime), 13.0f, kMutedText);
+    constexpr float settingsButtonSize = 38.0f;
+    constexpr float settingsIconSize = 32.0f;
+    const float settingsCenterX = x + width - 37.0f;
+    const float settingsCenterY = y + 36.0f;
     ui.rect("local.settings.hit")
-        .position(x + width - 56.0f, y + 17.0f)
-        .size(38.0f, 38.0f)
+        .position(settingsCenterX - settingsButtonSize * 0.5f,
+                  settingsCenterY - settingsButtonSize * 0.5f)
+        .size(settingsButtonSize, settingsButtonSize)
         .states(settingsOpen ? kTealSoft : Color{0.0f, 0.0f, 0.0f, 0.0f},
                 kTealSoft,
                 {0.790f, 0.940f, 0.930f, 1.0f})
-        .radius(19.0f)
+        .radius(settingsButtonSize * 0.5f)
         .onClick([&settingsOpen] {
             settingsOpen = true;
         })
         .build();
-    icon(ui, "local.settings", x + width - 50.0f, y + 21.0f, 32.0f, 0xE713, kText);
+    icon(ui, "local.settings",
+         settingsCenterX - settingsIconSize * 0.5f,
+         settingsCenterY - settingsIconSize * 0.5f,
+         settingsIconSize,
+         0xE713,
+         kText);
     rect(ui, "local.bottom.line", x, y + 76.0f, width, 1.0f, kBorder);
 }
 
@@ -7160,6 +7255,10 @@ void drawRuntimeChatHeader(
 {
     const Color statusColor =
         selectedPeer.has_value() && selectedPeer->GetOnline() ? kGreen : kOffline;
+    bool& searchOpen = ui.state<bool>("chat.search.open");
+    if (!selectedPeer.has_value()) {
+        searchOpen = false;
+    }
 
     rect(ui, "chat.header.bg", x, kContentTop, width, kChatHeaderHeight - 1.0f,
          kPanelBackground);
@@ -7174,8 +7273,19 @@ void drawRuntimeChatHeader(
          26.0f, getSelectedPeerTitle(selectedPeer), 18.0f);
     text(ui, "chat.header.ip", x + 112.0f, kContentTop + 43.0f, width - 230.0f,
          22.0f, getSelectedPeerAddress(selectedPeer), 13.0f, kMutedText);
+    ui.rect("chat.header.search.hit")
+        .position(x + width - 108.0f, kContentTop + 17.0f)
+        .size(50.0f, 50.0f)
+        .states(searchOpen ? kTealSoft : Color{0.0f, 0.0f, 0.0f, 0.0f},
+                kTealSoft,
+                {0.790f, 0.940f, 0.930f, 1.0f})
+        .radius(6.0f)
+        .onClick([&searchOpen, selectedPeer] {
+            searchOpen = selectedPeer.has_value() ? !searchOpen : false;
+        })
+        .build();
     icon(ui, "chat.header.search", x + width - 100.0f, kContentTop + 25.0f, 34.0f,
-         0xE721, kText);
+         0xE721, searchOpen ? kTeal : kText);
     icon(ui, "chat.header.more", x + width - 44.0f, kContentTop + 25.0f, 34.0f,
          0xE712, kText);
     rect(ui, "chat.tabs.chat.bg", x + 22.0f, kContentTop + 85.0f, 62.0f, 24.0f,
@@ -7186,6 +7296,227 @@ void drawRuntimeChatHeader(
          "历史", 13.0f, kMutedText, eui::HorizontalAlign::Center);
     text(ui, "chat.tabs.transfers", x + 174.0f, kContentTop + 87.0f, 72.0f,
          20.0f, "文件", 13.0f, kMutedText, eui::HorizontalAlign::Center);
+}
+
+float runtimeMessageBubbleMaxWidth(float timelineWidth,
+                                   float availableBubbleWidth);
+
+float runtimeChatTimelineScrollOffsetForMessage(
+    eui::Ui& ui,
+    float width,
+    float height,
+    const std::vector<relaydesk::storage::ChatMessageRecord>& messages,
+    const std::string& messageId)
+{
+    constexpr float avatarSize = 34.0f;
+    constexpr float sidePadding = 22.0f;
+    constexpr float avatarBubbleGap = 12.0f;
+    const float availableBubbleWidth =
+        std::max(160.0f,
+                 width
+                     - sidePadding * 2.0f
+                     - avatarSize
+                     - avatarBubbleGap
+                     - kMessageTimestampGap
+                     - kMessageTimestampWidth);
+    const float messageBubbleMaxWidth =
+        runtimeMessageBubbleMaxWidth(width, availableBubbleWidth);
+
+    float measuredContentHeight = 42.0f;
+    std::optional<float> targetY;
+    for (const auto& message : messages) {
+        const bool outgoing =
+            message.GetDirection() == relaydesk::storage::MessageDirection::Outgoing;
+        const MessageDocumentBubbleMetrics& metrics =
+            cachedMessageDocumentBubbleMetrics(ui,
+                                               message,
+                                               messageBubbleMaxWidth,
+                                               outgoing);
+        if (message.GetMessageId() == messageId) {
+            targetY = measuredContentHeight;
+        }
+        const bool failedStateInside =
+            shouldDrawFailedDeliveryStateInsideBubble(message, outgoing);
+        measuredContentHeight += metrics.height
+            + (outgoing && !failedStateInside ? 24.0f : 16.0f);
+    }
+
+    if (!targetY.has_value()) {
+        return ui.state<float>("chat.runtime.scroll.offset");
+    }
+
+    const float contentHeight = std::max(height, measuredContentHeight);
+    const float maxScrollOffset = std::max(0.0f, contentHeight - height);
+    return std::clamp(*targetY - 32.0f, 0.0f, maxScrollOffset);
+}
+
+void drawChatSearchPanel(
+    eui::Ui& ui,
+    float x,
+    float y,
+    float width,
+    float timelineHeight,
+    const std::optional<relaydesk::runtime::PeerListItem>& selectedPeer,
+    const std::vector<relaydesk::storage::ChatMessageRecord>& visibleMessages,
+    relaydesk::runtime::RelayDeskRuntime& runtime)
+{
+    bool& searchOpen = ui.state<bool>("chat.search.open");
+    if (!searchOpen || !selectedPeer.has_value()) {
+        return;
+    }
+
+    std::string& query = ui.state<std::string>("chat.search.query");
+    std::string& lastQuery = ui.state<std::string>("chat.search.last_query");
+    std::string& lastPeerDeviceId =
+        ui.state<std::string>("chat.search.last_peer_device_id");
+    std::string& selectedMessageId =
+        ui.state<std::string>("chat.search.selected_message_id");
+    std::vector<ChatSearchResult>& results =
+        ui.state<std::vector<ChatSearchResult>>("chat.search.results");
+
+    const std::string& peerDeviceId = selectedPeer->GetDeviceId();
+    if (lastPeerDeviceId != peerDeviceId) {
+        query.clear();
+        lastQuery.clear();
+        selectedMessageId.clear();
+        results.clear();
+        lastPeerDeviceId = peerDeviceId;
+    }
+
+    const std::string trimmedQuery = trimSearchQuery(query);
+    if (trimmedQuery != lastQuery) {
+        results = searchPeerChatMessages(peerDeviceId, trimmedQuery);
+        selectedMessageId.clear();
+        lastQuery = trimmedQuery;
+    }
+
+    const float panelWidth = std::min(420.0f, std::max(300.0f, width - 48.0f));
+    const float panelX = x + width - panelWidth - 24.0f;
+    const float panelY = y + 12.0f;
+    const float panelHeight = 390.0f;
+    rect(ui, "chat.search.panel.shadow", panelX + 3.0f, panelY + 4.0f,
+         panelWidth, panelHeight, {0.030f, 0.050f, 0.080f, 0.090f}, 8.0f);
+    rect(ui, "chat.search.panel.bg", panelX, panelY, panelWidth, panelHeight,
+         kPanelBackground, 8.0f, kBorder);
+
+    text(ui, "chat.search.title", panelX + 18.0f, panelY + 14.0f,
+         panelWidth - 80.0f, 24.0f, "搜索聊天记录", 15.0f, kText);
+    ui.rect("chat.search.close.hit")
+        .position(panelX + panelWidth - 46.0f, panelY + 8.0f)
+        .size(34.0f, 34.0f)
+        .states(Color{0.0f, 0.0f, 0.0f, 0.0f}, kTealSoft,
+                {0.790f, 0.940f, 0.930f, 1.0f})
+        .radius(6.0f)
+        .onClick([&searchOpen] {
+            searchOpen = false;
+        })
+        .build();
+    icon(ui, "chat.search.close.icon", panelX + panelWidth - 39.0f,
+         panelY + 15.0f, 20.0f, 0xE711, kMutedText);
+
+    const float inputWidth = panelWidth - 36.0f;
+    ui.stack("chat.search.input.pos")
+        .position(panelX + 18.0f, panelY + 54.0f)
+        .size(inputWidth, 42.0f)
+        .content([&] {
+            components::input(ui, "chat.search.input")
+                .size(inputWidth, 42.0f)
+                .text(query)
+                .placeholder("搜索文字、文件名或图片说明")
+                .fontSize(14.0f)
+                .inset(12.0f)
+                .style(settingsInputStyle())
+                .onChange([&query](const std::string& next) {
+                    query = next;
+                })
+                .build();
+        })
+        .build();
+
+    const float resultStartY = panelY + 138.0f;
+    if (trimmedQuery.empty()) {
+        text(ui, "chat.search.empty.query", panelX + 18.0f, resultStartY,
+             panelWidth - 36.0f, 28.0f, "输入关键词后搜索当前设备的聊天信息",
+             13.0f, kMutedText);
+        return;
+    }
+
+    if (results.empty()) {
+        text(ui, "chat.search.empty.results", panelX + 18.0f, resultStartY,
+             panelWidth - 36.0f, 28.0f, "没有找到匹配的聊天信息",
+             13.0f, kMutedText);
+        return;
+    }
+
+    text(ui, "chat.search.count", panelX + 18.0f, resultStartY - 24.0f,
+         panelWidth - 36.0f, 20.0f,
+         std::string("找到 ") + std::to_string(results.size()) + " 条结果",
+         12.0f, kMutedText);
+
+    const std::size_t visibleCount = std::min<std::size_t>(results.size(), 4u);
+    for (std::size_t index = 0; index < visibleCount; ++index) {
+        const ChatSearchResult& result = results[index];
+        const float rowY = resultStartY + static_cast<float>(index) * 52.0f;
+        const bool selected = result.messageId == selectedMessageId;
+        ui.rect("chat.search.result.hit." + std::to_string(index))
+            .position(panelX + 12.0f, rowY - 4.0f)
+            .size(panelWidth - 24.0f, 48.0f)
+            .states(selected ? kTealSoft : Color{0.0f, 0.0f, 0.0f, 0.0f},
+                    kPanelBackground,
+                    {0.790f, 0.940f, 0.930f, 1.0f})
+            .radius(6.0f)
+            .onClick([&selectedMessageId,
+                      &ui,
+                      &visibleMessages,
+                      &runtime,
+                      result,
+                      width,
+                      timelineHeight] {
+                selectedMessageId = result.messageId;
+                const bool loadedTarget =
+                    std::any_of(visibleMessages.begin(),
+                                visibleMessages.end(),
+                                [&result](
+                                    const relaydesk::storage::ChatMessageRecord& message) {
+                                    return message.GetMessageId() == result.messageId;
+                                })
+                    || runtime.loadSelectedPeerMessagesAround(result.messageId);
+                const auto& messages = runtime.GetSelectedPeerMessages();
+                if (!loadedTarget || messages.empty()) {
+                    return;
+                }
+                ui.state<float>("chat.runtime.scroll.offset") =
+                    runtimeChatTimelineScrollOffsetForMessage(ui,
+                                                              width,
+                                                              timelineHeight,
+                                                              messages,
+                                                              result.messageId);
+                ui.state<bool>("chat.runtime.scroll.search_jump_pending") = true;
+                ++ui.state<std::uint64_t>("chat.runtime.scroll.auto_revision");
+            })
+            .build();
+
+        const std::string senderName =
+            result.senderName.empty() ? std::string("聊天消息") : result.senderName;
+        const std::string meta =
+            senderName + "  " + formatMessageTimestamp(result.createdAt);
+        text(ui, "chat.search.result.meta." + std::to_string(index),
+             panelX + 24.0f, rowY, panelWidth - 48.0f, 18.0f, meta,
+             11.0f, kMutedText);
+        const std::string preview = fitSingleLinePreviewText(
+            result.preview, panelWidth - 48.0f, 13.0f);
+        text(ui, "chat.search.result.preview." + std::to_string(index),
+             panelX + 24.0f, rowY + 21.0f, panelWidth - 48.0f, 20.0f,
+             preview, 13.0f, kText);
+    }
+
+    if (results.size() > visibleCount) {
+        text(ui, "chat.search.more", panelX + 18.0f,
+             resultStartY + static_cast<float>(visibleCount) * 52.0f + 2.0f,
+             panelWidth - 36.0f, 20.0f,
+             "仅显示最近 4 条，继续缩小关键词可定位更多结果",
+             12.0f, kMutedText);
+    }
 }
 
 void drawChatTimelineContent(eui::Ui& ui, float width)
@@ -7624,6 +7955,8 @@ void drawRuntimeChatTimeline(
             ui.state<float>("chat.runtime.scroll.previous_content_height");
         std::uint64_t& autoScrollRevision =
             ui.state<std::uint64_t>("chat.runtime.scroll.auto_revision");
+        bool& searchJumpPending =
+            ui.state<bool>("chat.runtime.scroll.search_jump_pending");
         const std::string& peerDeviceId = selectedPeer->GetDeviceId();
         const std::string& headMessageId = messages.front().GetMessageId();
         const std::string& tailMessageId = messages.back().GetMessageId();
@@ -7665,7 +7998,11 @@ void drawRuntimeChatTimeline(
             std::abs(previousContentHeight - contentHeight) > 0.5f;
         const bool wasAtBottom = previousMaxScrollOffset <= 0.5f
             || scrollOffset >= previousMaxScrollOffset - 8.0f;
-        if (peerChanged || ((tailChanged || contentHeightChanged) && wasAtBottom)) {
+        if (searchJumpPending) {
+            scrollOffset = std::clamp(scrollOffset, 0.0f, maxScrollOffset);
+            searchJumpPending = false;
+        } else if (peerChanged
+                   || ((tailChanged || contentHeightChanged) && wasAtBottom)) {
             scrollOffset = maxScrollOffset;
             ++autoScrollRevision;
         } else if (olderMessagesPrepended && !wasAtBottom) {
@@ -9052,6 +9389,14 @@ void drawRelayDesk(eui::Ui& ui,
                         layout.chatWidth,
                         runtime,
                         selectedPeer);
+    drawChatSearchPanel(ui,
+                        layout.chatX,
+                        kContentTop + kChatHeaderHeight,
+                        layout.chatWidth,
+                        timelineHeight,
+                        selectedPeer,
+                        runtime.GetSelectedPeerMessages(),
+                        runtime);
 
     drawImagePreviewOverlay(ui, layout.width, layout.height);
     drawAppUpdatePromptOverlay(ui, layout.width, layout.height, runtime);
