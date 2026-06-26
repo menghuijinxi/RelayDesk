@@ -112,6 +112,10 @@ else()
     set(RELAYDESK_EUI_NEO_SOURCE_DIR "${eui_neo_SOURCE_DIR}")
 endif()
 
+set(RELAYDESK_BUILD_DIR "${CMAKE_BINARY_DIR}")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/PatchEuiNeoAppShortcuts.cmake")
+relaydesk_patch_eui_neo_app_shortcuts("${RELAYDESK_EUI_NEO_SOURCE_DIR}")
+
 if(TARGET eui_neo)
     set(RELAYDESK_HAS_EUI_NEO ON)
     if(RELAYDESK_USE_SKIA_EUI_BACKEND)

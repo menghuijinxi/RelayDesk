@@ -59,6 +59,99 @@ function(relaydesk_patch_eui_neo_app_shortcuts eui_source_dir)
         endif()
     endif()
 
+    set(eui_input_types_source "${eui_source_dir}/core/input/input_types.h")
+    if(EXISTS "${eui_input_types_source}")
+        file(READ "${eui_input_types_source}" eui_input_types_content)
+        set(eui_input_types_changed OFF)
+        string(FIND "${eui_input_types_content}"
+                    "    bool paste = false;\n"
+                    eui_input_types_paste_member_pos)
+        if(eui_input_types_paste_member_pos LESS 0)
+            string(REPLACE "    std::string pasteText;\n    bool backspace = false;\n"
+                           "    std::string pasteText;\n    bool paste = false;\n    bool backspace = false;\n"
+                           eui_input_types_content
+                           "${eui_input_types_content}")
+            set(eui_input_types_changed ON)
+        endif()
+
+        string(FIND "${eui_input_types_content}"
+                    "return !text.empty() || !pasteText.empty() || paste || backspace"
+                    eui_input_types_paste_has_input_pos)
+        if(eui_input_types_paste_has_input_pos LESS 0)
+            string(REPLACE "return !text.empty() || !pasteText.empty() || backspace"
+                           "return !text.empty() || !pasteText.empty() || paste || backspace"
+                           eui_input_types_content
+                           "${eui_input_types_content}")
+            set(eui_input_types_changed ON)
+        endif()
+
+        if(eui_input_types_changed)
+            file(WRITE "${eui_input_types_source}" "${eui_input_types_content}")
+            set(eui_patched_app_shortcuts ON)
+        endif()
+    endif()
+
+    set(eui_input_state_source "${eui_source_dir}/core/input/input_state.h")
+    if(EXISTS "${eui_input_state_source}")
+        file(READ "${eui_input_state_source}" eui_input_state_content)
+        set(eui_input_state_changed OFF)
+        string(FIND "${eui_input_state_content}"
+                    "    bool paste = false;\n"
+                    eui_input_state_paste_member_pos)
+        if(eui_input_state_paste_member_pos LESS 0)
+            string(REPLACE "    std::string pasteText;\n    double scrollX = 0.0;\n"
+                           "    std::string pasteText;\n    bool paste = false;\n    double scrollX = 0.0;\n"
+                           eui_input_state_content
+                           "${eui_input_state_content}")
+            set(eui_input_state_changed ON)
+        endif()
+
+        string(CONCAT eui_input_state_text_paste_block
+            "    if (ctrl && key == InputKey::V) {\n"
+            "        queue.pasteText += core::window::clipboardText(window);\n"
+            "        return;\n"
+            "    }\n"
+        )
+        string(CONCAT eui_input_state_marked_paste_block
+            "    if (ctrl && key == InputKey::V) {\n"
+            "        queue.paste = true;\n"
+            "        queue.pasteText += core::window::clipboardText(window);\n"
+            "        return;\n"
+            "    }\n"
+        )
+        string(FIND "${eui_input_state_content}"
+                    "        queue.paste = true;\n"
+                    eui_input_state_queue_paste_pos)
+        if(eui_input_state_queue_paste_pos LESS 0)
+            string(FIND "${eui_input_state_content}"
+                        "${eui_input_state_text_paste_block}"
+                        eui_input_state_text_paste_pos)
+            if(eui_input_state_text_paste_pos GREATER_EQUAL 0)
+                string(REPLACE "${eui_input_state_text_paste_block}"
+                               "${eui_input_state_marked_paste_block}"
+                               eui_input_state_content
+                               "${eui_input_state_content}")
+                set(eui_input_state_changed ON)
+            endif()
+        endif()
+
+        string(FIND "${eui_input_state_content}"
+                    "    keyboard.paste = queue.paste;\n"
+                    eui_input_state_keyboard_paste_pos)
+        if(eui_input_state_keyboard_paste_pos LESS 0)
+            string(REPLACE "    keyboard.pasteText = std::move(queue.pasteText);\n"
+                           "    keyboard.pasteText = std::move(queue.pasteText);\n    keyboard.paste = queue.paste;\n"
+                           eui_input_state_content
+                           "${eui_input_state_content}")
+            set(eui_input_state_changed ON)
+        endif()
+
+        if(eui_input_state_changed)
+            file(WRITE "${eui_input_state_source}" "${eui_input_state_content}")
+            set(eui_patched_app_shortcuts ON)
+        endif()
+    endif()
+
     set(eui_glfw_app_source "${eui_source_dir}/core/app/glfw_app_main.cpp")
     if(EXISTS "${eui_glfw_app_source}")
         file(READ "${eui_glfw_app_source}" eui_glfw_app_content)

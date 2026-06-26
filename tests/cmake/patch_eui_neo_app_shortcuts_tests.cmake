@@ -15,10 +15,13 @@ set(eui_platform_source "${eui_source_dir}/core/platform/platform.cpp")
 set(eui_tray_bridge_source "${eui_source_dir}/core/platform/tray_bridge.c")
 set(eui_runtime_lifecycle_source
     "${eui_source_dir}/core/runtime/runtime_lifecycle.h")
+set(eui_input_types_source "${eui_source_dir}/core/input/input_types.h")
+set(eui_input_state_source "${eui_source_dir}/core/input/input_state.h")
 set(eui_tray_source "${eui_source_dir}/3rd/tray/tray.h")
 
 file(REMOVE_RECURSE "${RELAYDESK_PATCH_TEST_WORK_DIR}")
 file(MAKE_DIRECTORY "${eui_source_dir}/core/app")
+file(MAKE_DIRECTORY "${eui_source_dir}/core/input")
 file(MAKE_DIRECTORY "${eui_source_dir}/core/platform")
 file(MAKE_DIRECTORY "${eui_source_dir}/core/runtime")
 file(MAKE_DIRECTORY "${eui_source_dir}/3rd/tray")
@@ -223,6 +226,76 @@ string(CONCAT eui_runtime_lifecycle_content
 
 file(WRITE "${eui_runtime_lifecycle_source}" "${eui_runtime_lifecycle_content}")
 
+string(CONCAT eui_input_types_content
+    "#pragma once\n"
+    "\n"
+    "#include <string>\n"
+    "\n"
+    "namespace core {\n"
+    "\n"
+    "struct KeyboardEvent {\n"
+    "    std::string text;\n"
+    "    std::string pasteText;\n"
+    "    bool backspace = false;\n"
+    "\n"
+    "    bool hasInput() const {\n"
+    "        return !text.empty() || !pasteText.empty() || backspace;\n"
+    "    }\n"
+    "};\n"
+    "\n"
+    "} // namespace core\n"
+)
+
+file(WRITE "${eui_input_types_source}" "${eui_input_types_content}")
+
+string(CONCAT eui_input_state_content
+    "#pragma once\n"
+    "\n"
+    "#include \"core/input/input_types.h\"\n"
+    "\n"
+    "#include <string>\n"
+    "#include <utility>\n"
+    "\n"
+    "namespace core {\n"
+    "\n"
+    "namespace window {\n"
+    "using Handle = void*;\n"
+    "std::string clipboardText(Handle window);\n"
+    "} // namespace window\n"
+    "\n"
+    "enum class InputKey {\n"
+    "    V\n"
+    "};\n"
+    "\n"
+    "namespace detail {\n"
+    "struct InputQueue {\n"
+    "    std::string text;\n"
+    "    std::string pasteText;\n"
+    "};\n"
+    "InputQueue& inputQueue(window::Handle window);\n"
+    "} // namespace detail\n"
+    "\n"
+    "inline void queueKeyInput(window::Handle window, InputKey key, bool ctrl = false) {\n"
+    "    detail::InputQueue& queue = detail::inputQueue(window);\n"
+    "    if (ctrl && key == InputKey::V) {\n"
+    "        queue.pasteText += core::window::clipboardText(window);\n"
+    "        return;\n"
+    "    }\n"
+    "}\n"
+    "\n"
+    "inline std::pair<KeyboardEvent, int> consumeInputEvents(window::Handle window) {\n"
+    "    detail::InputQueue& queue = detail::inputQueue(window);\n"
+    "    KeyboardEvent keyboard;\n"
+    "    keyboard.text = std::move(queue.text);\n"
+    "    keyboard.pasteText = std::move(queue.pasteText);\n"
+    "    return {std::move(keyboard), 0};\n"
+    "}\n"
+    "\n"
+    "} // namespace core\n"
+)
+
+file(WRITE "${eui_input_state_source}" "${eui_input_state_content}")
+
 string(CONCAT eui_tray_content
     "#define WM_TRAY_CALLBACK_MESSAGE (WM_USER + 1)\n"
     "#define WC_TRAY_CLASS_NAME \"TRAY\"\n"
@@ -357,6 +430,36 @@ string(FIND "${patched_runtime_lifecycle_content}"
             preserve_focus_condition_pos)
 if(preserve_focus_condition_pos LESS 0)
     message(FATAL_ERROR "Non-focusable interactive clicks still clear focus")
+endif()
+
+file(READ "${eui_input_types_source}" patched_input_types_content)
+string(FIND "${patched_input_types_content}"
+            "bool paste = false"
+            input_types_paste_member_pos)
+if(input_types_paste_member_pos LESS 0)
+    message(FATAL_ERROR "KeyboardEvent does not expose a paste event flag")
+endif()
+
+string(FIND "${patched_input_types_content}"
+            "|| paste || backspace"
+            input_types_paste_has_input_pos)
+if(input_types_paste_has_input_pos LESS 0)
+    message(FATAL_ERROR "Empty-text paste events are still dropped as no input")
+endif()
+
+file(READ "${eui_input_state_source}" patched_input_state_content)
+string(FIND "${patched_input_state_content}"
+            "queue.paste = true;"
+            input_state_queue_paste_pos)
+if(input_state_queue_paste_pos LESS 0)
+    message(FATAL_ERROR "Ctrl+V does not mark paste events independently from text")
+endif()
+
+string(FIND "${patched_input_state_content}"
+            "keyboard.paste = queue.paste;"
+            input_state_keyboard_paste_pos)
+if(input_state_keyboard_paste_pos LESS 0)
+    message(FATAL_ERROR "Input queue paste flag is not forwarded to KeyboardEvent")
 endif()
 
 file(READ "${eui_tray_source}" patched_tray_content)

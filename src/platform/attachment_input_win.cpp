@@ -52,6 +52,13 @@ struct ThumbnailEncoderFormat {
     bool jpeg = false;
 };
 
+struct ClipboardDropFilesHeader {
+    DWORD pFiles = 0;
+    POINT pt{};
+    BOOL fNC = FALSE;
+    BOOL fWide = FALSE;
+};
+
 class ClipboardScope {
 public:
     ClipboardScope()
@@ -179,6 +186,45 @@ std::vector<std::filesystem::path> extractDroppedPaths(HDROP dropHandle)
         paths.emplace_back(buffer);
     }
     return paths;
+}
+
+HGLOBAL createDroppedFilesHandle(const std::filesystem::path& sourcePath)
+{
+    if (sourcePath.empty()) {
+        return nullptr;
+    }
+
+    const std::wstring pathText = sourcePath.wstring();
+    if (pathText.empty()) {
+        return nullptr;
+    }
+
+    const SIZE_T bytes =
+        sizeof(ClipboardDropFilesHeader)
+        + (pathText.size() + 2u) * sizeof(wchar_t);
+    HGLOBAL handle = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes);
+    if (handle == nullptr) {
+        return nullptr;
+    }
+
+    void* rawMemory = GlobalLock(handle);
+    if (rawMemory == nullptr) {
+        GlobalFree(handle);
+        return nullptr;
+    }
+
+    auto* dropFiles = static_cast<ClipboardDropFilesHeader*>(rawMemory);
+    dropFiles->pFiles = sizeof(ClipboardDropFilesHeader);
+    dropFiles->fWide = TRUE;
+
+    auto* target = reinterpret_cast<wchar_t*>(
+        static_cast<unsigned char*>(rawMemory)
+        + sizeof(ClipboardDropFilesHeader));
+    std::copy(pathText.begin(), pathText.end(), target);
+    target[pathText.size()] = L'\0';
+    target[pathText.size() + 1u] = L'\0';
+    GlobalUnlock(handle);
+    return handle;
 }
 
 void appendDroppedPaths(std::vector<std::filesystem::path> paths)
@@ -622,6 +668,29 @@ bool copyImageFileToClipboard(const std::filesystem::path& sourcePath)
     return true;
 }
 
+bool copyAttachmentPathToClipboard(const std::filesystem::path& sourcePath)
+{
+    HGLOBAL dropHandle = createDroppedFilesHandle(sourcePath);
+    if (dropHandle == nullptr) {
+        return false;
+    }
+
+    ClipboardScope clipboard;
+    if (!clipboard.GetOpened()) {
+        GlobalFree(dropHandle);
+        return false;
+    }
+    if (EmptyClipboard() == FALSE) {
+        GlobalFree(dropHandle);
+        return false;
+    }
+    if (SetClipboardData(CF_HDROP, dropHandle) == nullptr) {
+        GlobalFree(dropHandle);
+        return false;
+    }
+    return true;
+}
+
 std::optional<ImageSize> probeImageSize(const std::filesystem::path& sourcePath)
 {
     ComApartment apartment;
@@ -945,14 +1014,6 @@ std::optional<std::filesystem::path> selectFolderFromDialog()
     }
 
     return shellItemFilesystemPath(item.Get());
-}
-
-bool isPasteShortcutDown()
-{
-    const bool controlDown = (GetKeyState(VK_CONTROL) & 0x8000) != 0
-        || (GetKeyState(VK_LCONTROL) & 0x8000) != 0
-        || (GetKeyState(VK_RCONTROL) & 0x8000) != 0;
-    return controlDown && (GetKeyState('V') & 0x8000) != 0;
 }
 
 bool consumeBackspacePressed()

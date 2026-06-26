@@ -29,7 +29,7 @@ std::optional<std::filesystem::path> selectSavePathFromDialog(
     const std::string& suggestedFileName);
 std::optional<std::filesystem::path> selectFolderFromDialog();
 bool copyImageFileToClipboard(const std::filesystem::path& sourcePath);
-bool isPasteShortcutDown();
+bool copyAttachmentPathToClipboard(const std::filesystem::path& sourcePath);
 bool consumeBackspacePressed();
 
 }

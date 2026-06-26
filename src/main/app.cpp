@@ -2961,6 +2961,14 @@ struct OpenableMessagePath {
     bool directory = false;
 };
 
+struct MessageContextMenuState {
+    bool open = false;
+    float x = 0.0f;
+    float y = 0.0f;
+    std::string text;
+    std::string attachmentPath;
+};
+
 std::optional<OpenableMessagePath> resolveOpenableMessagePath(
     const relaydesk::storage::ChatMessagePart& part);
 
@@ -3042,6 +3050,32 @@ std::optional<OpenableMessagePath> resolveOpenableMessagePath(
         error.clear();
         if (std::filesystem::is_regular_file(filePath, error) && !error) {
             return OpenableMessagePath{filePath, false};
+        }
+    } catch (const std::exception&) {
+    }
+
+    return std::nullopt;
+}
+
+std::optional<std::filesystem::path> resolveCopyableMessageAttachmentPath(
+    const relaydesk::storage::ChatMessagePart& part)
+{
+    const bool directory =
+        part.GetType() == relaydesk::storage::MessagePartType::Folder;
+    if ((part.GetType() != relaydesk::storage::MessagePartType::File
+         && !directory)
+        || !part.GetLocalPath().has_value()
+        || part.GetLocalPath().value().empty()) {
+        return std::nullopt;
+    }
+
+    try {
+        const auto appPaths = relaydesk::storage::createAppPaths();
+        const std::filesystem::path filePath =
+            resolveWorkRelativePath(appPaths, part.GetLocalPath().value());
+        std::error_code error;
+        if (std::filesystem::exists(filePath, error) && !error) {
+            return filePath;
         }
     } catch (const std::exception&) {
     }
@@ -4792,6 +4826,13 @@ void drawComposerEditor(eui::Ui& ui,
                                         onSubmit();
                                         return;
                                     }
+                                    if (event.paste) {
+                                        insertComposerDraftAttachmentPathsAtCaret(
+                                            draftItems,
+                                            caret,
+                                            relaydesk::platform::
+                                                collectClipboardAttachmentPaths());
+                                    }
                                     handleComposerEditorKeyboardEvent(draftItems,
                                                                       caret,
                                                                       layout,
@@ -6320,7 +6361,9 @@ void drawMessageFilePart(eui::Ui& ui,
                          const relaydesk::storage::ChatMessageRecord& message,
                          const relaydesk::storage::ChatMessagePart& part,
                          bool outgoing,
-                         relaydesk::runtime::RelayDeskRuntime& runtime)
+                         relaydesk::runtime::RelayDeskRuntime& runtime,
+                         const RuntimeTimelineViewport& viewport,
+                         MessageContextMenuState& menuState)
 {
     const bool folder =
         part.GetType() == relaydesk::storage::MessagePartType::Folder;
@@ -6339,6 +6382,30 @@ void drawMessageFilePart(eui::Ui& ui,
                          true,
                          false,
                          messagePartDetailColor(part));
+    const std::optional<std::filesystem::path> copyablePath =
+        resolveCopyableMessageAttachmentPath(part);
+    if (copyablePath.has_value()) {
+        const std::string attachmentPath =
+            filesystemPathToUtf8String(copyablePath.value());
+        ui.rect(id + ".context.hit")
+            .position(x, y)
+            .size(std::max(1.0f, width), std::max(1.0f, cardHeight))
+            .color({0.0f, 0.0f, 0.0f, 0.0f})
+            .onContextMenu([viewport,
+                            attachmentPath,
+                            &menuState](const eui::PointerEvent& event,
+                                         const eui::Rect&) {
+                menuState.open = true;
+                menuState.x = static_cast<float>(event.x) - viewport.x;
+                menuState.y = static_cast<float>(event.y)
+                    - viewport.y
+                    + viewport.scrollOffset;
+                menuState.text.clear();
+                menuState.attachmentPath = attachmentPath;
+            })
+            .build();
+    }
+
     float actionBaseY = y + cardHeight;
     if (shouldShowTransferProgressBlock(part)) {
         drawMessageFileProgress(ui,
@@ -6710,6 +6777,12 @@ void drawMessageFlowTextInteractionLayer(
     float scrollOffset,
     const std::string& messageId,
     const std::string& messageText,
+    const RuntimeTimelineViewport& viewport,
+    bool& menuOpen,
+    float& menuX,
+    float& menuY,
+    std::string& menuText,
+    std::string& menuAttachmentPath,
     MessageTextSelectionState& selection)
 {
     if (layout.textAtoms.empty()) {
@@ -6821,6 +6894,22 @@ void drawMessageFlowTextInteractionLayer(
                 (void)core::platform::openUrl(linkUrl);
             }
         })
+        .onContextMenu([viewport,
+                        messageText,
+                        &menuOpen,
+                        &menuX,
+                        &menuY,
+                        &menuText,
+                        &menuAttachmentPath](const eui::PointerEvent& event,
+                                             const eui::Rect&) {
+            menuOpen = true;
+            menuX = static_cast<float>(event.x) - viewport.x;
+            menuY = static_cast<float>(event.y)
+                - viewport.y
+                + viewport.scrollOffset;
+            menuText = messageText;
+            menuAttachmentPath.clear();
+        })
         .onTextInput([&selection,
                       messageId,
                       messageText,
@@ -6844,6 +6933,38 @@ void drawMessageFlowTextInteractionLayer(
                 core::window::setClipboardText(
                     utf8SubstringByCodepointRange(messageText, begin, end));
             }
+        })
+        .build();
+}
+
+void drawMessageBubbleContextLayer(eui::Ui& ui,
+                                   const std::string& id,
+                                   float x,
+                                   float y,
+                                   float width,
+                                   float height,
+                                   const RuntimeTimelineViewport& viewport,
+                                   const std::string& messageText,
+                                   MessageContextMenuState& menuState)
+{
+    if (messageText.empty()) {
+        return;
+    }
+
+    ui.rect(id + ".context.hit")
+        .position(x, y)
+        .size(std::max(1.0f, width), std::max(1.0f, height))
+        .color({0.0f, 0.0f, 0.0f, 0.0f})
+        .onContextMenu([viewport, messageText, &menuState](
+                           const eui::PointerEvent& event,
+                           const eui::Rect&) {
+            menuState.open = true;
+            menuState.x = static_cast<float>(event.x) - viewport.x;
+            menuState.y = static_cast<float>(event.y)
+                - viewport.y
+                + viewport.scrollOffset;
+            menuState.text = messageText;
+            menuState.attachmentPath.clear();
         })
         .build();
 }
@@ -6934,7 +7055,8 @@ void drawMessagePartNode(eui::Ui& ui,
                          float& stickerMenuY,
                          std::string& stickerMenuPath,
                          std::string& stickerMenuName,
-                         std::string& stickerMenuCopyPath)
+                         std::string& stickerMenuCopyPath,
+                         MessageContextMenuState& messageMenuState)
 {
     switch (part.GetType()) {
     case relaydesk::storage::MessagePartType::Image:
@@ -6963,7 +7085,9 @@ void drawMessagePartNode(eui::Ui& ui,
                             message,
                             part,
                             outgoing,
-                            runtime);
+                            runtime,
+                            viewport,
+                            messageMenuState);
         return;
     case relaydesk::storage::MessagePartType::Folder:
         drawMessageFilePart(ui,
@@ -6974,7 +7098,9 @@ void drawMessagePartNode(eui::Ui& ui,
                             message,
                             part,
                             outgoing,
-                            runtime);
+                            runtime,
+                            viewport,
+                            messageMenuState);
         return;
     case relaydesk::storage::MessagePartType::Text:
     case relaydesk::storage::MessagePartType::Emoji:
@@ -6998,6 +7124,7 @@ float drawMessageDocumentBubble(
     std::string& stickerMenuPath,
     std::string& stickerMenuName,
     std::string& stickerMenuCopyPath,
+    MessageContextMenuState& messageMenuState,
     MessageTextSelectionState& selection)
 {
     const float width = metrics.width;
@@ -7010,6 +7137,15 @@ float drawMessageDocumentBubble(
     const std::string& messageText = cachedMessageText(ui, message);
 
     rect(ui, id + ".bg", x, y, width, bubbleHeight, fill, 9.0f, kBorder);
+    drawMessageBubbleContextLayer(ui,
+                                  id,
+                                  x,
+                                  y,
+                                  width,
+                                  bubbleHeight,
+                                  viewport,
+                                  messageText,
+                                  messageMenuState);
 
     const float contentX = x + kMessageBubblePadding;
     const float contentY = y + kMessageBubblePadding;
@@ -7033,6 +7169,12 @@ float drawMessageDocumentBubble(
                                         viewport.scrollOffset,
                                         message.GetMessageId(),
                                         messageText,
+                                        viewport,
+                                        messageMenuState.open,
+                                        messageMenuState.x,
+                                        messageMenuState.y,
+                                        messageMenuState.text,
+                                        messageMenuState.attachmentPath,
                                         selection);
     for (std::size_t nodeIndex = 0; nodeIndex < layout.partNodes.size();
          ++nodeIndex) {
@@ -7055,7 +7197,8 @@ float drawMessageDocumentBubble(
                             stickerMenuY,
                             stickerMenuPath,
                             stickerMenuName,
-                            stickerMenuCopyPath);
+                            stickerMenuCopyPath,
+                            messageMenuState);
     }
 
     return bubbleHeight;
@@ -7972,6 +8115,8 @@ void drawRuntimeChatTimelineContent(
         ui.state<std::string>("chat.sticker.context.copy.path");
     std::string& stickerMenuStatus =
         ui.state<std::string>("chat.sticker.context.status");
+    MessageContextMenuState& messageMenuState =
+        ui.state<MessageContextMenuState>("chat.message.context.state");
     MessageTextSelectionState& messageTextSelection =
         ui.state<MessageTextSelectionState>("chat.runtime.text.selection");
 
@@ -8014,6 +8159,7 @@ void drawRuntimeChatTimelineContent(
                                                              stickerMenuPath,
                                                              stickerMenuName,
                                                              stickerMenuCopyPath,
+                                                             messageMenuState,
                                                              messageTextSelection);
         drawRuntimeMessageTimestamp(ui,
                                     id,
@@ -8075,6 +8221,32 @@ void drawRuntimeChatTimelineContent(
             })
             .onDismiss([&stickerMenuOpen] {
                 stickerMenuOpen = false;
+            })
+            .build();
+    }
+
+    if (messageMenuState.open) {
+        components::contextMenu(ui, "chat.message.context")
+            .screen(width, contentHeight)
+            .position(messageMenuState.x, messageMenuState.y)
+            .size(132.0f, 34.0f)
+            .items({"复制内容", "取消"})
+            .style(stickerContextMenuStyle())
+            .open(messageMenuState.open)
+            .onSelect([&messageMenuState](int itemIndex) {
+                if (itemIndex == 0) {
+                    if (!messageMenuState.attachmentPath.empty()) {
+                        (void)relaydesk::platform::copyAttachmentPathToClipboard(
+                            filesystemPathFromUtf8String(
+                                messageMenuState.attachmentPath));
+                    } else if (!messageMenuState.text.empty()) {
+                        core::window::setClipboardText(messageMenuState.text);
+                    }
+                }
+                messageMenuState.open = false;
+            })
+            .onDismiss([&messageMenuState] {
+                messageMenuState.open = false;
             })
             .build();
     }
@@ -8325,7 +8497,6 @@ void drawRuntimeComposer(
         ui.state<std::vector<ComposerDraftItem>>("composer.draft.items");
     std::string& stickerImportStatus =
         ui.state<std::string>("composer.stickers.import.status");
-    bool& pasteShortcutDown = ui.state<bool>("composer.clipboard.paste.down");
     bool& screenClipPending = ui.state<bool>("composer.screenshot.pending");
     std::uint32_t& screenClipClipboardSequence =
         ui.state<std::uint32_t>("composer.screenshot.clipboard.sequence");
@@ -8341,14 +8512,6 @@ void drawRuntimeComposer(
         draftItems,
         composerCaret,
         relaydesk::platform::consumeDroppedAttachmentPaths());
-    const bool pasteShortcutNow = relaydesk::platform::isPasteShortcutDown();
-    if (pasteShortcutNow && !pasteShortcutDown) {
-        insertComposerDraftAttachmentPathsAtCaret(
-            draftItems,
-            composerCaret,
-            relaydesk::platform::collectClipboardAttachmentPaths());
-    }
-    pasteShortcutDown = pasteShortcutNow;
     pollPendingScreenClipCapture(screenClipPending,
                                  screenClipClipboardSequence,
                                  screenClipStartedAt,
