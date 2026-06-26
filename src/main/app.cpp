@@ -214,7 +214,7 @@ constexpr std::array<EmojiEntry, 96> kEmojiEntries{{
 struct PeerPreview {
     std::string deviceId;
     std::string name;
-    std::string address;
+    std::string lastMessagePreview;
     bool online;
     bool selected;
     int unreadCount;
@@ -3166,6 +3166,66 @@ std::string messagePartDetail(const relaydesk::storage::ChatMessagePart& part,
     return detail;
 }
 
+std::string messagePartListPreview(const relaydesk::storage::ChatMessagePart& part)
+{
+    switch (part.GetType()) {
+    case relaydesk::storage::MessagePartType::Text:
+        return part.GetText().value_or("");
+    case relaydesk::storage::MessagePartType::Emoji:
+        return part.GetEmoji().value_or("");
+    case relaydesk::storage::MessagePartType::Image:
+        return "[图片]";
+    case relaydesk::storage::MessagePartType::File: {
+        const std::string title = messagePartTitle(part);
+        return title.empty() ? "[文件]" : "[文件] " + title;
+    }
+    case relaydesk::storage::MessagePartType::Folder: {
+        const std::string title = messagePartTitle(part);
+        return title.empty() ? "[文件夹]" : "[文件夹] " + title;
+    }
+    }
+
+    return "";
+}
+
+std::string singleLinePreviewText(std::string value)
+{
+    for (char& current : value) {
+        if (current == '\r' || current == '\n' || current == '\t') {
+            current = ' ';
+        }
+    }
+    return value;
+}
+
+std::string messageListPreview(
+    const relaydesk::storage::ChatMessageRecord& message)
+{
+    std::string preview;
+    for (const relaydesk::storage::ChatMessagePart& part : message.GetParts()) {
+        const std::string partPreview =
+            singleLinePreviewText(messagePartListPreview(part));
+        if (partPreview.empty()) {
+            continue;
+        }
+        if (!preview.empty()) {
+            preview += " ";
+        }
+        preview += partPreview;
+    }
+    return preview;
+}
+
+std::string fitSingleLinePreviewText(std::string value,
+                                     float width,
+                                     float fontSize)
+{
+    if (value.empty()) {
+        return value;
+    }
+    return fitTextToMeasuredWidth(std::move(value), width, fontSize);
+}
+
 Color messagePartDetailColor(const relaydesk::storage::ChatMessagePart& part)
 {
     if (!part.GetTransferState().has_value()) {
@@ -4621,8 +4681,16 @@ void peerRow(eui::Ui& ui,
     avatar(ui, id + ".avatar", x + 42.0f, y + 3.0f, 35.0f, peer.name);
     text(ui, id + ".name", x + 88.0f, y - 2.0f, width - 110.0f, 24.0f, peer.name,
          15.0f);
-    text(ui, id + ".ip", x + 88.0f, y + 23.0f, width - 110.0f, 22.0f, peer.address,
-         13.0f, kMutedText);
+    const float previewWidth = width - 110.0f;
+    text(ui,
+         id + ".preview",
+         x + 88.0f,
+         y + 23.0f,
+         previewWidth,
+         22.0f,
+         fitSingleLinePreviewText(peer.lastMessagePreview, previewWidth, 13.0f),
+         13.0f,
+         kMutedText);
 
     if (peer.unreadCount > 0) {
         const std::string unreadText =
@@ -6788,14 +6856,27 @@ std::vector<PeerPreview> makePeerPreviews(
 {
     const auto& peers = runtime.GetPeers();
     const std::string& selectedDeviceId = runtime.GetSelectedPeerDeviceId();
+    const auto appPaths = relaydesk::storage::createAppPaths();
     std::vector<PeerPreview> result;
     result.reserve(peers.size());
     for (std::size_t index = 0; index < peers.size(); ++index) {
         const auto& peer = peers[index];
+        std::string lastMessagePreview;
+        try {
+            const auto history =
+                relaydesk::storage::loadRecentChatHistory(appPaths,
+                                                          peer.GetDeviceId(),
+                                                          1);
+            if (!history.GetRecords().empty()) {
+                lastMessagePreview = messageListPreview(history.GetRecords().back());
+            }
+        } catch (const std::exception&) {
+            lastMessagePreview.clear();
+        }
         result.push_back(PeerPreview{
             peer.GetDeviceId(),
             peer.GetDisplayName().empty() ? peer.GetHostName() : peer.GetDisplayName(),
-            peer.GetAddress(),
+            lastMessagePreview,
             peer.GetOnline(),
             peer.GetDeviceId() == selectedDeviceId,
             peer.GetUnreadMessageCount(),
@@ -6890,17 +6971,17 @@ void drawPeerList(eui::Ui& ui, float x, float width, float height)
          "在线 (5)", 15.0f);
 
     const std::array peers{
-        PeerPreview{"demo-alex", "Alex-PC", "192.168.1.24", true, true, 0},
+        PeerPreview{"demo-alex", "Alex-PC", "今天的构建我已经发你了", true, true, 0},
         PeerPreview{
-            "demo-desktop", "DESKTOP-J8K2TQ", "192.168.1.31", true, false, 0},
+            "demo-desktop", "DESKTOP-J8K2TQ", "[图片]", true, false, 0},
         PeerPreview{
-            "demo-laptop", "LAPTOP-9F3V2M", "192.168.1.42", true, false, 0},
-        PeerPreview{"demo-server", "DEV-SERVER", "192.168.1.10", true, false, 0},
-        PeerPreview{"demo-mark", "MARK-PC", "192.168.1.77", true, false, 0},
+            "demo-laptop", "LAPTOP-9F3V2M", "日志里最后一个错误是权限不足", true, false, 0},
+        PeerPreview{"demo-server", "DEV-SERVER", "[文件] release.zip", true, false, 0},
+        PeerPreview{"demo-mark", "MARK-PC", "收到", true, false, 0},
         PeerPreview{
-            "demo-finance", "FINANCE-PC", "192.168.1.15", false, false, 0},
-        PeerPreview{"demo-hr", "HR-LAPTOP", "192.168.1.28", false, false, 0},
-        PeerPreview{"demo-old", "OLD-PC", "192.168.1.55", false, false, 0},
+            "demo-finance", "FINANCE-PC", "这个说明文本会自动截断成省略号", false, false, 0},
+        PeerPreview{"demo-hr", "HR-LAPTOP", "", false, false, 0},
+        PeerPreview{"demo-old", "OLD-PC", "[文件夹] docs", false, false, 0},
     };
 
     const float rowGap = height < 740.0f ? 59.0f : 72.0f;
