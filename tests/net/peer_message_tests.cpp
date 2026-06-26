@@ -495,6 +495,36 @@ int roundTripsTransferChunkFrame()
                   "Decoded transfer chunk body mismatch.");
 }
 
+int roundTripsFolderTransferChunkFrame()
+{
+    relaydesk::net::TransferChunkMessage message = makeTransferChunk();
+    message.SetFolderRelativePath("nested/file.txt");
+    message.SetFolderFileOffset(8);
+    message.SetFolderDirectory(false);
+
+    const relaydesk::net::PeerFrame decodedFrame =
+        relaydesk::net::decodePeerFrame(
+            relaydesk::net::encodePeerFrame(
+                relaydesk::net::makeTransferChunkFrame(message, {})));
+    const relaydesk::net::TransferChunkMessage decoded =
+        relaydesk::net::parseTransferChunkFrame(decodedFrame);
+    if (const int check =
+            expect(decoded.GetFolderRelativePath().has_value()
+                       && decoded.GetFolderRelativePath().value()
+                           == "nested/file.txt",
+                   "Decoded folder transfer chunk path mismatch.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(decoded.GetFolderFileOffset() == 8,
+                                 "Decoded folder transfer chunk offset mismatch.");
+        check != 0) {
+        return check;
+    }
+    return expect(!decoded.GetFolderDirectory(),
+                  "Decoded folder transfer chunk directory flag mismatch.");
+}
+
 int roundTripsTransferCompleteFrame()
 {
     const relaydesk::net::PeerFrame frame =
@@ -635,6 +665,9 @@ int main()
         return result;
     }
     if (const int result = roundTripsTransferChunkFrame(); result != 0) {
+        return result;
+    }
+    if (const int result = roundTripsFolderTransferChunkFrame(); result != 0) {
         return result;
     }
     if (const int result = roundTripsTransferCompleteFrame(); result != 0) {

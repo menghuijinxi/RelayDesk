@@ -231,59 +231,6 @@ std::string readTextFileIfExists(const std::filesystem::path& path)
     return readTextFile(path);
 }
 
-void appendUnsigned32LittleEndian(std::vector<std::uint8_t>& bytes,
-                                  std::uint32_t value)
-{
-    for (std::size_t index = 0; index < 4; ++index) {
-        bytes.push_back(
-            static_cast<std::uint8_t>((value >> (index * 8u)) & 0xFFu));
-    }
-}
-
-void appendUnsigned64LittleEndian(std::vector<std::uint8_t>& bytes,
-                                  std::uint64_t value)
-{
-    for (std::size_t index = 0; index < 8; ++index) {
-        bytes.push_back(
-            static_cast<std::uint8_t>((value >> (index * 8u)) & 0xFFu));
-    }
-}
-
-void appendFolderPackageEntry(std::vector<std::uint8_t>& bytes,
-                              std::uint8_t type,
-                              const std::string& relativePath,
-                              const std::string& content)
-{
-    bytes.push_back(type);
-    appendUnsigned32LittleEndian(
-        bytes, static_cast<std::uint32_t>(relativePath.size()));
-    appendUnsigned64LittleEndian(
-        bytes, static_cast<std::uint64_t>(content.size()));
-    bytes.insert(bytes.end(), relativePath.begin(), relativePath.end());
-    bytes.insert(bytes.end(), content.begin(), content.end());
-}
-
-std::vector<std::uint8_t> makeFolderPackagePayload()
-{
-    std::vector<std::uint8_t> bytes;
-    constexpr std::array<char, 8> magic{
-        'R',
-        'D',
-        'F',
-        'O',
-        'L',
-        'D',
-        'R',
-        '1',
-    };
-    bytes.insert(bytes.end(), magic.begin(), magic.end());
-    appendUnsigned64LittleEndian(bytes, 3);
-    appendFolderPackageEntry(bytes, 1, "nested", "");
-    appendFolderPackageEntry(bytes, 2, "root.txt", "AB");
-    appendFolderPackageEntry(bytes, 2, "nested/child.txt", "CD");
-    return bytes;
-}
-
 std::filesystem::path processTestRoot()
 {
     return std::filesystem::path(RELAYDESK_APP_RUNTIME_PROCESS_TEST_WORK_DIR);
@@ -523,6 +470,23 @@ relaydesk::net::TransferChunkMessage makeTransferChunk(
     message.SetPartId(partId);
     message.SetTransferId(transferId);
     message.SetOffset(offset);
+    return message;
+}
+
+relaydesk::net::TransferChunkMessage makeFolderTransferChunk(
+    const std::string& messageId,
+    const std::string& partId,
+    const std::string& transferId,
+    std::uintmax_t offset,
+    std::string relativePath,
+    std::uintmax_t fileOffset,
+    bool directory)
+{
+    relaydesk::net::TransferChunkMessage message =
+        makeTransferChunk(messageId, partId, transferId, offset);
+    message.SetFolderRelativePath(std::move(relativePath));
+    message.SetFolderFileOffset(fileOffset);
+    message.SetFolderDirectory(directory);
     return message;
 }
 
@@ -1944,10 +1908,10 @@ int acceptsIncomingFolderTransferAndExtractsPayload()
         }
     } senderStopper{sender};
 
-    const std::vector<std::uint8_t> package = makeFolderPackagePayload();
     const std::string messageId = "incoming-folder-message";
     const std::string partId = "incoming-folder-part";
     const std::string transferId = "incoming-folder-transfer";
+    constexpr std::uintmax_t folderPayloadSize = 4;
 
     {
         TestableRelayDeskRuntime runtime(options);
@@ -1992,17 +1956,43 @@ int acceptsIncomingFolderTransferAndExtractsPayload()
                 makeFolderTransferOffer(messageId,
                                         partId,
                                         transferId,
-                                        package.size())));
+                                        folderPayloadSize)));
         payloadFrames.push_back(
             relaydesk::net::makeTransferChunkFrame(
-                makeTransferChunk(messageId, partId, transferId, 0),
-                package));
+                makeFolderTransferChunk(messageId,
+                                        partId,
+                                        transferId,
+                                        0,
+                                        "nested",
+                                        0,
+                                        true),
+                {}));
+        payloadFrames.push_back(
+            relaydesk::net::makeTransferChunkFrame(
+                makeFolderTransferChunk(messageId,
+                                        partId,
+                                        transferId,
+                                        0,
+                                        "root.txt",
+                                        0,
+                                        false),
+                std::vector<std::uint8_t>({'A', 'B'})));
+        payloadFrames.push_back(
+            relaydesk::net::makeTransferChunkFrame(
+                makeFolderTransferChunk(messageId,
+                                        partId,
+                                        transferId,
+                                        2,
+                                        "nested/child.txt",
+                                        0,
+                                        false),
+                std::vector<std::uint8_t>({'C', 'D'})));
         payloadFrames.push_back(
             relaydesk::net::makeTransferCompleteFrame(
                 makeFolderTransferComplete(messageId,
                                            partId,
                                            transferId,
-                                           package.size())));
+                                           folderPayloadSize)));
         std::size_t payloadFrameIndex = 0;
         sender.sendFramesTo(
             "127.0.0.1",
@@ -2048,16 +2038,16 @@ int acceptsIncomingFolderTransferAndExtractsPayload()
                                .front();
         if (const int result =
                 expect(part.GetFileSize().has_value()
-                           && part.GetFileSize().value() == package.size(),
-                       "Incoming folder file size did not use package size.");
+                           && part.GetFileSize().value() == folderPayloadSize,
+                       "Incoming folder file size did not use file content size.");
             result != 0) {
             return result;
         }
         if (const int result =
                 expect(part.GetTransferredSize().has_value()
                            && part.GetTransferredSize().value()
-                               == package.size(),
-                       "Incoming folder progress did not reach package size.");
+                               == folderPayloadSize,
+                       "Incoming folder progress did not reach file content size.");
             result != 0) {
             return result;
         }
@@ -2155,7 +2145,7 @@ int sendsOutgoingFolderTransferWithPackageProgressAndSourcePath()
             return fail("Outgoing folder transfer did not complete.");
         }
 
-        std::uintmax_t packageSize = 0;
+        std::uintmax_t transferSize = 0;
         {
             std::lock_guard lock(received.mutex);
             const relaydesk::net::TransferOfferMessage offer =
@@ -2165,20 +2155,44 @@ int sendsOutgoingFolderTransferWithPackageProgressAndSourcePath()
                 result != 0) {
                 return result;
             }
-            packageSize = offer.GetFileSize();
+            transferSize = offer.GetFileSize();
 
-            const relaydesk::net::TransferCompleteMessage complete =
-                relaydesk::net::parseTransferCompleteFrame(received.frames[2]);
+            std::optional<relaydesk::net::TransferCompleteMessage> complete;
+            bool sawFolderChunkMetadata = false;
+            for (const auto& frame : received.frames) {
+                if (frame.GetType()
+                    == relaydesk::net::PeerFrameType::TransferChunk) {
+                    const relaydesk::net::TransferChunkMessage chunk =
+                        relaydesk::net::parseTransferChunkFrame(frame);
+                    sawFolderChunkMetadata =
+                        sawFolderChunkMetadata
+                        || chunk.GetFolderRelativePath().has_value();
+                } else if (frame.GetType()
+                           == relaydesk::net::PeerFrameType::TransferComplete) {
+                    complete = relaydesk::net::parseTransferCompleteFrame(frame);
+                }
+            }
+            if (const int result = expect(complete.has_value(),
+                                          "Outgoing folder complete frame missing.");
+                result != 0) {
+                return result;
+            }
             if (const int result =
-                    expect(complete.GetFileSize() == packageSize,
+                    expect(complete->GetFileSize() == transferSize,
                            "Outgoing folder complete size mismatch.");
+                result != 0) {
+                return result;
+            }
+            if (const int result =
+                    expect(sawFolderChunkMetadata,
+                           "Outgoing folder chunk metadata missing.");
                 result != 0) {
                 return result;
             }
         }
 
-        if (const int result = expect(packageSize > 4,
-                                      "Folder package size did not include metadata.");
+        if (const int result = expect(transferSize == 4,
+                                      "Folder transfer size should use file bytes.");
             result != 0) {
             return result;
         }
@@ -2189,15 +2203,15 @@ int sendsOutgoingFolderTransferWithPackageProgressAndSourcePath()
                                .front();
         if (const int result =
                 expect(part.GetFileSize().has_value()
-                           && part.GetFileSize().value() == packageSize,
-                       "Outgoing folder progress total did not use package size.");
+                           && part.GetFileSize().value() == transferSize,
+                       "Outgoing folder progress total did not use file bytes.");
             result != 0) {
             return result;
         }
         if (const int result =
                 expect(part.GetTransferredSize().has_value()
-                           && part.GetTransferredSize().value() == packageSize,
-                       "Outgoing folder progress did not reach package size.");
+                           && part.GetTransferredSize().value() == transferSize,
+                       "Outgoing folder progress did not reach file bytes.");
             result != 0) {
             return result;
         }

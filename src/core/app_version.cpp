@@ -2,6 +2,6 @@
 
 namespace relaydesk::core {
 
-	extern const int kAppVersion = 33;
+	extern const int kAppVersion = 34;
 
 }

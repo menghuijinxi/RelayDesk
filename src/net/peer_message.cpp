@@ -280,12 +280,18 @@ nlohmann::json transferChunkToJson(const TransferChunkMessage& message)
         throw std::runtime_error("Transfer chunk header is missing required fields.");
     }
 
-    return nlohmann::json{
+    nlohmann::json value{
         {"message_id", message.GetMessageId()},
         {"part_id", message.GetPartId()},
         {"transfer_id", message.GetTransferId()},
         {"offset", message.GetOffset()},
     };
+    if (message.GetFolderRelativePath().has_value()) {
+        value["folder_relative_path"] = message.GetFolderRelativePath().value();
+        value["folder_file_offset"] = message.GetFolderFileOffset();
+        value["folder_directory"] = message.GetFolderDirectory();
+    }
+    return value;
 }
 
 TransferChunkMessage transferChunkFromJson(const nlohmann::json& value)
@@ -295,6 +301,21 @@ TransferChunkMessage transferChunkFromJson(const nlohmann::json& value)
     message.SetPartId(readRequiredString(value, "part_id"));
     message.SetTransferId(readRequiredString(value, "transfer_id"));
     message.SetOffset(readRequiredOffset(value));
+    if (value.contains("folder_relative_path")) {
+        if (!value["folder_relative_path"].is_string()
+            || value["folder_relative_path"].get<std::string>().empty()
+            || !value.contains("folder_file_offset")
+            || !value["folder_file_offset"].is_number_unsigned()
+            || !value.contains("folder_directory")
+            || !value["folder_directory"].is_boolean()) {
+            throw std::runtime_error("Transfer chunk folder metadata is invalid.");
+        }
+        message.SetFolderRelativePath(
+            value["folder_relative_path"].get<std::string>());
+        message.SetFolderFileOffset(
+            value["folder_file_offset"].get<std::uintmax_t>());
+        message.SetFolderDirectory(value["folder_directory"].get<bool>());
+    }
     return message;
 }
 

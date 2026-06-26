@@ -59,18 +59,6 @@ constexpr const char* kAppUpdateTempDirectoryName = "updates";
 constexpr const char* kAppUpdateTempFileName = "relaydesk-update.exe";
 constexpr const char* kAppUpdateScriptFileName = "apply-update.cmd";
 constexpr const char* kAppUpdateScriptLogFileName = "apply-update.log";
-constexpr const char* kIncomingFolderPackageFilePrefix = ".relaydesk-";
-constexpr const char* kIncomingFolderPackageFileSuffix = ".folder.part";
-constexpr std::array<char, 8> kFolderPackageMagic{
-    'R',
-    'D',
-    'F',
-    'O',
-    'L',
-    'D',
-    'R',
-    '1',
-};
 constexpr std::size_t kMaxFolderPackageRelativePathBytes = 32u * 1024u;
 using TransferProgressCallback = std::function<void(const std::string&,
                                                     const std::string&,
@@ -804,14 +792,6 @@ std::filesystem::path makeIncomingTransferPayloadPath(
         return makeIncomingTempFilePath(appPaths, transferId, fileName);
     }
 
-    if (folderTransfer) {
-        return finalPath
-            / filesystemPathFromUtf8String(
-                std::string(kIncomingFolderPackageFilePrefix)
-                + sanitizeFileName(transferId)
-                + kIncomingFolderPackageFileSuffix);
-    }
-
     return finalPath;
 }
 
@@ -898,6 +878,37 @@ void createIncomingPayloadFile(const std::filesystem::path& payloadPath)
     std::ofstream output(payloadPath, std::ios::binary | std::ios::trunc);
     if (!output) {
         throw std::runtime_error("Failed to create incoming transfer file.");
+    }
+}
+
+void prepareIncomingFolderTransferRoot(const std::filesystem::path& targetRoot)
+{
+    if (targetRoot.empty()) {
+        throw std::runtime_error("Incoming folder transfer target is empty.");
+    }
+
+    createIncomingPayloadParentDirectories(targetRoot);
+
+    std::error_code error;
+    if (std::filesystem::exists(targetRoot, error)) {
+        error.clear();
+        if (!std::filesystem::is_directory(targetRoot, error)) {
+            error.clear();
+            std::filesystem::remove(targetRoot, error);
+            if (error) {
+                throw std::runtime_error(
+                    "Failed to replace incoming folder transfer target.");
+            }
+        }
+    }
+    if (error) {
+        throw std::runtime_error("Failed to inspect incoming folder transfer target.");
+    }
+
+    error.clear();
+    std::filesystem::create_directories(targetRoot, error);
+    if (error) {
+        throw std::runtime_error("Failed to create incoming folder transfer target.");
     }
 }
 
@@ -1256,78 +1267,6 @@ struct FolderPackageEntry {
     std::uintmax_t fileSize = 0;
 };
 
-void writeUnsigned32LittleEndian(std::ostream& output, std::uint32_t value)
-{
-    std::array<char, 4> bytes{};
-    for (std::size_t index = 0; index < bytes.size(); ++index) {
-        bytes[index] = static_cast<char>((value >> (index * 8u)) & 0xFFu);
-    }
-    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-}
-
-void writeUnsigned64LittleEndian(std::ostream& output, std::uint64_t value)
-{
-    std::array<char, 8> bytes{};
-    for (std::size_t index = 0; index < bytes.size(); ++index) {
-        bytes[index] = static_cast<char>((value >> (index * 8u)) & 0xFFu);
-    }
-    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-}
-
-std::uint32_t readUnsigned32LittleEndian(std::istream& input)
-{
-    std::array<unsigned char, 4> bytes{};
-    input.read(reinterpret_cast<char*>(bytes.data()),
-               static_cast<std::streamsize>(bytes.size()));
-    if (!input) {
-        throw std::runtime_error("Folder transfer package is truncated.");
-    }
-
-    std::uint32_t value = 0;
-    for (std::size_t index = 0; index < bytes.size(); ++index) {
-        value |= static_cast<std::uint32_t>(bytes[index]) << (index * 8u);
-    }
-    return value;
-}
-
-std::uint64_t readUnsigned64LittleEndian(std::istream& input)
-{
-    std::array<unsigned char, 8> bytes{};
-    input.read(reinterpret_cast<char*>(bytes.data()),
-               static_cast<std::streamsize>(bytes.size()));
-    if (!input) {
-        throw std::runtime_error("Folder transfer package is truncated.");
-    }
-
-    std::uint64_t value = 0;
-    for (std::size_t index = 0; index < bytes.size(); ++index) {
-        value |= static_cast<std::uint64_t>(bytes[index]) << (index * 8u);
-    }
-    return value;
-}
-
-void copyExactBytes(std::istream& input,
-                    std::ostream& output,
-                    std::uint64_t byteCount)
-{
-    std::vector<char> buffer(static_cast<std::size_t>(kTransferChunkSize));
-    std::uint64_t remaining = byteCount;
-    while (remaining > 0) {
-        const std::size_t chunkSize = static_cast<std::size_t>(
-            std::min<std::uint64_t>(remaining, buffer.size()));
-        input.read(buffer.data(), static_cast<std::streamsize>(chunkSize));
-        if (input.gcount() != static_cast<std::streamsize>(chunkSize)) {
-            throw std::runtime_error("Folder transfer package payload is truncated.");
-        }
-
-        output.write(buffer.data(), static_cast<std::streamsize>(chunkSize));
-        if (!output) {
-            throw std::runtime_error("Failed to write folder transfer payload.");
-        }
-        remaining -= chunkSize;
-    }
-}
-
 bool isSafeFolderPackageRelativePath(const std::filesystem::path& relativePath)
 {
     if (relativePath.empty() || relativePath.is_absolute()) {
@@ -1419,83 +1358,16 @@ std::vector<FolderPackageEntry> collectFolderPackageEntries(
     return entries;
 }
 
-void writeFolderPackageEntryHeader(std::ostream& output,
-                                   const FolderPackageEntry& entry)
+std::uintmax_t folderPackageEntriesTotalFileSize(
+    const std::vector<FolderPackageEntry>& entries)
 {
-    if (entry.relativePath.size() > kMaxFolderPackageRelativePathBytes) {
-        throw std::runtime_error("Folder transfer path is too long.");
-    }
-
-    output.put(static_cast<char>(entry.type));
-    writeUnsigned32LittleEndian(
-        output,
-        static_cast<std::uint32_t>(entry.relativePath.size()));
-    writeUnsigned64LittleEndian(
-        output,
-        static_cast<std::uint64_t>(entry.fileSize));
-    output.write(entry.relativePath.data(),
-                 static_cast<std::streamsize>(entry.relativePath.size()));
-    if (!output) {
-        throw std::runtime_error("Failed to write folder transfer package.");
-    }
-}
-
-std::filesystem::path makeFolderPackagePath(
-    const relaydesk::storage::AppPaths& appPaths,
-    const std::string& transferId)
-{
-    return appPaths.GetTempTransfersDirectory()
-        / filesystemPathFromUtf8String(sanitizeFileName(transferId))
-        / "folder.package";
-}
-
-std::filesystem::path createFolderTransferPackage(
-    const relaydesk::storage::AppPaths& appPaths,
-    const std::filesystem::path& sourceFolder,
-    const std::string& transferId)
-{
-    std::error_code error;
-    if (!std::filesystem::is_directory(sourceFolder, error) || error) {
-        throw std::runtime_error("Transfer source folder does not exist.");
-    }
-
-    const std::filesystem::path packagePath =
-        makeFolderPackagePath(appPaths, transferId);
-    std::filesystem::create_directories(packagePath.parent_path());
-    std::filesystem::remove(packagePath, error);
-    const std::vector<FolderPackageEntry> entries =
-        collectFolderPackageEntries(sourceFolder);
-
-    std::ofstream output(packagePath, std::ios::binary | std::ios::trunc);
-    if (!output) {
-        throw std::runtime_error("Failed to create folder transfer package.");
-    }
-
-    output.write(kFolderPackageMagic.data(),
-                 static_cast<std::streamsize>(kFolderPackageMagic.size()));
-    writeUnsigned64LittleEndian(output,
-                                static_cast<std::uint64_t>(entries.size()));
+    std::uintmax_t totalSize = 0;
     for (const FolderPackageEntry& entry : entries) {
-        writeFolderPackageEntryHeader(output, entry);
-        if (entry.type != FolderPackageEntryType::File) {
-            continue;
-        }
-
-        std::ifstream input(entry.sourcePath, std::ios::binary);
-        if (!input) {
-            throw std::runtime_error("Failed to read folder transfer file.");
-        }
-        copyExactBytes(input, output, static_cast<std::uint64_t>(entry.fileSize));
-        if (input.peek() != std::char_traits<char>::eof()) {
-            throw std::runtime_error(
-                "Folder transfer source file changed while packaging.");
+        if (entry.type == FolderPackageEntryType::File) {
+            totalSize += entry.fileSize;
         }
     }
-
-    if (!output) {
-        throw std::runtime_error("Failed to finish folder transfer package.");
-    }
-    return packagePath;
+    return totalSize;
 }
 
 class ScopedTemporaryFile {
@@ -1520,74 +1392,76 @@ protected:
     std::filesystem::path path_;
 };
 
-void extractFolderTransferPackage(const std::filesystem::path& packagePath,
-                                  const std::filesystem::path& targetRoot)
+std::filesystem::path resolveIncomingFolderEntryPath(
+    const std::filesystem::path& targetRoot,
+    const std::string& relativePathText)
 {
-    std::ifstream input(packagePath, std::ios::binary);
-    if (!input) {
-        throw std::runtime_error("Failed to open folder transfer package.");
+    if (relativePathText.empty()
+        || relativePathText.size() > kMaxFolderPackageRelativePathBytes) {
+        throw std::runtime_error("Folder transfer path is invalid.");
     }
 
-    std::array<char, kFolderPackageMagic.size()> magic{};
-    input.read(magic.data(), static_cast<std::streamsize>(magic.size()));
-    if (!input || magic != kFolderPackageMagic) {
-        throw std::runtime_error("Folder transfer package header is invalid.");
+    const std::filesystem::path relativePath =
+        filesystemPathFromUtf8String(relativePathText).lexically_normal();
+    if (!isSafeFolderPackageRelativePath(relativePath)) {
+        throw std::runtime_error("Folder transfer path is unsafe.");
     }
 
-    std::error_code error;
-    if (std::filesystem::exists(targetRoot, error)
-        && !std::filesystem::is_directory(targetRoot, error)) {
-        std::filesystem::remove(targetRoot, error);
+    const std::filesystem::path targetPath =
+        (targetRoot / relativePath).lexically_normal();
+    if (!pathIsUnderDirectory(targetPath, targetRoot)) {
+        throw std::runtime_error("Folder transfer path escapes target directory.");
+    }
+    return targetPath;
+}
+
+void writeIncomingFolderTransferChunk(
+    const PendingIncomingTransfer& transfer,
+    const relaydesk::net::TransferChunkMessage& chunk,
+    const std::vector<std::uint8_t>& body)
+{
+    if (!chunk.GetFolderRelativePath().has_value()) {
+        throw std::runtime_error("Incoming folder transfer chunk has no path.");
+    }
+
+    const std::filesystem::path targetPath =
+        resolveIncomingFolderEntryPath(transfer.GetTempFilePath(),
+                                       chunk.GetFolderRelativePath().value());
+    if (chunk.GetFolderDirectory()) {
+        if (!body.empty()) {
+            throw std::runtime_error(
+                "Incoming folder transfer directory chunk has payload.");
+        }
+        std::error_code error;
+        std::filesystem::create_directories(targetPath, error);
         if (error) {
-            throw std::runtime_error("Failed to replace folder transfer target.");
+            throw std::runtime_error(
+                "Failed to create incoming folder transfer directory.");
+        }
+        return;
+    }
+
+    createIncomingPayloadParentDirectories(targetPath);
+    if (chunk.GetFolderFileOffset() > 0) {
+        std::error_code error;
+        const std::uintmax_t existingSize =
+            std::filesystem::file_size(targetPath, error);
+        if (error || existingSize != chunk.GetFolderFileOffset()) {
+            throw std::runtime_error(
+                "Incoming folder transfer file offset is not sequential.");
         }
     }
-    std::filesystem::create_directories(targetRoot);
 
-    const std::uint64_t entryCount = readUnsigned64LittleEndian(input);
-    for (std::uint64_t index = 0; index < entryCount; ++index) {
-        const int rawType = input.get();
-        if (rawType == std::char_traits<char>::eof()) {
-            throw std::runtime_error("Folder transfer package is truncated.");
-        }
-        const auto entryType =
-            static_cast<FolderPackageEntryType>(
-                static_cast<unsigned char>(rawType));
-        const std::uint32_t pathSize = readUnsigned32LittleEndian(input);
-        if (pathSize == 0
-            || pathSize > kMaxFolderPackageRelativePathBytes) {
-            throw std::runtime_error("Folder transfer path is invalid.");
-        }
-
-        const std::uint64_t fileSize = readUnsigned64LittleEndian(input);
-        std::string pathText(pathSize, '\0');
-        input.read(pathText.data(), static_cast<std::streamsize>(pathText.size()));
-        if (!input) {
-            throw std::runtime_error("Folder transfer package is truncated.");
-        }
-
-        const std::filesystem::path relativePath =
-            filesystemPathFromUtf8String(pathText).lexically_normal();
-        if (!isSafeFolderPackageRelativePath(relativePath)) {
-            throw std::runtime_error("Folder transfer package contains unsafe path.");
-        }
-
-        const std::filesystem::path targetPath =
-            (targetRoot / relativePath).lexically_normal();
-        if (entryType == FolderPackageEntryType::Directory) {
-            std::filesystem::create_directories(targetPath);
-            continue;
-        }
-        if (entryType != FolderPackageEntryType::File) {
-            throw std::runtime_error("Folder transfer package entry is invalid.");
-        }
-
-        std::filesystem::create_directories(targetPath.parent_path());
-        std::ofstream output(targetPath, std::ios::binary | std::ios::trunc);
-        if (!output) {
-            throw std::runtime_error("Failed to create folder transfer file.");
-        }
-        copyExactBytes(input, output, fileSize);
+    const std::ios::openmode mode =
+        chunk.GetFolderFileOffset() == 0 ? std::ios::trunc : std::ios::app;
+    std::ofstream output(targetPath, std::ios::binary | mode);
+    if (!output) {
+        throw std::runtime_error("Failed to write incoming folder transfer file.");
+    }
+    output.write(reinterpret_cast<const char*>(body.data()),
+                 static_cast<std::streamsize>(body.size()));
+    if (!output) {
+        throw std::runtime_error("Failed to append incoming folder transfer file.");
     }
 }
 
@@ -1643,22 +1517,20 @@ relaydesk::net::PeerFrame makeTransferResumeRequestFrame(
 
     const std::filesystem::path localPath =
         resolveLocalPath(appPaths, part.GetLocalPath().value());
-    std::filesystem::path payloadPath = localPath;
-    std::unique_ptr<ScopedTemporaryFile> temporaryPayload;
+    std::uintmax_t fileSize = 0;
     if (part.GetType() == relaydesk::storage::MessagePartType::Folder) {
         if (!std::filesystem::is_directory(localPath)) {
             throw std::runtime_error("Transfer source folder does not exist.");
         }
-        payloadPath = createFolderTransferPackage(appPaths,
-                                                  localPath,
-                                                  part.GetTransferId().value());
-        temporaryPayload = std::make_unique<ScopedTemporaryFile>(payloadPath);
+        fileSize = folderPackageEntriesTotalFileSize(
+            collectFolderPackageEntries(localPath));
     } else if (!std::filesystem::is_regular_file(localPath)) {
         throw std::runtime_error("Transfer source file does not exist.");
+    } else {
+        fileSize = std::filesystem::file_size(localPath);
     }
 
     const std::string fileName = chooseTransferFileName(part, localPath);
-    const std::uintmax_t fileSize = std::filesystem::file_size(payloadPath);
     return
         relaydesk::net::makeTransferOfferFrame(
             makeTransferOfferMessage(record, part, fileName, fileSize, true));
@@ -1674,6 +1546,21 @@ relaydesk::net::TransferChunkMessage makeTransferChunkMessage(
     message.SetPartId(part.GetPartId());
     message.SetTransferId(part.GetTransferId().value());
     message.SetOffset(offset);
+    return message;
+}
+
+relaydesk::net::TransferChunkMessage makeFolderTransferChunkMessage(
+    const relaydesk::storage::ChatMessageRecord& record,
+    const relaydesk::storage::ChatMessagePart& part,
+    const FolderPackageEntry& entry,
+    std::uintmax_t transferOffset,
+    std::uintmax_t fileOffset)
+{
+    relaydesk::net::TransferChunkMessage message =
+        makeTransferChunkMessage(record, part, transferOffset);
+    message.SetFolderRelativePath(entry.relativePath);
+    message.SetFolderFileOffset(fileOffset);
+    message.SetFolderDirectory(entry.type == FolderPackageEntryType::Directory);
     return message;
 }
 
@@ -1972,22 +1859,22 @@ void sendTransferPartFrames(
         resolveLocalPath(appPaths, part.GetLocalPath().value());
     const bool folderTransfer =
         part.GetType() == relaydesk::storage::MessagePartType::Folder;
-    std::unique_ptr<ScopedTemporaryFile> temporaryPayload;
     std::filesystem::path payloadPath = localPath;
+    std::vector<FolderPackageEntry> folderEntries;
+    std::uintmax_t fileSize = 0;
     if (folderTransfer) {
         if (!std::filesystem::is_directory(localPath)) {
             throw std::runtime_error("Transfer source folder does not exist.");
         }
-        payloadPath = createFolderTransferPackage(appPaths,
-                                                  localPath,
-                                                  part.GetTransferId().value());
-        temporaryPayload = std::make_unique<ScopedTemporaryFile>(payloadPath);
+        folderEntries = collectFolderPackageEntries(localPath);
+        fileSize = folderPackageEntriesTotalFileSize(folderEntries);
     } else if (!std::filesystem::is_regular_file(localPath)) {
         throw std::runtime_error("Transfer source file does not exist.");
+    } else {
+        fileSize = std::filesystem::file_size(payloadPath);
     }
 
     const std::string fileName = chooseTransferFileName(part, localPath);
-    const std::uintmax_t fileSize = std::filesystem::file_size(payloadPath);
     if (onPrepared) {
         onPrepared(record.GetMessageId(),
                    part.GetPartId(),
@@ -1999,14 +1886,17 @@ void sendTransferPartFrames(
     if (resumeOffset > fileSize) {
         resumeOffset = 0;
     }
-    std::ifstream input(payloadPath, std::ios::binary);
-    if (!input) {
-        throw std::runtime_error("Failed to open transfer source file.");
-    }
-    if (resumeOffset > 0) {
-        input.seekg(static_cast<std::streamoff>(resumeOffset), std::ios::beg);
+    std::ifstream input;
+    if (!folderTransfer) {
+        input.open(payloadPath, std::ios::binary);
         if (!input) {
-            throw std::runtime_error("Failed to seek transfer source file.");
+            throw std::runtime_error("Failed to open transfer source file.");
+        }
+        if (resumeOffset > 0) {
+            input.seekg(static_cast<std::streamoff>(resumeOffset), std::ios::beg);
+            if (!input) {
+                throw std::runtime_error("Failed to seek transfer source file.");
+            }
         }
     }
     if (cancelToken.canceled()) {
@@ -2016,6 +1906,22 @@ void sendTransferPartFrames(
     std::vector<std::uint8_t> buffer(
         static_cast<std::size_t>(kTransferChunkSize));
     std::uintmax_t offset = resumeOffset;
+    std::size_t folderEntryIndex = 0;
+    std::uintmax_t folderEntryStartOffset = 0;
+    std::uintmax_t folderFileOffset = 0;
+    if (folderTransfer && resumeOffset > 0) {
+        while (folderEntryIndex < folderEntries.size()) {
+            const FolderPackageEntry& entry = folderEntries[folderEntryIndex];
+            const std::uintmax_t entrySize =
+                entry.type == FolderPackageEntryType::File ? entry.fileSize : 0;
+            if (folderEntryStartOffset + entrySize > resumeOffset) {
+                folderFileOffset = resumeOffset - folderEntryStartOffset;
+                break;
+            }
+            folderEntryStartOffset += entrySize;
+            ++folderEntryIndex;
+        }
+    }
     std::optional<std::uintmax_t> sentChunkOffset;
     bool offerFrameSent = false;
     bool completeFrameSent = false;
@@ -2031,7 +1937,79 @@ void sendTransferPartFrames(
                 return relaydesk::net::makeTransferOfferFrame(
                     makeTransferOfferMessage(record, part, fileName, fileSize));
             }
-            if (input) {
+            if (folderTransfer) {
+                while (folderEntryIndex < folderEntries.size()) {
+                    const FolderPackageEntry& entry = folderEntries[folderEntryIndex];
+                    if (entry.type == FolderPackageEntryType::Directory) {
+                        ++folderEntryIndex;
+                        return relaydesk::net::makeTransferChunkFrame(
+                            makeFolderTransferChunkMessage(record,
+                                                           part,
+                                                           entry,
+                                                           offset,
+                                                           0),
+                            {});
+                    }
+
+                    if (entry.fileSize == 0) {
+                        ++folderEntryIndex;
+                        return relaydesk::net::makeTransferChunkFrame(
+                            makeFolderTransferChunkMessage(record,
+                                                           part,
+                                                           entry,
+                                                           offset,
+                                                           0),
+                            {});
+                    }
+
+                    if (!input.is_open()) {
+                        input.open(entry.sourcePath, std::ios::binary);
+                        if (!input) {
+                            throw std::runtime_error(
+                                "Failed to open folder transfer file.");
+                        }
+                        if (folderFileOffset > 0) {
+                            input.seekg(static_cast<std::streamoff>(folderFileOffset),
+                                        std::ios::beg);
+                            if (!input) {
+                                throw std::runtime_error(
+                                    "Failed to seek folder transfer file.");
+                            }
+                        }
+                    }
+
+                    input.read(reinterpret_cast<char*>(buffer.data()),
+                               static_cast<std::streamsize>(buffer.size()));
+                    const std::streamsize readSize = input.gcount();
+                    if (readSize > 0) {
+                        std::vector<std::uint8_t> chunk(
+                            buffer.begin(),
+                            buffer.begin() + readSize);
+                        const std::uintmax_t chunkOffset = offset;
+                        const std::uintmax_t chunkFileOffset = folderFileOffset;
+                        offset += static_cast<std::uintmax_t>(readSize);
+                        folderFileOffset += static_cast<std::uintmax_t>(readSize);
+                        sentChunkOffset = offset;
+                        return relaydesk::net::makeTransferChunkFrame(
+                            makeFolderTransferChunkMessage(record,
+                                                           part,
+                                                           entry,
+                                                           chunkOffset,
+                                                           chunkFileOffset),
+                            std::move(chunk));
+                    }
+
+                    if (folderFileOffset != entry.fileSize) {
+                        throw std::runtime_error(
+                            "Folder transfer source file changed while sending.");
+                    }
+                    input.close();
+                    input.clear();
+                    folderEntryStartOffset += entry.fileSize;
+                    folderFileOffset = 0;
+                    ++folderEntryIndex;
+                }
+            } else if (input) {
                 input.read(reinterpret_cast<char*>(buffer.data()),
                            static_cast<std::streamsize>(buffer.size()));
                 const std::streamsize readSize = input.gcount();
@@ -3069,8 +3047,9 @@ void RelayDeskRuntime::acceptSelectedPeerFileTransferToPath(
         folderTransfer,
         false);
     const bool resumeInterrupted =
-        part->GetTransferState().value()
-        == relaydesk::storage::TransferState::Interrupted;
+        !folderTransfer
+        && part->GetTransferState().value()
+            == relaydesk::storage::TransferState::Interrupted;
     const std::uintmax_t expectedSize = part->GetFileSize().value_or(0);
     std::uintmax_t resumeOffset = 0;
     if (resumeInterrupted) {
@@ -3084,7 +3063,9 @@ void RelayDeskRuntime::acceptSelectedPeerFileTransferToPath(
                 expectedSize);
         }
     }
-    if (!resumeInterrupted) {
+    if (folderTransfer) {
+        prepareIncomingFolderTransferRoot(payloadPath);
+    } else if (!resumeInterrupted) {
         createIncomingPayloadFile(payloadPath);
     }
 
@@ -4340,8 +4321,9 @@ void RelayDeskRuntime::handleIncomingPeerFrame(relaydesk::net::PeerFrame frame)
                                             offer.GetImageTransfer());
 
         const bool resumeInterruptedTransfer =
-            existingTransfer.has_value()
-            || (offer.GetResumeRequest() && interruptedTransferFound);
+            !folderTransfer
+            && (existingTransfer.has_value()
+                || (offer.GetResumeRequest() && interruptedTransferFound));
         std::uintmax_t receivedSize = 0;
         if (resumeInterruptedTransfer) {
             receivedSize =
@@ -4354,7 +4336,9 @@ void RelayDeskRuntime::handleIncomingPeerFrame(relaydesk::net::PeerFrame frame)
                                                             offer.GetFileSize());
             }
         }
-        if (receivedSize == 0) {
+        if (folderTransfer) {
+            prepareIncomingFolderTransferRoot(payloadPath);
+        } else if (receivedSize == 0) {
             createIncomingPayloadFile(payloadPath);
         }
 
@@ -4543,21 +4527,29 @@ void RelayDeskRuntime::handleIncomingPeerFrame(relaydesk::net::PeerFrame frame)
             transfer = existing->second;
         }
 
-        std::ofstream output(
-            transfer.GetTempFilePath(),
-            std::ios::binary | std::ios::app);
-        if (!output) {
-            throw std::runtime_error("Failed to write incoming transfer chunk.");
-        }
         const auto& body = frame.GetBody();
-        output.write(reinterpret_cast<const char*>(body.data()),
-                     static_cast<std::streamsize>(body.size()));
-        if (!output) {
-            throw std::runtime_error("Failed to append incoming transfer chunk.");
+        if (transfer.GetFolderTransfer()) {
+            writeIncomingFolderTransferChunk(transfer, chunk, body);
+        } else {
+            std::ofstream output(
+                transfer.GetTempFilePath(),
+                std::ios::binary | std::ios::app);
+            if (!output) {
+                throw std::runtime_error("Failed to write incoming transfer chunk.");
+            }
+            output.write(reinterpret_cast<const char*>(body.data()),
+                         static_cast<std::streamsize>(body.size()));
+            if (!output) {
+                throw std::runtime_error("Failed to append incoming transfer chunk.");
+            }
         }
 
         const std::uintmax_t receivedSize =
             transfer.GetReceivedSize() + body.size();
+        if (receivedSize > transfer.GetExpectedSize()) {
+            throw std::runtime_error(
+                "Incoming transfer chunk exceeds expected size.");
+        }
         {
             std::lock_guard lock(pendingTransferMutex_);
             const auto existing =
@@ -4597,12 +4589,7 @@ void RelayDeskRuntime::handleIncomingPeerFrame(relaydesk::net::PeerFrame frame)
         std::optional<std::string> sha256;
         bool payloadConsumed = false;
         if (transfer.GetFolderTransfer()) {
-            if (finalFilePath.empty()) {
-                finalFilePath = makeIncomingFinalFilePath(appPaths, transfer);
-            }
-            extractFolderTransferPackage(transfer.GetTempFilePath(), finalFilePath);
-            std::error_code error;
-            std::filesystem::remove(transfer.GetTempFilePath(), error);
+            finalFilePath = transfer.GetTempFilePath();
             payloadConsumed = true;
         } else if (transfer.GetImageTransfer()) {
             try {

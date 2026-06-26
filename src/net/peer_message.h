@@ -157,17 +157,38 @@ public:
     const std::string& GetPartId() const { return partId_; }
     const std::string& GetTransferId() const { return transferId_; }
     std::uintmax_t GetOffset() const { return offset_; }
+    const std::optional<std::string>& GetFolderRelativePath() const
+    {
+        return folderRelativePath_;
+    }
+    std::uintmax_t GetFolderFileOffset() const { return folderFileOffset_; }
+    bool GetFolderDirectory() const { return folderDirectory_; }
 
     void SetMessageId(std::string messageId) { messageId_ = std::move(messageId); }
     void SetPartId(std::string partId) { partId_ = std::move(partId); }
     void SetTransferId(std::string transferId) { transferId_ = std::move(transferId); }
     void SetOffset(std::uintmax_t offset) { offset_ = offset; }
+    void SetFolderRelativePath(std::string folderRelativePath)
+    {
+        folderRelativePath_ = std::move(folderRelativePath);
+    }
+    void SetFolderFileOffset(std::uintmax_t folderFileOffset)
+    {
+        folderFileOffset_ = folderFileOffset;
+    }
+    void SetFolderDirectory(bool folderDirectory)
+    {
+        folderDirectory_ = folderDirectory;
+    }
 
 protected:
     std::string messageId_;
     std::string partId_;
     std::string transferId_;
     std::uintmax_t offset_ = 0;
+    std::optional<std::string> folderRelativePath_;
+    std::uintmax_t folderFileOffset_ = 0;
+    bool folderDirectory_ = false;
 };
 
 class TransferCompleteMessage {

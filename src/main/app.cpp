@@ -278,12 +278,14 @@ enum class PendingAttachmentKind {
 
 struct PendingAttachmentItem {
     PendingAttachmentKind kind = PendingAttachmentKind::File;
+    std::string attachmentId;
     std::string displayName;
     std::string localPath;
     std::string previewPath;
     std::string sha256;
     std::filesystem::path sourcePath;
     std::uintmax_t fileSize = 0;
+    bool fileSizePending = false;
     unsigned int imagePixelWidth = 0;
     unsigned int imagePixelHeight = 0;
 };
@@ -298,6 +300,15 @@ struct ComposerDraftItem {
     std::string text;
     PendingAttachmentItem attachment;
 };
+
+struct PendingFolderSizeResult {
+    std::string attachmentId;
+    std::filesystem::path sourcePath;
+    std::uintmax_t fileSize = 0;
+};
+
+std::mutex gPendingFolderSizeMutex;
+std::vector<PendingFolderSizeResult> gPendingFolderSizeResults;
 
 void drawFileDocumentCard(eui::Ui& ui,
                           const std::string& id,
@@ -1249,6 +1260,15 @@ std::string formatFileSize(std::uintmax_t fileSize)
     return output.str();
 }
 
+std::string pendingAttachmentDetailText(const PendingAttachmentItem& attachment)
+{
+    if (attachment.kind == PendingAttachmentKind::Folder
+        && attachment.fileSizePending) {
+        return "Calculating...";
+    }
+    return formatFileSize(attachment.fileSize);
+}
+
 std::string formatTransferRate(double bytesPerSecond)
 {
     if (bytesPerSecond <= 0.0) {
@@ -2020,6 +2040,38 @@ std::uintmax_t directoryContentSizeOrZero(const std::filesystem::path& directory
     return totalSize;
 }
 
+void enqueuePendingFolderSizeResult(PendingFolderSizeResult result)
+{
+    std::lock_guard lock(gPendingFolderSizeMutex);
+    gPendingFolderSizeResults.push_back(std::move(result));
+}
+
+std::vector<PendingFolderSizeResult> consumePendingFolderSizeResults()
+{
+    std::lock_guard lock(gPendingFolderSizeMutex);
+    std::vector<PendingFolderSizeResult> results;
+    results.swap(gPendingFolderSizeResults);
+    return results;
+}
+
+void startPendingFolderSizeProbe(const PendingAttachmentItem& attachment)
+{
+    if (attachment.attachmentId.empty()
+        || attachment.kind != PendingAttachmentKind::Folder) {
+        return;
+    }
+
+    const std::string attachmentId = attachment.attachmentId;
+    const std::filesystem::path sourcePath = attachment.sourcePath;
+    std::thread([attachmentId, sourcePath] {
+        PendingFolderSizeResult result;
+        result.attachmentId = attachmentId;
+        result.sourcePath = sourcePath;
+        result.fileSize = directoryContentSizeOrZero(sourcePath);
+        enqueuePendingFolderSizeResult(std::move(result));
+    }).detach();
+}
+
 void applyImageSizeMetadata(PendingAttachmentItem& attachment,
                             const std::filesystem::path& imagePath)
 {
@@ -2099,6 +2151,7 @@ std::optional<PendingAttachmentItem> makePendingAttachmentFromPath(
     }
 
     PendingAttachmentItem attachment;
+    attachment.attachmentId = relaydesk::core::createUuidV4();
     if (directory) {
         attachment.kind = PendingAttachmentKind::Folder;
     } else {
@@ -2110,9 +2163,11 @@ std::optional<PendingAttachmentItem> makePendingAttachmentFromPath(
     attachment.previewPath = makeAttachmentLocalPath(appPaths, previewPath);
     attachment.sha256 = std::move(sha256);
     attachment.sourcePath = sourcePath;
-    attachment.fileSize = directory
-        ? directoryContentSizeOrZero(absolutePath)
-        : fileSizeOrZero(absolutePath);
+    if (directory) {
+        attachment.fileSizePending = true;
+    } else {
+        attachment.fileSize = fileSizeOrZero(absolutePath);
+    }
     if (imageAttachment) {
         applyImageSizeMetadata(attachment, sourcePath);
     }
@@ -2124,6 +2179,7 @@ PendingAttachmentItem makePendingAttachmentFromSticker(
 {
     const std::filesystem::path imagePath(sticker.absolutePath);
     PendingAttachmentItem attachment;
+    attachment.attachmentId = relaydesk::core::createUuidV4();
     attachment.kind = PendingAttachmentKind::Image;
     attachment.displayName =
         sticker.displayName.empty() ? sticker.itemId : sticker.displayName;
@@ -2488,6 +2544,14 @@ void insertComposerDraftAttachmentAtCaret(
         return;
     }
 
+    if (attachment.attachmentId.empty()) {
+        attachment.attachmentId = relaydesk::core::createUuidV4();
+    }
+    if (attachment.kind == PendingAttachmentKind::Folder
+        && attachment.fileSizePending) {
+        startPendingFolderSizeProbe(attachment);
+    }
+
     (void)removeComposerDraftSelection(draftItems, caret);
     clampComposerCaret(draftItems, caret);
     std::size_t consumedLength = 0;
@@ -2581,6 +2645,30 @@ void insertComposerDraftAttachmentPathsAtCaret(
 {
     for (const auto& filePath : filePaths) {
         insertComposerDraftAttachmentPathAtCaret(draftItems, caret, filePath);
+    }
+}
+
+void pollPendingFolderSizeResults(std::vector<ComposerDraftItem>& draftItems)
+{
+    const std::vector<PendingFolderSizeResult> results =
+        consumePendingFolderSizeResults();
+    if (results.empty()) {
+        return;
+    }
+
+    for (const PendingFolderSizeResult& result : results) {
+        for (ComposerDraftItem& item : draftItems) {
+            if (item.type != ComposerDraftItemType::Attachment
+                || item.attachment.kind != PendingAttachmentKind::Folder
+                || item.attachment.attachmentId != result.attachmentId
+                || item.attachment.sourcePath != result.sourcePath) {
+                continue;
+            }
+
+            item.attachment.fileSize = result.fileSize;
+            item.attachment.fileSizePending = false;
+            break;
+        }
     }
 }
 
@@ -4678,7 +4766,7 @@ void drawComposerEditorAttachmentNode(eui::Ui& ui,
                          node.y,
                          node.width,
                          attachment.displayName,
-                         formatFileSize(attachment.fileSize),
+                         pendingAttachmentDetailText(attachment),
                          attachment.kind == PendingAttachmentKind::Folder,
                          false,
                          false);
@@ -5156,7 +5244,7 @@ void drawCompactImageDocumentCard(eui::Ui& ui,
     text(ui, id + ".title", textX, y + 5.0f, width - 92.0f, 22.0f,
          attachment.displayName, 13.0f);
     text(ui, id + ".detail", textX, y + 26.0f, width - 92.0f, 18.0f,
-         formatFileSize(attachment.fileSize), 11.0f, kMutedText);
+         pendingAttachmentDetailText(attachment), 11.0f, kMutedText);
     ui.rect(id + ".preview.hit")
         .position(x + 7.0f, y + 5.0f)
         .size(thumbSize, thumbSize)
@@ -8504,6 +8592,7 @@ void drawRuntimeComposer(
         ui.state<std::chrono::steady_clock::time_point>("composer.screenshot.started");
     loadRecentEmojisOnce(ui, recentEmojis);
     loadStoredStickerPickerItemsOnce(ui, stickerItems);
+    pollPendingFolderSizeResults(draftItems);
     if (!composerText.empty()) {
         insertComposerDraftTextAtCaret(draftItems, composerCaret, composerText);
         composerText.clear();
