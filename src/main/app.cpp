@@ -8,6 +8,7 @@
 #include "main/image_attachment_store.h"
 #include "main/app_runtime.h"
 #include "platform/attachment_input.h"
+#include "platform/startup_launch.h"
 #include "platform/text_encoding.h"
 #include "storage/app_paths.h"
 #include "storage/sticker_store.h"
@@ -238,7 +239,7 @@ constexpr std::array<SettingsCategoryItem, 6> kSettingsCategories = {{
     {"外观", "字体大小", 0xE8D2},
     {"发送", "回车发送方式", 0xE724},
     {"截图", "自定义快捷键", 0xE722},
-    {"通知", "消息提示音", 0xE7F4},
+    {"通知", "提示音与自启", 0xE7F4},
     {"更新", "检查新版本", 0xE895},
 }};
 
@@ -744,6 +745,51 @@ void saveStoredRecentEmojis(const std::vector<std::string>& recentEmojis)
                                              normalizeRecentEmojis(recentEmojis));
     } catch (const std::exception&) {
     }
+}
+
+bool loadStoredLaunchAtStartupEnabled()
+{
+    try {
+        const auto paths = relaydesk::storage::createAppPaths();
+        return relaydesk::storage::loadLaunchAtStartupEnabled(paths);
+    } catch (const std::exception&) {
+        return true;
+    }
+}
+
+bool saveStoredLaunchAtStartupEnabled(bool enabled)
+{
+    try {
+        const auto paths = relaydesk::storage::createAppPaths();
+        relaydesk::storage::saveLaunchAtStartupEnabled(paths, enabled);
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+bool applyLaunchAtStartupEnabled(bool enabled)
+{
+    try {
+        const auto paths = relaydesk::storage::createAppPaths();
+        relaydesk::platform::setStartupLaunchEnabled(
+            paths.GetExecutablePath(),
+            enabled);
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+void syncLaunchAtStartupOnAppStart()
+{
+    static bool synced = false;
+    if (synced) {
+        return;
+    }
+
+    applyLaunchAtStartupEnabled(loadStoredLaunchAtStartupEnabled());
+    synced = true;
 }
 
 std::string filesystemPathToUtf8String(const std::filesystem::path& filePath)
@@ -8377,18 +8423,34 @@ bool& notificationSoundEnabledState(eui::Ui& ui)
     return soundEnabled;
 }
 
+bool& launchAtStartupEnabledState(eui::Ui& ui)
+{
+    bool& initialized = ui.state<bool>("settings.startup.initialized");
+    bool& launchAtStartup =
+        ui.state<bool>("settings.startup.launch_at_startup");
+    if (!initialized) {
+        launchAtStartup = loadStoredLaunchAtStartupEnabled();
+        initialized = true;
+    }
+    return launchAtStartup;
+}
+
 void drawSettingsNotificationPage(eui::Ui& ui,
                                   float x,
                                   float y,
                                   float width)
 {
     bool& soundEnabled = notificationSoundEnabledState(ui);
+    bool& launchAtStartup = launchAtStartupEnabledState(ui);
+    std::string& startupStatus =
+        ui.state<std::string>("settings.startup.status");
 
     drawSettingsTitle(ui, "settings.notification.header", x, y, width,
-                      "通知", "消息提示音默认开启，当前只做界面占位。");
+                      "通知", "管理提示音和系统启动行为。");
     const float rowY = y + 86.0f;
     const float labelW = std::min(180.0f, width * 0.34f);
     const float fieldX = x + labelW + 26.0f;
+    const float fieldW = std::max(260.0f, width - labelW - 26.0f);
 
     drawSettingsRowLabel(ui, "settings.notification.sound.label", x, rowY,
                          labelW, "消息通知音", "收到消息时播放提示音。");
@@ -8412,6 +8474,54 @@ void drawSettingsNotificationPage(eui::Ui& ui,
                 .build();
         })
         .build();
+
+    const float startupRowY = rowY + 74.0f;
+    drawSettingsRowLabel(ui,
+                         "settings.startup.launch.label",
+                         x,
+                         startupRowY,
+                         labelW,
+                         "开机自启",
+                         "登录 Windows 后自动启动 RelayDesk。");
+    ui.stack("settings.startup.launch.switch.pos")
+        .position(fieldX, startupRowY + 5.0f)
+        .size(240.0f, 34.0f)
+        .content([&] {
+            components::toggleSwitch(ui, "settings.startup.launch.switch")
+                .size(240.0f, 34.0f)
+                .checked(launchAtStartup)
+                .label(launchAtStartup ? "已启用" : "已关闭")
+                .fontSize(14.0f)
+                .trackSize(48.0f, 24.0f)
+                .style(settingsSwitchStyle())
+                .onChange([&launchAtStartup, &startupStatus](bool next) {
+                    launchAtStartup = next;
+                    const bool saved = saveStoredLaunchAtStartupEnabled(next);
+                    const bool applied = applyLaunchAtStartupEnabled(next);
+                    if (saved && applied) {
+                        startupStatus.clear();
+                    } else if (!saved && !applied) {
+                        startupStatus = "保存设置和写入系统启动项失败";
+                    } else if (!saved) {
+                        startupStatus = "系统启动项已更新，但保存设置失败";
+                    } else {
+                        startupStatus = "保存设置成功，但写入系统启动项失败";
+                    }
+                })
+                .build();
+        })
+        .build();
+    if (!startupStatus.empty()) {
+        text(ui,
+             "settings.startup.launch.status",
+             fieldX,
+             startupRowY + 42.0f,
+             fieldW,
+             22.0f,
+             startupStatus,
+             12.0f,
+             kDanger);
+    }
 }
 
 void drawSettingsUpdatePage(eui::Ui& ui, float x, float y, float width)
@@ -9112,6 +9222,7 @@ namespace app {
 const DslAppConfig& dslAppConfig()
 {
     ensureAppStorage();
+    syncLaunchAtStartupOnAppStart();
     static const DslAppConfig config = DslAppConfig{}
         .title("RelayDesk")
         .pageId("relaydesk")

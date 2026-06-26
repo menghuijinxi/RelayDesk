@@ -170,6 +170,7 @@ if(RELAYDESK_HAS_EUI_NEO)
         src/core/uuid.cpp
         src/platform/attachment_input_win.cpp
         src/platform/computer_name_win.cpp
+        src/platform/startup_launch_win.cpp
         src/platform/text_encoding_win.cpp
         src/platform/windows_install_id_win.cpp
         src/net/discovery_local_announcement.cpp
@@ -206,6 +207,7 @@ if(RELAYDESK_HAS_EUI_NEO)
             shell32
             windowscodecs
             ole32
+            advapi32
             bcrypt
             winmm
         )

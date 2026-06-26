@@ -68,6 +68,19 @@ std::vector<std::string> readRecentEmojiArray(const nlohmann::json& value)
     return result;
 }
 
+bool readLaunchAtStartupEnabled(const nlohmann::json& value)
+{
+    if (!value.contains("launch_at_startup")) {
+        return true;
+    }
+
+    if (!value["launch_at_startup"].is_boolean()) {
+        throw std::runtime_error("UI config launch at startup field is invalid.");
+    }
+
+    return value["launch_at_startup"].get<bool>();
+}
+
 void writeConfigJson(const std::filesystem::path& filePath,
                      const nlohmann::json& value)
 {
@@ -99,6 +112,22 @@ void saveRecentEmojis(const AppPaths& appPaths,
     validateSchemaVersion(value);
     value["schema_version"] = kSchemaVersion;
     value["recent_emojis"] = recentEmojis;
+    writeConfigJson(appPaths.GetConfigFilePath(), value);
+}
+
+bool loadLaunchAtStartupEnabled(const AppPaths& appPaths)
+{
+    const nlohmann::json value = readConfigJson(appPaths.GetConfigFilePath());
+    validateSchemaVersion(value);
+    return readLaunchAtStartupEnabled(value);
+}
+
+void saveLaunchAtStartupEnabled(const AppPaths& appPaths, bool enabled)
+{
+    nlohmann::json value = readConfigJson(appPaths.GetConfigFilePath());
+    validateSchemaVersion(value);
+    value["schema_version"] = kSchemaVersion;
+    value["launch_at_startup"] = enabled;
     writeConfigJson(appPaths.GetConfigFilePath(), value);
 }
 

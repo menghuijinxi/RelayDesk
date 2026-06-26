@@ -101,6 +101,29 @@ int preservesOtherConfigFields()
                   "Recent emojis were not saved.");
 }
 
+int defaultsLaunchAtStartupToEnabled()
+{
+    const auto appPaths = makeAppPaths("startup-default");
+    return expect(relaydesk::storage::loadLaunchAtStartupEnabled(appPaths),
+                  "Missing startup preference should default to enabled.");
+}
+
+int roundTripsLaunchAtStartup()
+{
+    const auto appPaths = makeAppPaths("startup-round-trip");
+    relaydesk::storage::saveLaunchAtStartupEnabled(appPaths, false);
+    if (const int result =
+            expect(!relaydesk::storage::loadLaunchAtStartupEnabled(appPaths),
+                   "Disabled startup preference did not round-trip.");
+        result != 0) {
+        return result;
+    }
+
+    relaydesk::storage::saveLaunchAtStartupEnabled(appPaths, true);
+    return expect(relaydesk::storage::loadLaunchAtStartupEnabled(appPaths),
+                  "Enabled startup preference did not round-trip.");
+}
+
 } // namespace
 
 int main()
@@ -116,6 +139,14 @@ int main()
     }
 
     if (const int result = preservesOtherConfigFields(); result != 0) {
+        return result;
+    }
+
+    if (const int result = defaultsLaunchAtStartupToEnabled(); result != 0) {
+        return result;
+    }
+
+    if (const int result = roundTripsLaunchAtStartup(); result != 0) {
         return result;
     }
 
