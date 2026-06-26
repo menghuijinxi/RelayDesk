@@ -1211,7 +1211,7 @@ void writeAppUpdateScript(const std::filesystem::path& scriptPath,
               L"-Value ('[{0}] {1}' -f (Get-Date), $message)\n";
     script += L"}\n";
     script += L"New-Item -ItemType Directory -Force "
-              L"-LiteralPath (Split-Path -LiteralPath $log -Parent) "
+              L"-Path (Split-Path -Path $log -Parent) "
               L"| Out-Null\n";
     script += L"Set-Content -LiteralPath $log -Encoding UTF8 "
               L"-Value ('[{0}] RelayDesk update started' -f (Get-Date))\n";
@@ -2798,7 +2798,7 @@ void RelayDeskRuntime::completeDownloadedAppUpdate(
 #endif
 }
 
-void RelayDeskRuntime::applyDownloadedAppUpdate(
+std::filesystem::path RelayDeskRuntime::prepareDownloadedAppUpdateScript(
     const PendingIncomingAppUpdate& update,
     bool restartAfterApply)
 {
@@ -2808,7 +2808,7 @@ void RelayDeskRuntime::applyDownloadedAppUpdate(
                       + update.GetRequestId()
                       + " app_version="
                       + std::to_string(update.GetAppVersion()));
-        return;
+        return {};
     }
     if (update.GetExpectedSize() == 0
         || !std::filesystem::is_regular_file(update.GetTempFilePath())
@@ -2825,6 +2825,24 @@ void RelayDeskRuntime::applyDownloadedAppUpdate(
                          update.GetTempFilePath(),
                          appPaths.GetWorkDirectory(),
                          restartAfterApply);
+    return scriptPath;
+#else
+    (void)update;
+    (void)restartAfterApply;
+    return {};
+#endif
+}
+
+void RelayDeskRuntime::applyDownloadedAppUpdate(
+    const PendingIncomingAppUpdate& update,
+    bool restartAfterApply)
+{
+#if defined(RELAYDESK_HAS_BOOST_ASIO)
+    const std::filesystem::path scriptPath =
+        prepareDownloadedAppUpdateScript(update, restartAfterApply);
+    if (scriptPath.empty()) {
+        return;
+    }
     if (!launchAppUpdateScript(scriptPath)) {
         throw std::runtime_error("Failed to launch app update script.");
     }

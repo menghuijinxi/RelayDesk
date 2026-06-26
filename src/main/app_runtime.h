@@ -547,6 +547,9 @@ protected:
         const PeerListItem& peer,
         const relaydesk::net::AppUpdateRequestMessage& request);
     void completeDownloadedAppUpdate(const PendingIncomingAppUpdate& update);
+    std::filesystem::path prepareDownloadedAppUpdateScript(
+        const PendingIncomingAppUpdate& update,
+        bool restartAfterApply);
     void applyDownloadedAppUpdate(const PendingIncomingAppUpdate& update,
                                   bool restartAfterApply);
     void launchScheduledAppUpdateOnExit() noexcept;

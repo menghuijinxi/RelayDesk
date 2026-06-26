@@ -231,6 +231,26 @@ std::string readTextFileIfExists(const std::filesystem::path& path)
     return readTextFile(path);
 }
 
+std::string readStatusValue(const std::string& status, const std::string& key)
+{
+    const std::string prefix = key + "=";
+    std::size_t position = 0;
+    while (position <= status.size()) {
+        const std::size_t lineEnd = status.find('\n', position);
+        const std::string line = status.substr(
+            position,
+            lineEnd == std::string::npos ? std::string::npos : lineEnd - position);
+        if (line.rfind(prefix, 0) == 0) {
+            return line.substr(prefix.size());
+        }
+        if (lineEnd == std::string::npos) {
+            break;
+        }
+        position = lineEnd + 1;
+    }
+    return {};
+}
+
 std::filesystem::path processTestRoot()
 {
     return std::filesystem::path(RELAYDESK_APP_RUNTIME_PROCESS_TEST_WORK_DIR);
@@ -255,6 +275,78 @@ std::filesystem::path currentExecutablePath()
 
     buffer.resize(length);
     return std::filesystem::path(buffer);
+}
+
+std::wstring utf8ToWideForTest(const std::string& value)
+{
+    if (value.empty()) {
+        return {};
+    }
+    const int requiredLength = MultiByteToWideChar(
+        CP_UTF8,
+        MB_ERR_INVALID_CHARS,
+        value.data(),
+        static_cast<int>(value.size()),
+        nullptr,
+        0);
+    if (requiredLength <= 0) {
+        throw std::runtime_error("Failed to measure UTF-8 test string.");
+    }
+
+    std::wstring result(static_cast<std::size_t>(requiredLength), L'\0');
+    const int convertedLength = MultiByteToWideChar(
+        CP_UTF8,
+        MB_ERR_INVALID_CHARS,
+        value.data(),
+        static_cast<int>(value.size()),
+        result.data(),
+        requiredLength);
+    if (convertedLength != requiredLength) {
+        throw std::runtime_error("Failed to convert UTF-8 test string.");
+    }
+    return result;
+}
+
+std::filesystem::path filesystemPathFromGenericUtf8ForTest(
+    const std::string& pathText)
+{
+    return std::filesystem::path(utf8ToWideForTest(pathText));
+}
+
+std::string filesystemPathToGenericUtf8ForTest(
+    const std::filesystem::path& path)
+{
+    const std::wstring value = path.generic_wstring();
+    if (value.empty()) {
+        return {};
+    }
+    const int requiredLength = WideCharToMultiByte(
+        CP_UTF8,
+        0,
+        value.data(),
+        static_cast<int>(value.size()),
+        nullptr,
+        0,
+        nullptr,
+        nullptr);
+    if (requiredLength <= 0) {
+        throw std::runtime_error("Failed to measure filesystem path.");
+    }
+
+    std::string result(static_cast<std::size_t>(requiredLength), '\0');
+    const int convertedLength = WideCharToMultiByte(
+        CP_UTF8,
+        0,
+        value.data(),
+        static_cast<int>(value.size()),
+        result.data(),
+        requiredLength,
+        nullptr,
+        nullptr);
+    if (convertedLength != requiredLength) {
+        throw std::runtime_error("Failed to convert filesystem path.");
+    }
+    return result;
 }
 
 std::filesystem::path copyExecutableToScenarioRoot(
@@ -394,6 +486,38 @@ DWORD waitForChildProcess(
         throw std::runtime_error("Failed to read child process exit code.");
     }
     return exitCode;
+}
+
+DWORD runCommandAndWait(const std::filesystem::path& executablePath,
+                        const std::vector<std::wstring>& arguments,
+                        const std::filesystem::path& workingDirectory,
+                        std::chrono::milliseconds timeout)
+{
+    STARTUPINFOW startupInfo{};
+    startupInfo.cb = sizeof(startupInfo);
+
+    ChildProcessHandle process;
+    std::wstring commandLine =
+        makeWindowsCommandLine(executablePath, arguments);
+    std::wstring workingDirectoryText = workingDirectory.wstring();
+    const BOOL started = CreateProcessW(
+        nullptr,
+        commandLine.data(),
+        nullptr,
+        nullptr,
+        FALSE,
+        CREATE_NO_WINDOW,
+        nullptr,
+        workingDirectoryText.c_str(),
+        &startupInfo,
+        &process.processInformation);
+    if (!started) {
+        throw std::runtime_error("Failed to start command.");
+    }
+
+    CloseHandle(process.processInformation.hThread);
+    process.processInformation.hThread = nullptr;
+    return waitForChildProcess(process, timeout);
 }
 
 void removeScenarioRoot(const std::filesystem::path& scenarioRoot)
@@ -894,6 +1018,16 @@ public:
     {
         std::lock_guard lock(pendingAppUpdateMutex_);
         return scheduledAppUpdate_;
+    }
+
+    std::filesystem::path prepareScheduledAppUpdateScriptForTest()
+    {
+        const std::optional<relaydesk::runtime::PendingIncomingAppUpdate>
+            update = getScheduledAppUpdate();
+        if (!update.has_value()) {
+            throw std::runtime_error("No scheduled app update to apply.");
+        }
+        return prepareDownloadedAppUpdateScript(update.value(), false);
     }
 
     void loadSelectedTransferRecord(
@@ -2675,9 +2809,14 @@ int runProcessUpdateChild(std::uint16_t sourcePort,
         return result;
     }
 
+    const std::filesystem::path scriptPath =
+        runtime.prepareScheduledAppUpdateScriptForTest();
     writeTextFile(statusFile,
                   "ok=1\nreceived_size="
                       + std::to_string(scheduledUpdate->GetReceivedSize())
+                      + "\nrequest_id=" + scheduledUpdate->GetRequestId()
+                      + "\nscript_path="
+                      + filesystemPathToGenericUtf8ForTest(scriptPath)
                       + "\n");
     return 0;
 }
@@ -2820,9 +2959,12 @@ int runsAppUpdateAcrossProcesses()
     const std::filesystem::path scenarioRoot =
         makeUniqueProcessScenarioRoot("app-update");
     const std::filesystem::path childInstallRoot =
-        scenarioRoot / L"中文更新路径";
+        scenarioRoot / utf8ToWideForTest(
+            "\xE4\xB8\xAD\xE6\x96\x87\xE6\x9B\xB4\xE6\x96\xB0"
+            "\xE8\xB7\xAF\xE5\xBE\x84");
     const std::filesystem::path childExecutablePath =
         copyExecutableToScenarioRoot(childInstallRoot);
+    const std::filesystem::path childDataRoot = childInstallRoot / "data";
     const std::filesystem::path statusFile = scenarioRoot / "child-status.txt";
     const std::vector<std::uint8_t> expectedPayload =
         readBytes(currentExecutablePath());
@@ -2956,6 +3098,63 @@ int runsAppUpdateAcrossProcesses()
 
     if (const int result = expect(status.find("ok=1") != std::string::npos,
                                   "App update child status file mismatch.");
+        result != 0) {
+        removeScenarioRoot(scenarioRoot);
+        return result;
+    }
+    const std::string requestId = readStatusValue(status, "request_id");
+    if (const int result = expect(!requestId.empty(),
+                                  "App update child did not report request id.");
+        result != 0) {
+        removeScenarioRoot(scenarioRoot);
+        return result;
+    }
+    const std::string scriptPathText = readStatusValue(status, "script_path");
+    if (const int result = expect(!scriptPathText.empty(),
+                                  "App update child did not report script path.");
+        result != 0) {
+        removeScenarioRoot(scenarioRoot);
+        return result;
+    }
+
+    const std::filesystem::path scriptPath =
+        filesystemPathFromGenericUtf8ForTest(scriptPathText);
+    const std::filesystem::path scriptLogPath =
+        childDataRoot / "transfers" / "temp" / "updates"
+        / requestId / "apply-update.log";
+    writeBytes(childExecutablePath, {'s', 't', 'a', 'l', 'e'});
+    const DWORD scriptExitCode = runCommandAndWait(
+        "cmd.exe",
+        {L"/d", L"/c", scriptPath.wstring()},
+        scriptPath.parent_path(),
+        std::chrono::seconds(30));
+    if (!waitForPredicate(
+            [&scriptLogPath] {
+                const std::string scriptLog =
+                    readTextFileIfExists(scriptLogPath);
+                return scriptLog.find("update script finished")
+                    != std::string::npos;
+            },
+            std::chrono::seconds(5))) {
+        const std::string scriptLog = readTextFileIfExists(scriptLogPath);
+        removeScenarioRoot(scenarioRoot);
+        return fail("App update script did not finish. Scenario: "
+                    + scenarioRoot.string() + ". Status: " + status
+                    + ". Exit code: " + std::to_string(scriptExitCode)
+                    + ". Log path: " + scriptLogPath.string()
+                    + ". Log: " + scriptLog);
+    }
+    const std::string scriptLog = readTextFileIfExists(scriptLogPath);
+    if (const int result =
+            expect(scriptLog.find("copy succeeded") != std::string::npos,
+                   "App update script did not copy payload.");
+        result != 0) {
+        removeScenarioRoot(scenarioRoot);
+        return result;
+    }
+    if (const int result =
+            expect(readBytes(childExecutablePath) == expectedPayload,
+                   "App update script did not replace child executable.");
         result != 0) {
         removeScenarioRoot(scenarioRoot);
         return result;
