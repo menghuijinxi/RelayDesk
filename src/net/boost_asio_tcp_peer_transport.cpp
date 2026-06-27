@@ -1,5 +1,7 @@
 #include "net/boost_asio_tcp_peer_transport.h"
 
+#include "net/peer_message.h"
+
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -282,7 +284,14 @@ protected:
 
                 PeerFrame frame = decodePeerFrame(header, payload);
                 switch (frame.GetType()) {
-                case PeerFrameType::TransferOffer:
+                case PeerFrameType::TransferOffer: {
+                    const TransferOfferMessage offer =
+                        parseTransferOfferFrame(frame);
+                    if (!offer.GetResumeRequest()) {
+                        transferStreamOpen = true;
+                    }
+                    break;
+                }
                 case PeerFrameType::TransferChunk:
                     transferStreamOpen = true;
                     break;
