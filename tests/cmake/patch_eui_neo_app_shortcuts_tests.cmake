@@ -354,6 +354,13 @@ if(single_instance_pos LESS 0)
 endif()
 
 string(FIND "${patched_content}"
+            "GetAppUpdateExitRequested"
+            update_exit_request_pos)
+if(update_exit_request_pos LESS 0)
+    message(FATAL_ERROR "App update exit request patch was not applied")
+endif()
+
+string(FIND "${patched_content}"
             "requestExistingRelayDeskTrayWindow"
             tray_first_activation_pos)
 if(tray_first_activation_pos LESS 0)

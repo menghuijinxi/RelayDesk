@@ -56,9 +56,15 @@ constexpr auto kPeerStatusRefreshInterval = 1s;
 #if defined(RELAYDESK_HAS_BOOST_ASIO)
 constexpr std::uintmax_t kTransferChunkSize = 1024u * 1024u;
 constexpr const char* kAppUpdateTempDirectoryName = "updates";
-constexpr const char* kAppUpdateTempFileName = "relaydesk-update.exe";
-constexpr const char* kAppUpdateScriptFileName = "apply-update.cmd";
-constexpr const char* kAppUpdateScriptLogFileName = "apply-update.log";
+constexpr const char* kAppUpdateLogFileName = "apply-update.log";
+constexpr const char* kAppUpdateHelperFileName = "RelayDeskUpdateHelper.exe";
+constexpr const wchar_t* kAppUpdateApplyArgument = L"--relaydesk-apply-update";
+constexpr const wchar_t* kAppUpdateTargetArgument = L"--target";
+constexpr const wchar_t* kAppUpdatePayloadArgument = L"--payload";
+constexpr const wchar_t* kAppUpdatePidArgument = L"--pid";
+constexpr const wchar_t* kAppUpdateStartDirectoryArgument = L"--start-directory";
+constexpr const wchar_t* kAppUpdateLogArgument = L"--log";
+constexpr const wchar_t* kAppUpdateRestartArgument = L"--restart";
 constexpr std::size_t kMaxFolderPackageRelativePathBytes = 32u * 1024u;
 using TransferProgressCallback = std::function<void(const std::string&,
                                                     const std::string&,
@@ -1063,22 +1069,6 @@ std::filesystem::path makeAppUpdateDirectory(
         / filesystemPathFromUtf8String(sanitizeFileName(requestId));
 }
 
-std::filesystem::path makeAppUpdateTempFilePath(
-    const relaydesk::storage::AppPaths& appPaths,
-    const std::string& requestId)
-{
-    return makeAppUpdateDirectory(appPaths, requestId)
-        / filesystemPathFromUtf8String(kAppUpdateTempFileName);
-}
-
-std::filesystem::path makeAppUpdateScriptFilePath(
-    const relaydesk::storage::AppPaths& appPaths,
-    const std::string& requestId)
-{
-    return makeAppUpdateDirectory(appPaths, requestId)
-        / filesystemPathFromUtf8String(kAppUpdateScriptFileName);
-}
-
 std::string appUpdatePackageFileName(
     const relaydesk::storage::AppPaths& appPaths)
 {
@@ -1090,68 +1080,28 @@ std::string appUpdatePackageFileName(
     return sanitizeFileName(executableFileName);
 }
 
-std::string base64EncodeBytes(const std::vector<std::uint8_t>& bytes)
+std::filesystem::path makeAppUpdateTempFilePath(
+    const relaydesk::storage::AppPaths& appPaths,
+    const std::string& requestId)
 {
-    constexpr char kAlphabet[] =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string result;
-    result.reserve(((bytes.size() + 2) / 3) * 4);
-    for (std::size_t index = 0; index < bytes.size(); index += 3) {
-        const std::uint32_t first = bytes[index];
-        const std::uint32_t second =
-            index + 1 < bytes.size() ? bytes[index + 1] : 0;
-        const std::uint32_t third =
-            index + 2 < bytes.size() ? bytes[index + 2] : 0;
-        const std::uint32_t combined =
-            (first << 16) | (second << 8) | third;
-        result.push_back(kAlphabet[(combined >> 18) & 0x3F]);
-        result.push_back(kAlphabet[(combined >> 12) & 0x3F]);
-        result.push_back(index + 1 < bytes.size()
-                             ? kAlphabet[(combined >> 6) & 0x3F]
-                             : '=');
-        result.push_back(index + 2 < bytes.size()
-                             ? kAlphabet[combined & 0x3F]
-                             : '=');
-    }
-    return result;
+    return makeAppUpdateDirectory(appPaths, requestId)
+        / filesystemPathFromUtf8String(appUpdatePackageFileName(appPaths));
 }
 
-std::wstring powershellSingleQuotedString(const std::wstring& value)
+std::filesystem::path makeAppUpdateLogFilePath(
+    const relaydesk::storage::AppPaths& appPaths,
+    const std::string& requestId)
 {
-    std::wstring quoted;
-    quoted.reserve(value.size() + 2);
-    quoted.push_back(L'\'');
-    for (wchar_t character : value) {
-        quoted.push_back(character);
-        if (character == L'\'') {
-            quoted.push_back(L'\'');
-        }
-    }
-    quoted.push_back(L'\'');
-    return quoted;
+    return makeAppUpdateDirectory(appPaths, requestId)
+        / filesystemPathFromUtf8String(kAppUpdateLogFileName);
 }
 
-std::wstring powershellPathLiteral(const std::filesystem::path& path)
+std::filesystem::path makeAppUpdateHelperFilePath(
+    const relaydesk::storage::AppPaths& appPaths,
+    const std::string& requestId)
 {
-    std::error_code error;
-    std::filesystem::path absolutePath = std::filesystem::absolute(path, error);
-    if (error || absolutePath.empty()) {
-        absolutePath = path;
-    }
-    return powershellSingleQuotedString(
-        absolutePath.lexically_normal().wstring());
-}
-
-std::string powershellEncodedCommand(const std::wstring& script)
-{
-    std::vector<std::uint8_t> bytes;
-    bytes.reserve(script.size() * 2);
-    for (wchar_t character : script) {
-        const auto codeUnit = static_cast<std::uint16_t>(character);
-        bytes.push_back(static_cast<std::uint8_t>(codeUnit & 0xFF));
-        bytes.push_back(static_cast<std::uint8_t>((codeUnit >> 8) & 0xFF));
-    }
-    return base64EncodeBytes(bytes);
+    return makeAppUpdateDirectory(appPaths, requestId)
+        / filesystemPathFromUtf8String(kAppUpdateHelperFileName);
 }
 
 std::uint32_t currentProcessId()
@@ -1169,125 +1119,58 @@ std::wstring quoteWindowsCommandLineArgument(const std::wstring& value)
     std::wstring result;
     result.reserve(value.size() + 2);
     result.push_back(L'"');
-    for (wchar_t character : value) {
-        if (character == L'"') {
-            result += L"\\\"";
-        } else {
-            result.push_back(character);
+    std::size_t slashCount = 0;
+    for (const wchar_t character : value) {
+        if (character == L'\\') {
+            ++slashCount;
+            continue;
         }
+        if (character == L'"') {
+            result.append(slashCount * 2 + 1, L'\\');
+            result.push_back(character);
+            slashCount = 0;
+            continue;
+        }
+        result.append(slashCount, L'\\');
+        slashCount = 0;
+        result.push_back(character);
     }
+    result.append(slashCount * 2, L'\\');
     result.push_back(L'"');
     return result;
 }
 #endif
 
-void writeAppUpdateScript(const std::filesystem::path& scriptPath,
-                          const std::filesystem::path& targetPath,
-                          const std::filesystem::path& updatePath,
-                          const std::filesystem::path& startDirectory,
-                          bool restartAfterApply)
+std::filesystem::path absoluteNormalizedPath(const std::filesystem::path& path)
 {
-    std::filesystem::create_directories(scriptPath.parent_path());
-    std::ofstream output(scriptPath, std::ios::binary | std::ios::trunc);
-    if (!output) {
-        throw std::runtime_error("Failed to create app update script.");
+    std::error_code error;
+    std::filesystem::path absolutePath = std::filesystem::absolute(path, error);
+    if (error || absolutePath.empty()) {
+        absolutePath = path;
     }
-
-    const std::filesystem::path scriptDirectory = scriptPath.parent_path();
-    const std::filesystem::path logPath =
-        scriptDirectory /
-        filesystemPathFromUtf8String(kAppUpdateScriptLogFileName);
-    std::wstring script;
-    script += L"$ErrorActionPreference = 'Stop'\n";
-    script += L"$targetProcessId = "
-        + std::to_wstring(currentProcessId()) + L"\n";
-    script += L"$target = " + powershellPathLiteral(targetPath) + L"\n";
-    script += L"$update = " + powershellPathLiteral(updatePath) + L"\n";
-    script += L"$startDirectory = "
-        + powershellPathLiteral(startDirectory) + L"\n";
-    script += L"$log = " + powershellPathLiteral(logPath) + L"\n";
-    script += L"function Write-RelayDeskUpdateLog([string]$message) {\n";
-    script += L"  Add-Content -LiteralPath $log -Encoding UTF8 "
-              L"-Value ('[{0}] {1}' -f (Get-Date), $message)\n";
-    script += L"}\n";
-    script += L"New-Item -ItemType Directory -Force "
-              L"-Path (Split-Path -Path $log -Parent) "
-              L"| Out-Null\n";
-    script += L"Set-Content -LiteralPath $log -Encoding UTF8 "
-              L"-Value ('[{0}] RelayDesk update started' -f (Get-Date))\n";
-    script += L"Write-RelayDeskUpdateLog ('target=' + $target)\n";
-    script += L"Write-RelayDeskUpdateLog ('update=' + $update)\n";
-    script += L"Write-RelayDeskUpdateLog ('startdir=' + $startDirectory)\n";
-    script += L"Write-RelayDeskUpdateLog ('pid=' + $targetProcessId)\n";
-    script += L"if (-not (Test-Path -LiteralPath $update -PathType Leaf)) {\n";
-    script += L"  Write-RelayDeskUpdateLog 'update file missing'\n";
-    script += L"  exit 2\n";
-    script += L"}\n";
-    script += L"try { Stop-Process -Id $targetProcessId -Force "
-              L"-ErrorAction SilentlyContinue } catch {}\n";
-    script += L"for ($i = 1; $i -le 60; $i++) {\n";
-    script += L"  if (-not (Get-Process -Id $targetProcessId "
-              L"-ErrorAction SilentlyContinue)) { break }\n";
-    script += L"  Start-Sleep -Seconds 1\n";
-    script += L"}\n";
-    script += L"if (Get-Process -Id $targetProcessId "
-              L"-ErrorAction SilentlyContinue) {\n";
-    script += L"  Write-RelayDeskUpdateLog 'process did not exit'\n";
-    script += L"  exit 3\n";
-    script += L"}\n";
-    script += L"try { if (Test-Path -LiteralPath $target) { "
-              L"attrib.exe -R $target | Out-Null } } catch {}\n";
-    script += L"$copied = $false\n";
-    script += L"for ($i = 1; $i -le 60; $i++) {\n";
-    script += L"  Write-RelayDeskUpdateLog ('copy attempt ' + $i)\n";
-    script += L"  try {\n";
-    script += L"    Copy-Item -LiteralPath $update -Destination $target -Force\n";
-    script += L"    $copied = $true\n";
-    script += L"    break\n";
-    script += L"  } catch {\n";
-    script += L"    Write-RelayDeskUpdateLog "
-              L"('copy failed: ' + $_.Exception.Message)\n";
-    script += L"    Start-Sleep -Seconds 1\n";
-    script += L"  }\n";
-    script += L"}\n";
-    script += L"if (-not $copied) {\n";
-    script += L"  Write-RelayDeskUpdateLog 'copy failed after 60 attempts'\n";
-    script += L"  exit 4\n";
-    script += L"}\n";
-    script += L"Write-RelayDeskUpdateLog 'copy succeeded'\n";
-    if (restartAfterApply) {
-        script += L"try {\n";
-        script += L"  Start-Process -FilePath $target "
-                  L"-WorkingDirectory $startDirectory\n";
-        script += L"  Write-RelayDeskUpdateLog 'restart requested'\n";
-        script += L"} catch {\n";
-        script += L"  Write-RelayDeskUpdateLog "
-                  L"('restart failed: ' + $_.Exception.Message)\n";
-        script += L"  exit 5\n";
-        script += L"}\n";
-    } else {
-        script += L"Write-RelayDeskUpdateLog 'restart skipped'\n";
-    }
-    script += L"Write-RelayDeskUpdateLog 'update script finished'\n";
-    script += L"exit 0\n";
-
-    output << "@echo off\n";
-    output << "powershell.exe -NoProfile -NonInteractive "
-              "-ExecutionPolicy Bypass -EncodedCommand "
-           << powershellEncodedCommand(script) << "\n";
-    output << "exit /b %errorlevel%\n";
-    if (!output) {
-        throw std::runtime_error("Failed to write app update script.");
-    }
+    return absolutePath.lexically_normal();
 }
 
-bool launchAppUpdateScript(const std::filesystem::path& scriptPath)
+std::wstring makeWindowsCommandLine(
+    const std::filesystem::path& executablePath,
+    const std::vector<std::wstring>& arguments)
+{
+    std::wstring commandLine =
+        quoteWindowsCommandLineArgument(executablePath.wstring());
+    for (const std::wstring& argument : arguments) {
+        commandLine.push_back(L' ');
+        commandLine += quoteWindowsCommandLineArgument(argument);
+    }
+    return commandLine;
+}
+
+bool launchWindowsProcess(const std::filesystem::path& executablePath,
+                          const std::vector<std::wstring>& arguments,
+                          const std::filesystem::path& workingDirectory)
 {
 #if defined(_WIN32)
-    const std::wstring script = scriptPath.wstring();
-    const std::wstring directory = scriptPath.parent_path().wstring();
-    std::wstring commandLine =
-        L"cmd.exe /d /c " + quoteWindowsCommandLineArgument(script);
+    std::wstring commandLine = makeWindowsCommandLine(executablePath, arguments);
+    std::wstring directory = workingDirectory.wstring();
     STARTUPINFOW startupInfo{};
     startupInfo.cb = sizeof(startupInfo);
     startupInfo.dwFlags = STARTF_USESHOWWINDOW;
@@ -1300,7 +1183,7 @@ bool launchAppUpdateScript(const std::filesystem::path& scriptPath)
                                         FALSE,
                                         CREATE_NO_WINDOW,
                                         nullptr,
-                                        directory.c_str(),
+                                        directory.empty() ? nullptr : directory.c_str(),
                                         &startupInfo,
                                         &processInfo);
     if (!started) {
@@ -1310,9 +1193,159 @@ bool launchAppUpdateScript(const std::filesystem::path& scriptPath)
     CloseHandle(processInfo.hProcess);
     return true;
 #else
-    (void)scriptPath;
+    (void)executablePath;
+    (void)arguments;
+    (void)workingDirectory;
     return false;
 #endif
+}
+
+bool waitForProcessExit(std::uint32_t processId,
+                        std::chrono::milliseconds timeout)
+{
+#if defined(_WIN32)
+    if (processId == 0 || processId == currentProcessId()) {
+        return true;
+    }
+    HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, processId);
+    if (process == nullptr) {
+        return true;
+    }
+    const DWORD result =
+        WaitForSingleObject(process, static_cast<DWORD>(timeout.count()));
+    CloseHandle(process);
+    return result == WAIT_OBJECT_0;
+#else
+    (void)processId;
+    (void)timeout;
+    return true;
+#endif
+}
+
+void appendAppUpdateLog(const std::filesystem::path& logPath,
+                        const std::string& message)
+{
+    std::filesystem::create_directories(logPath.parent_path());
+    std::ofstream output(logPath, std::ios::binary | std::ios::app);
+    if (!output) {
+        throw std::runtime_error("Failed to open app update log.");
+    }
+    output << '[' << relaydesk::core::currentUtcTimestamp() << "] "
+           << message << '\n';
+}
+
+bool copyFileWithRetry(const std::filesystem::path& sourcePath,
+                       const std::filesystem::path& targetPath,
+                       const std::filesystem::path& logPath)
+{
+    for (int attempt = 1; attempt <= 60; ++attempt) {
+        appendAppUpdateLog(logPath,
+                           "copy attempt " + std::to_string(attempt));
+        std::error_code error;
+        std::filesystem::copy_file(
+            sourcePath,
+            targetPath,
+            std::filesystem::copy_options::overwrite_existing,
+            error);
+        if (!error) {
+            appendAppUpdateLog(logPath, "copy succeeded");
+            return true;
+        }
+        appendAppUpdateLog(logPath, "copy failed: " + error.message());
+        std::this_thread::sleep_for(1s);
+    }
+    appendAppUpdateLog(logPath, "copy failed after 60 attempts");
+    return false;
+}
+
+bool forceProcessExitForUpdate(std::uint32_t processId,
+                               const std::filesystem::path& logPath)
+{
+#if defined(_WIN32)
+    if (processId == 0 || processId == currentProcessId()) {
+        return true;
+    }
+
+    HANDLE process =
+        OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, processId);
+    if (process == nullptr) {
+        appendAppUpdateLog(logPath, "target process already exited");
+        return true;
+    }
+
+    appendAppUpdateLog(logPath, "waiting for target process exit");
+    DWORD waitResult = WaitForSingleObject(process, 15000);
+    if (waitResult == WAIT_OBJECT_0) {
+        CloseHandle(process);
+        return true;
+    }
+
+    DWORD exitCode = 0;
+    if (GetExitCodeProcess(process, &exitCode) && exitCode == STILL_ACTIVE) {
+        appendAppUpdateLog(logPath, "terminating target process");
+        (void)TerminateProcess(process, 0);
+    }
+    waitResult = WaitForSingleObject(process, 60000);
+    CloseHandle(process);
+    return waitResult == WAIT_OBJECT_0;
+#else
+    (void)processId;
+    (void)logPath;
+    return true;
+#endif
+}
+
+bool clearReadOnlyAttribute(const std::filesystem::path& targetPath)
+{
+#if defined(_WIN32)
+    const DWORD attributes = GetFileAttributesW(targetPath.wstring().c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        return true;
+    }
+    if ((attributes & FILE_ATTRIBUTE_READONLY) == 0) {
+        return true;
+    }
+    return SetFileAttributesW(
+               targetPath.wstring().c_str(),
+               attributes & ~FILE_ATTRIBUTE_READONLY)
+        != FALSE;
+#else
+    (void)targetPath;
+    return true;
+#endif
+}
+
+std::vector<std::wstring> makeAppUpdateApplyArguments(
+    const AppUpdateApplyOptions& options)
+{
+    return {kAppUpdateApplyArgument,
+            kAppUpdateTargetArgument,
+            options.GetTargetPath().wstring(),
+            kAppUpdatePayloadArgument,
+            options.GetPayloadPath().wstring(),
+            kAppUpdatePidArgument,
+            std::to_wstring(options.GetTargetProcessId()),
+            kAppUpdateStartDirectoryArgument,
+            options.GetStartDirectory().wstring(),
+            kAppUpdateLogArgument,
+            options.GetLogPath().wstring(),
+            kAppUpdateRestartArgument,
+            options.GetRestartAfterApply() ? L"1" : L"0"};
+}
+
+bool parseUnsignedLong(const std::wstring& text, unsigned long& value)
+{
+    try {
+        std::size_t parsedLength = 0;
+        const unsigned long parsed = std::stoul(text, &parsedLength, 10);
+        if (parsedLength != text.size()) {
+            return false;
+        }
+        value = parsed;
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
 }
 
 enum class FolderPackageEntryType : std::uint8_t {
@@ -1860,6 +1893,148 @@ PendingTransferUpdate makePreparedOutgoingTransferUpdate(
 #endif
 
 } // namespace
+
+std::optional<AppUpdateApplyOptions> parseAppUpdateApplyOptions(
+    const std::vector<std::wstring>& arguments)
+{
+#if defined(RELAYDESK_HAS_BOOST_ASIO)
+    if (arguments.empty() || arguments.front() != kAppUpdateApplyArgument) {
+        return std::nullopt;
+    }
+
+    AppUpdateApplyOptions options;
+    bool hasTarget = false;
+    bool hasPayload = false;
+    bool hasProcessId = false;
+    bool hasStartDirectory = false;
+    bool hasLog = false;
+    bool hasRestart = false;
+    for (std::size_t index = 1; index + 1 < arguments.size(); index += 2) {
+        const std::wstring& key = arguments[index];
+        const std::wstring& value = arguments[index + 1];
+        if (key == kAppUpdateTargetArgument) {
+            options.SetTargetPath(absoluteNormalizedPath(value));
+            hasTarget = true;
+        } else if (key == kAppUpdatePayloadArgument) {
+            options.SetPayloadPath(absoluteNormalizedPath(value));
+            hasPayload = true;
+        } else if (key == kAppUpdatePidArgument) {
+            unsigned long processId = 0;
+            if (!parseUnsignedLong(value, processId)) {
+                return std::nullopt;
+            }
+            options.SetTargetProcessId(processId);
+            hasProcessId = true;
+        } else if (key == kAppUpdateStartDirectoryArgument) {
+            options.SetStartDirectory(absoluteNormalizedPath(value));
+            hasStartDirectory = true;
+        } else if (key == kAppUpdateLogArgument) {
+            options.SetLogPath(absoluteNormalizedPath(value));
+            hasLog = true;
+        } else if (key == kAppUpdateRestartArgument) {
+            options.SetRestartAfterApply(value == L"1" || value == L"true"
+                                         || value == L"TRUE");
+            hasRestart = true;
+        } else {
+            return std::nullopt;
+        }
+    }
+
+    if ((arguments.size() % 2) == 0 || !hasTarget || !hasPayload
+        || !hasProcessId || !hasStartDirectory || !hasLog || !hasRestart
+        || options.GetTargetPath().empty() || options.GetPayloadPath().empty()
+        || options.GetStartDirectory().empty() || options.GetLogPath().empty()) {
+        return std::nullopt;
+    }
+    return options;
+#else
+    (void)arguments;
+    return std::nullopt;
+#endif
+}
+
+int runAppUpdateApplyMode(const AppUpdateApplyOptions& options) noexcept
+{
+#if defined(RELAYDESK_HAS_BOOST_ASIO)
+    try {
+        appendAppUpdateLog(options.GetLogPath(),
+                           "RelayDesk update helper started");
+        appendAppUpdateLog(
+            options.GetLogPath(),
+            "target=" + filesystemPathToGenericUtf8String(
+                            options.GetTargetPath()));
+        appendAppUpdateLog(
+            options.GetLogPath(),
+            "payload=" + filesystemPathToGenericUtf8String(
+                             options.GetPayloadPath()));
+        appendAppUpdateLog(
+            options.GetLogPath(),
+            "startdir=" + filesystemPathToGenericUtf8String(
+                              options.GetStartDirectory()));
+        appendAppUpdateLog(options.GetLogPath(),
+                           "pid="
+                               + std::to_string(
+                                   options.GetTargetProcessId()));
+
+        if (!std::filesystem::is_regular_file(options.GetPayloadPath())) {
+            appendAppUpdateLog(options.GetLogPath(), "payload file missing");
+            return 2;
+        }
+
+        const bool processExited =
+            options.GetRestartAfterApply()
+                ? forceProcessExitForUpdate(
+                      static_cast<std::uint32_t>(
+                          options.GetTargetProcessId()),
+                      options.GetLogPath())
+                : waitForProcessExit(
+                      static_cast<std::uint32_t>(
+                          options.GetTargetProcessId()),
+                      60000ms);
+        if (!processExited) {
+            appendAppUpdateLog(options.GetLogPath(),
+                               "target process did not exit");
+            return 3;
+        }
+
+        if (!clearReadOnlyAttribute(options.GetTargetPath())) {
+            appendAppUpdateLog(options.GetLogPath(),
+                               "failed to clear read-only attribute");
+        }
+
+        if (!copyFileWithRetry(options.GetPayloadPath(),
+                               options.GetTargetPath(),
+                               options.GetLogPath())) {
+            return 4;
+        }
+
+        if (options.GetRestartAfterApply()) {
+            if (!launchWindowsProcess(options.GetTargetPath(),
+                                      {},
+                                      options.GetStartDirectory())) {
+                appendAppUpdateLog(options.GetLogPath(), "restart failed");
+                return 5;
+            }
+            appendAppUpdateLog(options.GetLogPath(), "restart requested");
+        } else {
+            appendAppUpdateLog(options.GetLogPath(), "restart skipped");
+        }
+        appendAppUpdateLog(options.GetLogPath(), "update helper finished");
+        return 0;
+    } catch (const std::exception& error) {
+        try {
+            appendAppUpdateLog(options.GetLogPath(),
+                               std::string("update helper failed: ")
+                                   + error.what());
+        } catch (const std::exception&) {
+        }
+        return 1;
+    }
+#else
+    (void)options;
+    return 1;
+#endif
+}
 
 class DiscoveryWorkerHandle {
 public:
@@ -2798,7 +2973,7 @@ void RelayDeskRuntime::completeDownloadedAppUpdate(
 #endif
 }
 
-std::filesystem::path RelayDeskRuntime::prepareDownloadedAppUpdateScript(
+AppUpdateApplyOptions RelayDeskRuntime::prepareDownloadedAppUpdate(
     const PendingIncomingAppUpdate& update,
     bool restartAfterApply)
 {
@@ -2818,18 +2993,48 @@ std::filesystem::path RelayDeskRuntime::prepareDownloadedAppUpdateScript(
     }
 
     const auto appPaths = relaydesk::storage::createAppPaths();
-    const std::filesystem::path scriptPath =
-        makeAppUpdateScriptFilePath(appPaths, update.GetRequestId());
-    writeAppUpdateScript(scriptPath,
-                         appPaths.GetExecutablePath(),
-                         update.GetTempFilePath(),
-                         appPaths.GetWorkDirectory(),
-                         restartAfterApply);
-    return scriptPath;
+    const std::filesystem::path helperPath =
+        makeAppUpdateHelperFilePath(appPaths, update.GetRequestId());
+    std::filesystem::create_directories(helperPath.parent_path());
+    std::error_code copyError;
+    std::filesystem::copy_file(appPaths.GetExecutablePath(),
+                               helperPath,
+                               std::filesystem::copy_options::overwrite_existing,
+                               copyError);
+    if (copyError || !std::filesystem::is_regular_file(helperPath)) {
+        throw std::runtime_error("Failed to prepare app update helper.");
+    }
+
+    AppUpdateApplyOptions options;
+    options.SetTargetPath(absoluteNormalizedPath(appPaths.GetExecutablePath()));
+    options.SetPayloadPath(absoluteNormalizedPath(update.GetTempFilePath()));
+    options.SetHelperPath(absoluteNormalizedPath(helperPath));
+    options.SetStartDirectory(absoluteNormalizedPath(appPaths.GetWorkDirectory()));
+    options.SetLogPath(absoluteNormalizedPath(
+        makeAppUpdateLogFilePath(appPaths, update.GetRequestId())));
+    options.SetTargetProcessId(currentProcessId());
+    options.SetRestartAfterApply(restartAfterApply);
+    return options;
 #else
     (void)update;
     (void)restartAfterApply;
-    return {};
+    return AppUpdateApplyOptions();
+#endif
+}
+
+bool RelayDeskRuntime::launchAppUpdateHelper(
+    const AppUpdateApplyOptions& options)
+{
+#if defined(RELAYDESK_HAS_BOOST_ASIO)
+    if (appUpdateHelperLauncherForTest_) {
+        return appUpdateHelperLauncherForTest_(options);
+    }
+    return launchWindowsProcess(options.GetHelperPath(),
+                                makeAppUpdateApplyArguments(options),
+                                options.GetStartDirectory());
+#else
+    (void)options;
+    return false;
 #endif
 }
 
@@ -2838,13 +3043,13 @@ void RelayDeskRuntime::applyDownloadedAppUpdate(
     bool restartAfterApply)
 {
 #if defined(RELAYDESK_HAS_BOOST_ASIO)
-    const std::filesystem::path scriptPath =
-        prepareDownloadedAppUpdateScript(update, restartAfterApply);
-    if (scriptPath.empty()) {
+    const AppUpdateApplyOptions options =
+        prepareDownloadedAppUpdate(update, restartAfterApply);
+    if (options.GetHelperPath().empty()) {
         return;
     }
-    if (!launchAppUpdateScript(scriptPath)) {
-        throw std::runtime_error("Failed to launch app update script.");
+    if (!launchAppUpdateHelper(options)) {
+        throw std::runtime_error("Failed to launch app update helper.");
     }
 
     logDiagnostic("runtime.update.apply_started request_id="
@@ -2853,6 +3058,10 @@ void RelayDeskRuntime::applyDownloadedAppUpdate(
                   + std::to_string(update.GetAppVersion())
                   + " restart_after_apply="
                   + std::to_string(restartAfterApply));
+    if (restartAfterApply) {
+        appUpdateExitRequested_.store(true, std::memory_order_relaxed);
+        requestUiRefresh();
+    }
 #else
     (void)update;
     (void)restartAfterApply;

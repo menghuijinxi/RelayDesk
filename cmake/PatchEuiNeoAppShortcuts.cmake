@@ -189,6 +189,18 @@ function(relaydesk_patch_eui_neo_app_shortcuts eui_source_dir)
             endif()
         endif()
 
+        string(FIND "${eui_glfw_app_content}"
+                    "#include \"main/app_runtime.h\""
+                    eui_glfw_relaydesk_runtime_include_pos)
+        if(eui_glfw_relaydesk_runtime_include_pos LESS 0)
+            string(REPLACE "#include <GLFW/glfw3.h>\n"
+                           "#include <GLFW/glfw3.h>\n\n#include \"main/app_runtime.h\"\n"
+                           eui_glfw_app_content
+                           "${eui_glfw_app_content}")
+            set(eui_patched_app_shortcuts ON)
+            set(eui_glfw_app_changed ON)
+        endif()
+
         string(CONCAT eui_glfw_timer_then_dpi_block
             "struct TimerResolutionGuard {\n"
             "    TimerResolutionGuard() {\n"
@@ -598,6 +610,30 @@ function(relaydesk_patch_eui_neo_app_shortcuts eui_source_dir)
             if(eui_glfw_consume_tray_show_pos GREATER_EQUAL 0)
                 string(REPLACE "${eui_glfw_consume_tray_show_block}"
                                "${eui_glfw_consume_tray_show_with_minimize_block}"
+                               eui_glfw_app_content
+                               "${eui_glfw_app_content}")
+                set(eui_patched_app_shortcuts ON)
+                set(eui_glfw_app_changed ON)
+            endif()
+        endif()
+
+        string(CONCAT eui_glfw_update_exit_block
+            "        if (relaydesk::runtime::getRelayDeskRuntime().GetAppUpdateExitRequested()) {\n"
+            "            windowState.forceClose = true;\n"
+            "            glfwSetWindowShouldClose(window, GLFW_TRUE);\n"
+            "            break;\n"
+            "        }\n"
+        )
+        string(FIND "${eui_glfw_app_content}"
+                    "GetAppUpdateExitRequested"
+                    eui_glfw_update_exit_pos)
+        if(eui_glfw_update_exit_pos LESS 0)
+            string(FIND "${eui_glfw_app_content}"
+                        "${eui_glfw_consume_tray_show_with_minimize_block}"
+                        eui_glfw_update_exit_anchor_pos)
+            if(eui_glfw_update_exit_anchor_pos GREATER_EQUAL 0)
+                string(REPLACE "${eui_glfw_consume_tray_show_with_minimize_block}"
+                               "${eui_glfw_consume_tray_show_with_minimize_block}${eui_glfw_update_exit_block}"
                                eui_glfw_app_content
                                "${eui_glfw_app_content}")
                 set(eui_patched_app_shortcuts ON)

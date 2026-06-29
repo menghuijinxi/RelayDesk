@@ -163,8 +163,18 @@ if(RELAYDESK_HAS_EUI_NEO)
         endif()
     endforeach()
 
+    set(RELAYDESK_EUI_MAIN_WRAPPER
+        "${CMAKE_CURRENT_BINARY_DIR}/relaydesk_eui_glfw_app_main.cpp")
+    file(READ "${RELAYDESK_EUI_NEO_SOURCE_DIR}/core/app/glfw_app_main.cpp"
+        RELAYDESK_EUI_MAIN_SOURCE)
+    string(REPLACE "int main()" "int relaydesk_eui_main()"
+        RELAYDESK_EUI_MAIN_SOURCE "${RELAYDESK_EUI_MAIN_SOURCE}")
+    file(WRITE "${RELAYDESK_EUI_MAIN_WRAPPER}"
+        "${RELAYDESK_EUI_MAIN_SOURCE}")
+
     add_executable(relaydesk
-        "${RELAYDESK_EUI_NEO_SOURCE_DIR}/core/app/glfw_app_main.cpp"
+        "${RELAYDESK_EUI_MAIN_WRAPPER}"
+        src/main/relaydesk_entry.cpp
         src/main/app.cpp
         src/main/image_attachment_store.cpp
         src/main/app_runtime.cpp

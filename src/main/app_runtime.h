@@ -26,6 +26,62 @@ namespace relaydesk::runtime {
 class DiscoveryWorkerHandle;
 class TcpPeerTransportHandle;
 
+class AppUpdateApplyOptions {
+public:
+    const std::filesystem::path& GetTargetPath() const { return targetPath_; }
+    const std::filesystem::path& GetPayloadPath() const { return payloadPath_; }
+    const std::filesystem::path& GetHelperPath() const { return helperPath_; }
+    const std::filesystem::path& GetStartDirectory() const
+    {
+        return startDirectory_;
+    }
+    const std::filesystem::path& GetLogPath() const { return logPath_; }
+    unsigned long GetTargetProcessId() const { return targetProcessId_; }
+    bool GetRestartAfterApply() const { return restartAfterApply_; }
+
+    void SetTargetPath(std::filesystem::path targetPath)
+    {
+        targetPath_ = std::move(targetPath);
+    }
+    void SetPayloadPath(std::filesystem::path payloadPath)
+    {
+        payloadPath_ = std::move(payloadPath);
+    }
+    void SetHelperPath(std::filesystem::path helperPath)
+    {
+        helperPath_ = std::move(helperPath);
+    }
+    void SetStartDirectory(std::filesystem::path startDirectory)
+    {
+        startDirectory_ = std::move(startDirectory);
+    }
+    void SetLogPath(std::filesystem::path logPath)
+    {
+        logPath_ = std::move(logPath);
+    }
+    void SetTargetProcessId(unsigned long targetProcessId)
+    {
+        targetProcessId_ = targetProcessId;
+    }
+    void SetRestartAfterApply(bool restartAfterApply)
+    {
+        restartAfterApply_ = restartAfterApply;
+    }
+
+protected:
+    std::filesystem::path targetPath_;
+    std::filesystem::path payloadPath_;
+    std::filesystem::path helperPath_;
+    std::filesystem::path startDirectory_;
+    std::filesystem::path logPath_;
+    unsigned long targetProcessId_ = 0;
+    bool restartAfterApply_ = false;
+};
+
+std::optional<AppUpdateApplyOptions> parseAppUpdateApplyOptions(
+    const std::vector<std::wstring>& arguments);
+int runAppUpdateApplyMode(const AppUpdateApplyOptions& options) noexcept;
+
 enum class AppUpdateInstallMode {
     RestartNow,
     InstallOnExit,
@@ -502,6 +558,15 @@ public:
     bool GetDiscoveryStarted() const { return discoveryStarted_; }
     std::uint16_t GetDiscoveryUdpPort() const { return discoveryUdpPort_; }
     std::optional<AppUpdatePrompt> GetAppUpdatePrompt();
+    bool GetAppUpdateExitRequested() const
+    {
+        return appUpdateExitRequested_.load(std::memory_order_relaxed);
+    }
+    void SetAppUpdateHelperLauncherForTest(
+        std::function<bool(const AppUpdateApplyOptions&)> launcher)
+    {
+        appUpdateHelperLauncherForTest_ = std::move(launcher);
+    }
     std::uint64_t ConsumePendingUserNotificationCount();
     void SetUserNotificationHandler(std::function<void()> handler);
 
@@ -547,9 +612,10 @@ protected:
         const PeerListItem& peer,
         const relaydesk::net::AppUpdateRequestMessage& request);
     void completeDownloadedAppUpdate(const PendingIncomingAppUpdate& update);
-    std::filesystem::path prepareDownloadedAppUpdateScript(
+    AppUpdateApplyOptions prepareDownloadedAppUpdate(
         const PendingIncomingAppUpdate& update,
         bool restartAfterApply);
+    bool launchAppUpdateHelper(const AppUpdateApplyOptions& options);
     void applyDownloadedAppUpdate(const PendingIncomingAppUpdate& update,
                                   bool restartAfterApply);
     void launchScheduledAppUpdateOnExit() noexcept;
@@ -647,6 +713,8 @@ protected:
     std::chrono::steady_clock::time_point nextPeerStatusRefreshAt_{};
     std::filesystem::path diagnosticLogFilePath_;
     std::function<void()> userNotificationHandler_;
+    std::function<bool(const AppUpdateApplyOptions&)>
+        appUpdateHelperLauncherForTest_;
     std::mutex pendingPeerMutex_;
     std::mutex pendingChatMutex_;
     std::mutex pendingTransferUpdateMutex_;
@@ -659,6 +727,7 @@ protected:
     mutable std::mutex chatHistoryStorageMutex_;
     std::atomic_bool uiRefreshPending_ = false;
     std::atomic_bool peerStatusRefreshPending_ = false;
+    std::atomic_bool appUpdateExitRequested_ = false;
     std::atomic<std::uint64_t> pendingUserNotificationCount_ = 0;
     bool storageAvailable_ = false;
     bool discoveryStarted_ = false;

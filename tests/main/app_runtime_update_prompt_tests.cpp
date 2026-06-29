@@ -27,6 +27,7 @@
 #include <boost/asio.hpp>
 
 #include <windows.h>
+#include <shellapi.h>
 
 namespace {
 
@@ -266,6 +267,14 @@ std::filesystem::path makeUniqueProcessScenarioRoot(const std::string& prefix)
                std::chrono::steady_clock::now().time_since_epoch().count()));
 }
 
+std::filesystem::path makeUniqueProcessScenarioRoot(const std::wstring& prefix)
+{
+    return processTestRoot()
+        / (prefix + L"-"
+           + std::to_wstring(
+               std::chrono::steady_clock::now().time_since_epoch().count()));
+}
+
 std::filesystem::path currentExecutablePath()
 {
     std::wstring buffer(32768, L'\0');
@@ -378,7 +387,23 @@ std::wstring quoteWindowsArgument(const std::wstring& value)
     std::wstring quoted;
     quoted.reserve(value.size() + 2);
     quoted.push_back(L'"');
-    quoted += value;
+    std::size_t slashCount = 0;
+    for (const wchar_t character : value) {
+        if (character == L'\\') {
+            ++slashCount;
+            continue;
+        }
+        if (character == L'"') {
+            quoted.append(slashCount * 2 + 1, L'\\');
+            quoted.push_back(character);
+            slashCount = 0;
+            continue;
+        }
+        quoted.append(slashCount, L'\\');
+        slashCount = 0;
+        quoted.push_back(character);
+    }
+    quoted.append(slashCount * 2, L'\\');
     quoted.push_back(L'"');
     return quoted;
 }
@@ -393,6 +418,41 @@ std::wstring makeWindowsCommandLine(
         commandLine += quoteWindowsArgument(argument);
     }
     return commandLine;
+}
+
+std::vector<std::wstring> currentProcessWideArgumentsForTest()
+{
+    int argumentCount = 0;
+    LPWSTR* arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);
+    if (arguments == nullptr) {
+        return {};
+    }
+
+    std::vector<std::wstring> result;
+    result.reserve(static_cast<std::size_t>(argumentCount));
+    for (int index = 1; index < argumentCount; ++index) {
+        result.emplace_back(arguments[index]);
+    }
+    LocalFree(arguments);
+    return result;
+}
+
+std::vector<std::wstring> makeAppUpdateApplyArgumentsForTest(
+    const relaydesk::runtime::AppUpdateApplyOptions& options)
+{
+    return {L"--relaydesk-apply-update",
+            L"--target",
+            options.GetTargetPath().wstring(),
+            L"--payload",
+            options.GetPayloadPath().wstring(),
+            L"--pid",
+            std::to_wstring(options.GetTargetProcessId()),
+            L"--start-directory",
+            options.GetStartDirectory().wstring(),
+            L"--log",
+            options.GetLogPath().wstring(),
+            L"--restart",
+            options.GetRestartAfterApply() ? L"1" : L"0"};
 }
 
 struct ChildProcessHandle {
@@ -1196,11 +1256,13 @@ public:
     TestableRelayDeskRuntime()
         : RelayDeskRuntime(makeTestRuntimeOptions())
     {
+        installHelperLauncher();
     }
 
     explicit TestableRelayDeskRuntime(relaydesk::runtime::RelayDeskRuntimeOptions options)
         : RelayDeskRuntime(std::move(options))
     {
+        installHelperLauncher();
     }
 
     void receivePeerProfile(relaydesk::storage::PeerProfile profile, bool online)
@@ -1244,14 +1306,29 @@ public:
         return scheduledAppUpdate_;
     }
 
-    std::filesystem::path prepareScheduledAppUpdateScriptForTest()
+    relaydesk::runtime::AppUpdateApplyOptions prepareScheduledAppUpdateForTest()
     {
         const std::optional<relaydesk::runtime::PendingIncomingAppUpdate>
             update = getScheduledAppUpdate();
         if (!update.has_value()) {
             throw std::runtime_error("No scheduled app update to apply.");
         }
-        return prepareDownloadedAppUpdateScript(update.value(), false);
+        return prepareDownloadedAppUpdate(update.value(), false);
+    }
+
+    void applyDownloadedAppUpdateForTest(
+        const relaydesk::runtime::PendingIncomingAppUpdate& update,
+        bool restartAfterApply)
+    {
+        applyDownloadedAppUpdate(update, restartAfterApply);
+    }
+
+    bool GetHelperLaunchCalled() const { return helperLaunchCalled_; }
+
+    const relaydesk::runtime::AppUpdateApplyOptions&
+    GetLastHelperLaunchOptions() const
+    {
+        return lastHelperLaunchOptions_;
     }
 
     void loadSelectedTransferRecord(
@@ -1297,6 +1374,20 @@ public:
     {
         drainPendingTransferUpdates();
     }
+
+protected:
+    void installHelperLauncher()
+    {
+        SetAppUpdateHelperLauncherForTest(
+            [this](const relaydesk::runtime::AppUpdateApplyOptions& options) {
+                helperLaunchCalled_ = true;
+                lastHelperLaunchOptions_ = options;
+                return true;
+            });
+    }
+
+    bool helperLaunchCalled_ = false;
+    relaydesk::runtime::AppUpdateApplyOptions lastHelperLaunchOptions_;
 };
 
 template <typename Predicate>
@@ -1706,6 +1797,68 @@ int keepsHighestAppUpdatePromptAcrossMultiplePeers()
         if (const int result =
                 expect(prompt->GetAppVersion() == relaydesk::core::kAppVersion + 3,
                        "Lower-version peer downgraded the prompt version.");
+            result != 0) {
+            return result;
+        }
+    }
+
+    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    return 0;
+}
+
+int requestsProcessExitAfterLaunchingRestartUpdateHelper()
+{
+    const relaydesk::storage::AppPaths appPaths =
+        relaydesk::storage::createAppPaths();
+    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    relaydesk::storage::ensureAppDirectories(appPaths);
+
+    {
+        TestableRelayDeskRuntime runtime;
+        if (!runtime.GetStartupErrorMessage().empty()) {
+            return fail("Runtime startup failed: "
+                        + runtime.GetStartupErrorMessage());
+        }
+
+        const std::filesystem::path updatePath =
+            appPaths.GetTempTransfersDirectory()
+            / "updates"
+            / "restart-now-test"
+            / currentExecutablePath().filename();
+        const std::vector<std::uint8_t> updatePayload =
+            readBytes(currentExecutablePath());
+        writeBytes(updatePath, updatePayload);
+
+        relaydesk::runtime::PendingIncomingAppUpdate update;
+        update.SetRequestId("restart-now-test");
+        update.SetSourceDeviceId("runtime-update-peer");
+        update.SetAppVersion(relaydesk::core::kAppVersion + 1);
+        update.SetFileName(currentExecutablePath().filename().string());
+        update.SetTempFilePath(updatePath);
+        update.SetExpectedSize(
+            static_cast<std::uintmax_t>(updatePayload.size()));
+        update.SetReceivedSize(
+            static_cast<std::uintmax_t>(updatePayload.size()));
+        update.SetInstallMode(
+            relaydesk::runtime::AppUpdateInstallMode::RestartNow);
+
+        runtime.applyDownloadedAppUpdateForTest(update, true);
+        if (const int result =
+                expect(runtime.GetHelperLaunchCalled(),
+                       "Restart update did not launch the helper.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(runtime.GetLastHelperLaunchOptions()
+                           .GetRestartAfterApply(),
+                       "Restart update did not request helper restart.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(runtime.GetAppUpdateExitRequested(),
+                       "Restart update did not request app exit.");
             result != 0) {
             return result;
         }
@@ -3001,6 +3154,13 @@ int runProcessUpdateChild(std::uint16_t sourcePort,
     const std::vector<std::uint8_t> expectedPayload =
         readBytes(executablePath);
     if (const int result =
+            expect(scheduledUpdate->GetTempFilePath().filename()
+                       == executablePath.filename(),
+                   "Downloaded update temp file should keep executable name.");
+        result != 0) {
+        return result;
+    }
+    if (const int result =
             expect(std::filesystem::is_regular_file(
                        scheduledUpdate->GetTempFilePath()),
                    "Downloaded update temp file does not exist.");
@@ -3044,14 +3204,32 @@ int runProcessUpdateChild(std::uint16_t sourcePort,
         return result;
     }
 
-    const std::filesystem::path scriptPath =
-        runtime.prepareScheduledAppUpdateScriptForTest();
+    const relaydesk::runtime::AppUpdateApplyOptions updateOptions =
+        runtime.prepareScheduledAppUpdateForTest();
     writeTextFile(statusFile,
                   "ok=1\nreceived_size="
                       + std::to_string(scheduledUpdate->GetReceivedSize())
                       + "\nrequest_id=" + scheduledUpdate->GetRequestId()
-                      + "\nscript_path="
-                      + filesystemPathToGenericUtf8ForTest(scriptPath)
+                      + "\nhelper_path="
+                      + filesystemPathToGenericUtf8ForTest(
+                          updateOptions.GetHelperPath())
+                      + "\ntarget_path="
+                      + filesystemPathToGenericUtf8ForTest(
+                          updateOptions.GetTargetPath())
+                      + "\npayload_path="
+                      + filesystemPathToGenericUtf8ForTest(
+                          updateOptions.GetPayloadPath())
+                      + "\nlog_path="
+                      + filesystemPathToGenericUtf8ForTest(
+                          updateOptions.GetLogPath())
+                      + "\nstart_directory="
+                      + filesystemPathToGenericUtf8ForTest(
+                          updateOptions.GetStartDirectory())
+                      + "\npid="
+                      + std::to_string(updateOptions.GetTargetProcessId())
+                      + "\nrestart="
+                      + std::to_string(
+                          updateOptions.GetRestartAfterApply() ? 1 : 0)
                       + "\n");
     return 0;
 }
@@ -3420,15 +3598,20 @@ int runProcessTransferResumeReceiverChild(
 int runsAppUpdateAcrossProcesses()
 {
     const std::filesystem::path scenarioRoot =
-        makeUniqueProcessScenarioRoot("app-update");
+        makeUniqueProcessScenarioRoot(
+            utf8ToWideForTest(
+                "\xE5\xBA\x94\xE7\x94\xA8\xE6\x9B\xB4\xE6\x96\xB0"
+                "\xE5\x9C\xBA\xE6\x99\xAF"));
     const std::filesystem::path childInstallRoot =
         scenarioRoot / utf8ToWideForTest(
             "\xE4\xB8\xAD\xE6\x96\x87\xE6\x9B\xB4\xE6\x96\xB0"
             "\xE8\xB7\xAF\xE5\xBE\x84");
     const std::filesystem::path childExecutablePath =
         copyExecutableToScenarioRoot(childInstallRoot);
-    const std::filesystem::path childDataRoot = childInstallRoot / "data";
-    const std::filesystem::path statusFile = scenarioRoot / "child-status.txt";
+    const std::filesystem::path statusFile =
+        scenarioRoot
+        / utf8ToWideForTest(
+            "\xE5\xAD\x90\xE8\xBF\x9B\xE7\xA8\x8B\xE7\x8A\xB6\xE6\x80\x81.txt");
     const std::vector<std::uint8_t> expectedPayload =
         readBytes(currentExecutablePath());
     const std::uint16_t childListenPort = reserveAvailableTcpPort();
@@ -3572,52 +3755,84 @@ int runsAppUpdateAcrossProcesses()
         removeScenarioRoot(scenarioRoot);
         return result;
     }
-    const std::string scriptPathText = readStatusValue(status, "script_path");
-    if (const int result = expect(!scriptPathText.empty(),
-                                  "App update child did not report script path.");
+    const std::string helperPathText = readStatusValue(status, "helper_path");
+    if (const int result = expect(!helperPathText.empty(),
+                                  "App update child did not report helper path.");
+        result != 0) {
+        removeScenarioRoot(scenarioRoot);
+        return result;
+    }
+    const std::string targetPathText = readStatusValue(status, "target_path");
+    const std::string payloadPathText = readStatusValue(status, "payload_path");
+    const std::string logPathText = readStatusValue(status, "log_path");
+    const std::string startDirectoryText =
+        readStatusValue(status, "start_directory");
+    const std::string pidText = readStatusValue(status, "pid");
+    if (const int result =
+            expect(!targetPathText.empty() && !payloadPathText.empty()
+                       && !logPathText.empty()
+                       && !startDirectoryText.empty() && !pidText.empty(),
+                   "App update child did not report helper arguments.");
         result != 0) {
         removeScenarioRoot(scenarioRoot);
         return result;
     }
 
-    const std::filesystem::path scriptPath =
-        filesystemPathFromGenericUtf8ForTest(scriptPathText);
-    const std::filesystem::path scriptLogPath =
-        childDataRoot / "transfers" / "temp" / "updates"
-        / requestId / "apply-update.log";
+    relaydesk::runtime::AppUpdateApplyOptions updateOptions;
+    updateOptions.SetHelperPath(
+        filesystemPathFromGenericUtf8ForTest(helperPathText));
+    updateOptions.SetTargetPath(
+        filesystemPathFromGenericUtf8ForTest(targetPathText));
+    updateOptions.SetPayloadPath(
+        filesystemPathFromGenericUtf8ForTest(payloadPathText));
+    updateOptions.SetLogPath(filesystemPathFromGenericUtf8ForTest(logPathText));
+    updateOptions.SetStartDirectory(
+        filesystemPathFromGenericUtf8ForTest(startDirectoryText));
+    updateOptions.SetTargetProcessId(static_cast<unsigned long>(
+        std::stoul(pidText)));
+    updateOptions.SetRestartAfterApply(readStatusValue(status, "restart") == "1");
+
+    const std::filesystem::path helperPath = updateOptions.GetHelperPath();
+    const std::filesystem::path helperLogPath = updateOptions.GetLogPath();
     writeBytes(childExecutablePath, {'s', 't', 'a', 'l', 'e'});
-    const DWORD scriptExitCode = runCommandAndWait(
-        "cmd.exe",
-        {L"/d", L"/c", scriptPath.wstring()},
-        scriptPath.parent_path(),
+    const DWORD helperExitCode = runCommandAndWait(
+        helperPath,
+        makeAppUpdateApplyArgumentsForTest(updateOptions),
+        updateOptions.GetStartDirectory(),
         std::chrono::seconds(30));
     if (!waitForPredicate(
-            [&scriptLogPath] {
-                const std::string scriptLog =
-                    readTextFileIfExists(scriptLogPath);
-                return scriptLog.find("update script finished")
+            [&helperLogPath] {
+                const std::string helperLog =
+                    readTextFileIfExists(helperLogPath);
+                return helperLog.find("update helper finished")
                     != std::string::npos;
             },
             std::chrono::seconds(5))) {
-        const std::string scriptLog = readTextFileIfExists(scriptLogPath);
+        const std::string helperLog = readTextFileIfExists(helperLogPath);
         removeScenarioRoot(scenarioRoot);
-        return fail("App update script did not finish. Scenario: "
+        return fail("App update helper did not finish. Scenario: "
                     + scenarioRoot.string() + ". Status: " + status
-                    + ". Exit code: " + std::to_string(scriptExitCode)
-                    + ". Log path: " + scriptLogPath.string()
-                    + ". Log: " + scriptLog);
+                    + ". Exit code: " + std::to_string(helperExitCode)
+                    + ". Log path: " + helperLogPath.string()
+                    + ". Log: " + helperLog);
     }
-    const std::string scriptLog = readTextFileIfExists(scriptLogPath);
+    if (const int result = expect(helperExitCode == 0,
+                                  "App update helper returned a failure code.");
+        result != 0) {
+        removeScenarioRoot(scenarioRoot);
+        return result;
+    }
+    const std::string helperLog = readTextFileIfExists(helperLogPath);
     if (const int result =
-            expect(scriptLog.find("copy succeeded") != std::string::npos,
-                   "App update script did not copy payload.");
+            expect(helperLog.find("copy succeeded") != std::string::npos,
+                   "App update helper did not copy payload.");
         result != 0) {
         removeScenarioRoot(scenarioRoot);
         return result;
     }
     if (const int result =
             expect(readBytes(childExecutablePath) == expectedPayload,
-                   "App update script did not replace child executable.");
+                   "App update helper did not replace child executable.");
         result != 0) {
         removeScenarioRoot(scenarioRoot);
         return result;
@@ -4728,6 +4943,20 @@ int main(int argc, char** argv)
     } asyncShutdownGuard;
 
     try {
+        const std::vector<std::wstring> wideArguments =
+            currentProcessWideArgumentsForTest();
+        const std::optional<relaydesk::runtime::AppUpdateApplyOptions>
+            updateOptions =
+                relaydesk::runtime::parseAppUpdateApplyOptions(wideArguments);
+        if (updateOptions.has_value()) {
+            return relaydesk::runtime::runAppUpdateApplyMode(
+                updateOptions.value());
+        }
+        if (!wideArguments.empty()
+            && wideArguments.front() == L"--relaydesk-apply-update") {
+            return fail("Invalid update apply mode arguments.");
+        }
+
         if (argc > 1) {
             const std::string mode = argv[1];
             if (mode == "--process-update-child") {
@@ -4737,7 +4966,7 @@ int main(int argc, char** argv)
                 return runProcessUpdateChild(
                     static_cast<std::uint16_t>(std::stoi(argv[2])),
                     static_cast<std::uint16_t>(std::stoi(argv[3])),
-                    std::filesystem::path(argv[4]));
+                    std::filesystem::path(wideArguments.at(3)));
             }
             if (mode == "--process-resume-child") {
                 if (argc != 5) {
@@ -4746,7 +4975,7 @@ int main(int argc, char** argv)
                 return runProcessResumeChild(
                     static_cast<std::uint16_t>(std::stoi(argv[2])),
                     static_cast<std::uint16_t>(std::stoi(argv[3])),
-                    std::filesystem::path(argv[4]));
+                    std::filesystem::path(wideArguments.at(3)));
             }
             if (mode == "--process-folder-resume-child") {
                 if (argc != 5) {
@@ -4755,7 +4984,7 @@ int main(int argc, char** argv)
                 return runProcessFolderResumeChild(
                     static_cast<std::uint16_t>(std::stoi(argv[2])),
                     static_cast<std::uint16_t>(std::stoi(argv[3])),
-                    std::filesystem::path(argv[4]));
+                    std::filesystem::path(wideArguments.at(3)));
             }
             if (mode == "--process-transfer-receiver-child") {
                 if (argc != 7) {
@@ -4765,8 +4994,8 @@ int main(int argc, char** argv)
                 return runProcessTransferReceiverChild(
                     static_cast<std::uint16_t>(std::stoi(argv[2])),
                     static_cast<std::uint16_t>(std::stoi(argv[3])),
-                    std::filesystem::path(argv[4]),
-                    std::filesystem::path(argv[5]),
+                    std::filesystem::path(wideArguments.at(3)),
+                    std::filesystem::path(wideArguments.at(4)),
                     argv[6]);
             }
             if (mode == "--process-transfer-resume-receiver-child") {
@@ -4777,7 +5006,7 @@ int main(int argc, char** argv)
                 return runProcessTransferResumeReceiverChild(
                     static_cast<std::uint16_t>(std::stoi(argv[2])),
                     static_cast<std::uint16_t>(std::stoi(argv[3])),
-                    std::filesystem::path(argv[4]),
+                    std::filesystem::path(wideArguments.at(3)),
                     argv[5]);
             }
         }
@@ -4805,6 +5034,11 @@ int main(int argc, char** argv)
                 suppressesScheduledInstallOnExitVersionUntilHigherVersionArrives();
             scheduledUpdateResult != 0) {
             return scheduledUpdateResult;
+        }
+        if (const int restartUpdateResult =
+                requestsProcessExitAfterLaunchingRestartUpdateHelper();
+            restartUpdateResult != 0) {
+            return restartUpdateResult;
         }
         if (const int highestPromptResult =
                 keepsHighestAppUpdatePromptAcrossMultiplePeers();
