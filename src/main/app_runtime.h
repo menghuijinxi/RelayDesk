@@ -572,6 +572,7 @@ public:
 
     void updateLocalDisplayName(std::string displayName);
     void refreshPeersIfNeeded();
+    void requestPeerDiscovery();
     void selectPeer(std::string deviceId);
     void loadMoreSelectedPeerMessages();
     bool loadSelectedPeerMessagesAround(const std::string& messageId);

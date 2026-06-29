@@ -9,6 +9,20 @@
 #include <utility>
 
 namespace relaydesk::net {
+namespace {
+
+using namespace std::chrono_literals;
+
+constexpr auto kHelloReplyInterval = 60s;
+constexpr int kManualBroadcastCount = 8;
+
+std::string makeReplyRateLimitKey(const DiscoveryServicePollResult& result)
+{
+    return result.GetObservedAddress() + ":"
+        + std::to_string(result.GetObservedPort());
+}
+
+} // namespace
 
 DiscoveryWorker::DiscoveryWorker(DiscoveryService discoveryService,
                                  DiscoveryWorkerConfig workerConfig,
@@ -91,6 +105,25 @@ void DiscoveryWorker::updateLocalIdentity(
     discoveryService_.updateLocalIdentity(std::move(localIdentity));
 }
 
+void DiscoveryWorker::requestFastBroadcast()
+{
+    if (!workerConfig_.GetBroadcastEnabled() || isStopping()) {
+        return;
+    }
+
+    int requestedCount = 0;
+    {
+        std::lock_guard lock(mutex_);
+        requestedBroadcastsPending_ = workerConfig_.GetStartupBroadcastCount() > 0
+            ? workerConfig_.GetStartupBroadcastCount()
+            : kManualBroadcastCount;
+        requestedBroadcastAt_ = std::chrono::steady_clock::now();
+        requestedCount = requestedBroadcastsPending_;
+    }
+    discoveryService_.logDiagnostic("worker.manual_broadcast.requested count="
+                                    + std::to_string(requestedCount));
+}
+
 void DiscoveryWorker::run(std::stop_token stopToken)
 {
     discoveryService_.logDiagnostic(
@@ -118,7 +151,7 @@ void DiscoveryWorker::run(std::stop_token stopToken)
             const auto now = std::chrono::steady_clock::now();
             if (workerConfig_.GetBroadcastEnabled()
                 && !isStopping()
-                && now >= nextBroadcastAt) {
+                && (now >= nextBroadcastAt || consumeRequestedBroadcast(now))) {
                 discoveryService_.broadcastNow();
                 recordBroadcast();
                 if (startupBroadcastsLeft > 0) {
@@ -136,10 +169,7 @@ void DiscoveryWorker::run(std::stop_token stopToken)
                 discoveryService_.pollOnce(workerConfig_.GetPollTimeout());
             recordPollResult(result);
             notifyStoredPeer(result);
-            if (workerConfig_.GetBroadcastEnabled()
-                && !isStopping()
-                && result.GetAction() == DiscoveryServicePollAction::StoredPeer
-                && result.GetAnnouncementType() == kDiscoveryAnnouncementTypeHello) {
+            if (shouldReplyToHello(result, std::chrono::steady_clock::now())) {
                 discoveryService_.logDiagnostic(
                     "worker.reply_to_hello address="
                     + result.GetObservedAddress()
@@ -189,6 +219,44 @@ void DiscoveryWorker::validateWorkerConfig() const
     if (workerConfig_.GetPollTimeout().count() <= 0) {
         throw std::invalid_argument("Discovery poll timeout must be positive.");
     }
+}
+
+bool DiscoveryWorker::consumeRequestedBroadcast(std::chrono::steady_clock::time_point now)
+{
+    std::lock_guard lock(mutex_);
+    if (requestedBroadcastsPending_ <= 0 || now < requestedBroadcastAt_) {
+        return false;
+    }
+
+    --requestedBroadcastsPending_;
+    if (requestedBroadcastsPending_ > 0) {
+        requestedBroadcastAt_ = now + workerConfig_.GetStartupBroadcastInterval();
+    } else {
+        requestedBroadcastAt_ = {};
+    }
+    return true;
+}
+
+bool DiscoveryWorker::shouldReplyToHello(const DiscoveryServicePollResult& result,
+                                         std::chrono::steady_clock::time_point now)
+{
+    if (!workerConfig_.GetBroadcastEnabled()
+        || isStopping()
+        || result.GetAction() != DiscoveryServicePollAction::StoredPeer
+        || result.GetAnnouncementType() != kDiscoveryAnnouncementTypeHello) {
+        return false;
+    }
+
+    const std::string key = makeReplyRateLimitKey(result);
+    std::lock_guard lock(mutex_);
+    const auto existing = lastHelloReplyTimes_.find(key);
+    if (existing != lastHelloReplyTimes_.end()
+        && existing->second + kHelloReplyInterval > now) {
+        return false;
+    }
+
+    lastHelloReplyTimes_[key] = now;
+    return true;
 }
 
 void DiscoveryWorker::recordBroadcast()

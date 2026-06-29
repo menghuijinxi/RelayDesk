@@ -51,8 +51,11 @@ using namespace std::chrono_literals;
 
 constexpr const char* kDiscoveryLogFileName = "discovery.log";
 constexpr std::size_t kSelectedPeerMessagePageSize = 30;
-constexpr auto kPeerOnlineTimeout = 10s;
-constexpr auto kPeerStatusRefreshInterval = 1s;
+constexpr auto kPeerOnlineTimeout = 90s;
+constexpr auto kPeerStatusRefreshInterval = 5s;
+constexpr auto kDiscoveryBroadcastInterval = 60s;
+constexpr auto kDiscoveryStartupBroadcastInterval = 500ms;
+constexpr int kDiscoveryStartupBroadcastCount = 8;
 #if defined(RELAYDESK_HAS_BOOST_ASIO)
 constexpr std::uintmax_t kTransferChunkSize = 1024u * 1024u;
 constexpr const char* kAppUpdateTempDirectoryName = "updates";
@@ -201,9 +204,9 @@ relaydesk::net::DiscoveryWorkerConfig makeDiscoveryWorkerConfig(
     const RelayDeskRuntimeOptions& runtimeOptions)
 {
     relaydesk::net::DiscoveryWorkerConfig config;
-    config.SetBroadcastInterval(2s);
-    config.SetStartupBroadcastInterval(500ms);
-    config.SetStartupBroadcastCount(8);
+    config.SetBroadcastInterval(kDiscoveryBroadcastInterval);
+    config.SetStartupBroadcastInterval(kDiscoveryStartupBroadcastInterval);
+    config.SetStartupBroadcastCount(kDiscoveryStartupBroadcastCount);
     config.SetPollTimeout(100ms);
     config.SetBroadcastEnabled(runtimeOptions.GetDiscoveryBroadcastEnabled());
     config.SetAnnounceOnStart(runtimeOptions.GetDiscoveryAnnounceOnStart());
@@ -2050,6 +2053,11 @@ public:
         worker_->updateLocalIdentity(std::move(localIdentity));
     }
 
+    void requestFastBroadcast()
+    {
+        worker_->requestFastBroadcast();
+    }
+
 protected:
     std::unique_ptr<relaydesk::net::DiscoveryWorker> worker_;
 #endif
@@ -3148,6 +3156,18 @@ void RelayDeskRuntime::refreshPeersIfNeeded()
         nextPeerStatusRefreshAt_ = now + kPeerStatusRefreshInterval;
     }
     requestPeerStatusRefresh();
+}
+
+void RelayDeskRuntime::requestPeerDiscovery()
+{
+#if defined(RELAYDESK_HAS_BOOST_ASIO)
+    if (!discoveryWorker_) {
+        return;
+    }
+
+    discoveryWorker_->requestFastBroadcast();
+    requestUiRefresh();
+#endif
 }
 
 void RelayDeskRuntime::selectPeer(std::string deviceId)

@@ -120,6 +120,19 @@ bool waitForStoredPeer(relaydesk::net::DiscoveryWorker& worker)
     return false;
 }
 
+bool waitForStoredPeerCount(relaydesk::net::DiscoveryWorker& worker,
+                            std::uint64_t expectedCount)
+{
+    const auto deadline = std::chrono::steady_clock::now() + 1s;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (worker.GetStats().GetStoredPeerCount() >= expectedCount) {
+            return true;
+        }
+        std::this_thread::sleep_for(10ms);
+    }
+    return false;
+}
+
 bool waitForInvalidPacket(relaydesk::net::DiscoveryWorker& worker)
 {
     const auto deadline = std::chrono::steady_clock::now() + 1s;
@@ -366,6 +379,57 @@ int repliesAfterReceivingPeerAnnouncement()
     return 0;
 }
 
+int rateLimitsRepeatedHelloReplies()
+{
+    auto receiverConfig = makeWorkerConfig();
+    receiverConfig.SetBroadcastEnabled(true);
+    receiverConfig.SetBroadcastInterval(10s);
+
+    relaydesk::net::DiscoveryWorker receiver(
+        makeService(makeAppPaths("rate-limit-reply-receiver"),
+                    "receiver-device",
+                    "Receiver-PC"),
+        receiverConfig);
+    relaydesk::net::DiscoveryService sender =
+        makeService(makeAppPaths("rate-limit-reply-sender"),
+                    "sender-device",
+                    "Sender-PC");
+
+    receiver.start();
+    sender.sendAnnouncementTo("127.0.0.1", receiver.GetLocalUdpPort());
+
+    if (const int result = expect(waitForServiceStoredPeer(sender),
+                                  "Initial discovery hello did not get a reply.");
+        result != 0) {
+        receiver.stop();
+        return result;
+    }
+
+    const std::uint64_t firstReplyCount = receiver.GetStats().GetReplyCount();
+    sender.sendAnnouncementTo("127.0.0.1", receiver.GetLocalUdpPort());
+
+    if (const int result = expect(waitForStoredPeerCount(receiver, 2),
+                                  "Repeated discovery hello was not processed.");
+        result != 0) {
+        receiver.stop();
+        return result;
+    }
+
+    const auto replyResult = sender.pollOnce(200ms);
+    const std::uint64_t secondReplyCount = receiver.GetStats().GetReplyCount();
+    receiver.stop();
+
+    if (const int result = expect(replyResult.GetAnnouncementType()
+                                      != relaydesk::net::kDiscoveryAnnouncementTypeReply,
+                                  "Repeated discovery hello received a reply.");
+        result != 0) {
+        return result;
+    }
+
+    return expect(secondReplyCount == firstReplyCount,
+                  "Repeated discovery hello recorded another reply.");
+}
+
 int repliesAfterReceivingKnownPeerAnnouncement()
 {
     auto receiverConfig = makeWorkerConfig();
@@ -504,6 +568,39 @@ int continuesBroadcastingAfterStartupBurst()
                   "Discovery worker stopped broadcasting after startup burst.");
 }
 
+int broadcastsAfterManualFastDiscoveryRequest()
+{
+    auto config = makeWorkerConfig();
+    config.SetBroadcastEnabled(true);
+    config.SetAnnounceOnStart(false);
+    config.SetStartupBroadcastCount(3);
+    config.SetStartupBroadcastInterval(10ms);
+    config.SetBroadcastInterval(10s);
+
+    relaydesk::net::DiscoveryWorker worker(
+        makeService(makeAppPaths("manual-fast-broadcast"),
+                    "local-device",
+                    "Local-PC",
+                    findUnusedDiscoveryPort()),
+        config);
+
+    worker.start();
+    std::this_thread::sleep_for(50ms);
+    if (const int result = expect(worker.GetStats().GetBroadcastCount() == 0,
+                                  "Manual discovery test broadcasted before request.");
+        result != 0) {
+        worker.stop();
+        return result;
+    }
+
+    worker.requestFastBroadcast();
+    const bool broadcasted = waitForBroadcastCount(worker, 3);
+    worker.stop();
+
+    return expect(broadcasted,
+                  "Manual fast discovery request did not broadcast.");
+}
+
 int recordsInvalidPacketInBackground()
 {
     relaydesk::net::DiscoveryWorker worker(
@@ -568,6 +665,10 @@ int main()
         return result;
     }
 
+    if (const int result = rateLimitsRepeatedHelloReplies(); result != 0) {
+        return result;
+    }
+
     if (const int result = repliesAfterReceivingKnownPeerAnnouncement();
         result != 0) {
         return result;
@@ -582,6 +683,10 @@ int main()
     }
 
     if (const int result = continuesBroadcastingAfterStartupBurst(); result != 0) {
+        return result;
+    }
+
+    if (const int result = broadcastsAfterManualFastDiscoveryRequest(); result != 0) {
         return result;
     }
 

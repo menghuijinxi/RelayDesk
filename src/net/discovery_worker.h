@@ -11,6 +11,7 @@
 #include <stop_token>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 
 namespace relaydesk::net {
@@ -148,12 +149,16 @@ public:
 
     void start();
     void stop();
+    void requestFastBroadcast();
     void updateLocalIdentity(relaydesk::storage::LocalIdentity localIdentity);
 
 protected:
     void run(std::stop_token stopToken);
     bool isStopping() const;
     void validateWorkerConfig() const;
+    bool consumeRequestedBroadcast(std::chrono::steady_clock::time_point now);
+    bool shouldReplyToHello(const DiscoveryServicePollResult& result,
+                            std::chrono::steady_clock::time_point now);
     void recordBroadcast();
     void recordReply();
     void recordPollResult(const DiscoveryServicePollResult& result);
@@ -166,6 +171,10 @@ protected:
     DiscoveryWorkerEvents events_;
     mutable std::mutex mutex_;
     DiscoveryWorkerStats stats_;
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point>
+        lastHelloReplyTimes_;
+    std::chrono::steady_clock::time_point requestedBroadcastAt_{};
+    int requestedBroadcastsPending_ = 0;
     std::jthread thread_;
     std::atomic_bool stopping_ = false;
 };

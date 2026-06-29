@@ -7477,7 +7477,10 @@ void drawDiscoveredPeerList(eui::Ui& ui,
     std::string& searchQuery = ui.state<std::string>("peers.search.query");
     const float searchX = x + 20.0f;
     const float searchY = kContentTop + 96.0f;
-    const float searchWidth = width - 40.0f;
+    const float refreshButtonSize = 42.0f;
+    const float refreshButtonGap = 10.0f;
+    const float searchWidth = width - 40.0f - refreshButtonSize - refreshButtonGap;
+    const float refreshButtonX = searchX + searchWidth + refreshButtonGap;
     ui.stack("peers.search.input.pos")
         .position(searchX, searchY)
         .size(searchWidth, 42.0f)
@@ -7497,6 +7500,24 @@ void drawDiscoveredPeerList(eui::Ui& ui,
         .build();
     icon(ui, "peers.search.icon", searchX + 12.0f, searchY + 6.0f, 30.0f,
          0xE721, kText);
+    ui.rect("peers.discovery.refresh.hit")
+        .position(refreshButtonX, searchY)
+        .size(refreshButtonSize, refreshButtonSize)
+        .states(Color{0.0f, 0.0f, 0.0f, 0.0f},
+                kTealSoft,
+                kTealSoft)
+        .radius(7.0f)
+        .onClick([&runtime] {
+            runtime.requestPeerDiscovery();
+        })
+        .build();
+    icon(ui,
+         "peers.discovery.refresh.icon",
+         refreshButtonX + 5.0f,
+         searchY + 5.0f,
+         32.0f,
+         kRefreshIconCodePoint,
+         kText);
 
     const std::vector<PeerPreview> allPeers = makePeerPreviews(runtime);
     const std::vector<PeerPreview> peers =

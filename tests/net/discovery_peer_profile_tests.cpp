@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 
@@ -45,6 +46,17 @@ relaydesk::net::DiscoveryAnnouncement makeAnnouncement(const std::string& timest
     announcement.SetCapabilities({"text", "emoji", "file"});
     announcement.SetTimestamp(timestamp);
     return announcement;
+}
+
+std::string readFileText(const std::filesystem::path& filePath)
+{
+    std::ifstream input(filePath, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("Failed to open test file.");
+    }
+
+    return std::string(std::istreambuf_iterator<char>(input),
+                       std::istreambuf_iterator<char>());
 }
 
 int createsPeerProfileFromDiscovery()
@@ -238,6 +250,42 @@ int deduplicatesObservedAddress()
                   "Observed address mismatch after deduplication.");
 }
 
+int keepsRepeatedHeartbeatInMemoryOnly()
+{
+    const auto appPaths = makeAppPaths("heartbeat-no-write");
+    static_cast<void>(relaydesk::net::upsertPeerProfileFromDiscovery(
+        appPaths,
+        makeAnnouncement("2026-06-12T10:00:00Z"),
+        "192.168.1.42"));
+    const std::filesystem::path profilePath =
+        relaydesk::storage::getPeerProfileFilePath(appPaths, "peer-device");
+    const std::string beforeHeartbeat = readFileText(profilePath);
+
+    const auto profile = relaydesk::net::upsertPeerProfileFromDiscovery(
+        appPaths,
+        makeAnnouncement("2026-06-12T10:05:00Z"),
+        "192.168.1.42");
+    const std::string afterHeartbeat = readFileText(profilePath);
+
+    if (const int result = expect(profile.GetLastSeenAt()
+                                      == "2026-06-12T10:05:00Z",
+                                  "Heartbeat should update in-memory last seen.");
+        result != 0) {
+        return result;
+    }
+
+    if (const int result = expect(beforeHeartbeat == afterHeartbeat,
+                                  "Repeated heartbeat rewrote peer profile.");
+        result != 0) {
+        return result;
+    }
+
+    const auto persisted =
+        relaydesk::storage::loadPeerProfile(appPaths, "peer-device");
+    return expect(persisted.GetLastSeenAt() == "2026-06-12T10:00:00Z",
+                  "Repeated heartbeat persisted last seen.");
+}
+
 int ignoresStaleAnnouncementTimestamp()
 {
     const auto appPaths = makeAppPaths("stale-timestamp");
@@ -379,6 +427,10 @@ int main()
     }
 
     if (const int result = deduplicatesObservedAddress(); result != 0) {
+        return result;
+    }
+
+    if (const int result = keepsRepeatedHeartbeatInMemoryOnly(); result != 0) {
         return result;
     }
 

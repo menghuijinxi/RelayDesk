@@ -67,6 +67,21 @@ bool shouldIgnoreProfileUpdate(const DiscoveryAnnouncement& announcement,
     return announcement.GetTimestamp() <= profile.GetLastSeenAt();
 }
 
+bool hasPersistentDiscoveryChange(
+    const relaydesk::storage::PeerProfile& existingProfile,
+    const relaydesk::storage::PeerProfile& updatedProfile)
+{
+    return existingProfile.GetDeviceId() != updatedProfile.GetDeviceId()
+        || existingProfile.GetHostName() != updatedProfile.GetHostName()
+        || existingProfile.GetDisplayName() != updatedProfile.GetDisplayName()
+        || existingProfile.GetLastAddresses() != updatedProfile.GetLastAddresses()
+        || existingProfile.GetTcpPort() != updatedProfile.GetTcpPort()
+        || existingProfile.GetAppVersion() != updatedProfile.GetAppVersion()
+        || existingProfile.GetUnreadMessageCount() != updatedProfile.GetUnreadMessageCount()
+        || existingProfile.GetCapabilities() != updatedProfile.GetCapabilities()
+        || existingProfile.GetFirstSeenAt() != updatedProfile.GetFirstSeenAt();
+}
+
 std::string resolveLastSeenAt(const DiscoveryAnnouncement& announcement,
                               const relaydesk::storage::PeerProfile& profile)
 {
@@ -136,14 +151,17 @@ relaydesk::storage::PeerProfile upsertPeerProfileFromDiscovery(
         return existingProfile.value();
     }
 
-    removeStaleProfilesForAnnouncement(appPaths, announcement, observedAddress);
     relaydesk::storage::PeerProfile updatedProfile = makeBaseProfile(
         announcement,
         existingProfile->GetFirstSeenAt(),
         mergeObservedAddress(existingProfile->GetLastAddresses(), observedAddress));
     updatedProfile.SetLastSeenAt(resolveLastSeenAt(announcement, existingProfile.value()));
     updatedProfile.SetUnreadMessageCount(existingProfile->GetUnreadMessageCount());
-    relaydesk::storage::savePeerProfile(appPaths, updatedProfile);
+    if (announcement.GetType() == kDiscoveryAnnouncementTypeOffline
+        || hasPersistentDiscoveryChange(existingProfile.value(), updatedProfile)) {
+        removeStaleProfilesForAnnouncement(appPaths, announcement, observedAddress);
+        relaydesk::storage::savePeerProfile(appPaths, updatedProfile);
+    }
     return updatedProfile;
 }
 
