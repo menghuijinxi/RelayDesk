@@ -307,6 +307,18 @@ struct PendingFolderSizeResult {
     std::uintmax_t fileSize = 0;
 };
 
+struct ImagePreviewViewState {
+    std::string path;
+    bool imageSizeProbed = false;
+    bool hasImageSize = false;
+    unsigned int pixelWidth = 0;
+    unsigned int pixelHeight = 0;
+    float zoom = 1.0f;
+    float panX = 0.0f;
+    float panY = 0.0f;
+    bool dragging = false;
+};
+
 std::mutex gPendingFolderSizeMutex;
 std::vector<PendingFolderSizeResult> gPendingFolderSizeResults;
 
@@ -731,6 +743,34 @@ components::SwitchStyle settingsSwitchStyle()
         ? Color{0.085f, 0.125f, 0.135f, 1.0f}
         : Color{0.820f, 0.925f, 0.920f, 1.0f};
     return style;
+}
+
+Color iconButtonHoverFill()
+{
+    return kDarkModeEnabled ? Color{0.105f, 0.130f, 0.145f, 1.0f}
+                            : Color{0.955f, 0.975f, 0.975f, 1.0f};
+}
+
+Color iconButtonPressedFill()
+{
+    return kDarkModeEnabled ? Color{0.085f, 0.120f, 0.130f, 1.0f}
+                            : Color{0.850f, 0.925f, 0.920f, 1.0f};
+}
+
+struct IconButtonVisualState {
+    bool hover = false;
+    bool pressed = false;
+};
+
+Color iconButtonFill(const IconButtonVisualState& state)
+{
+    if (state.pressed) {
+        return iconButtonPressedFill();
+    }
+    if (state.hover) {
+        return iconButtonHoverFill();
+    }
+    return Color{0.0f, 0.0f, 0.0f, 0.0f};
 }
 
 bool hasComposerText(const std::string& value)
@@ -5230,6 +5270,8 @@ void drawCompactImageDocumentCard(eui::Ui& ui,
     bool& previewOpen = ui.state<bool>("chat.image.preview.open");
     std::string& previewPath = ui.state<std::string>("chat.image.preview.path");
     std::string& previewName = ui.state<std::string>("chat.image.preview.name");
+    const std::string originalPath =
+        filesystemPathToGenericUtf8String(attachment.sourcePath);
     rect(ui, id + ".bg", x, y, width, height,
          {0.972f, 0.976f, 0.982f, 1.0f}, 8.0f, kBorder);
     ui.image(id + ".image")
@@ -5252,7 +5294,7 @@ void drawCompactImageDocumentCard(eui::Ui& ui,
         .onClick([&previewOpen,
                   &previewPath,
                   &previewName,
-                  path = attachment.previewPath,
+                  path = originalPath.empty() ? attachment.previewPath : originalPath,
                   name = attachment.displayName] {
             previewPath = path;
             previewName = name;
@@ -7500,13 +7542,33 @@ void drawDiscoveredPeerList(eui::Ui& ui,
         .build();
     icon(ui, "peers.search.icon", searchX + 12.0f, searchY + 6.0f, 30.0f,
          0xE721, kText);
+    IconButtonVisualState& refreshButtonState =
+        ui.state<IconButtonVisualState>("peers.discovery.refresh.visual_state");
+    ui.rect("peers.discovery.refresh.bg")
+        .position(refreshButtonX, searchY)
+        .size(refreshButtonSize, refreshButtonSize)
+        .color(iconButtonFill(refreshButtonState))
+        .radius(7.0f)
+        .build();
     ui.rect("peers.discovery.refresh.hit")
         .position(refreshButtonX, searchY)
         .size(refreshButtonSize, refreshButtonSize)
-        .states(Color{0.0f, 0.0f, 0.0f, 0.0f},
-                kTealSoft,
-                kTealSoft)
+        .color({0.0f, 0.0f, 0.0f, 0.0f})
         .radius(7.0f)
+        .onHoverChanged([&refreshButtonState](bool hover) {
+            refreshButtonState.hover = hover;
+            if (!hover) {
+                refreshButtonState.pressed = false;
+            }
+        })
+        .onPress([&refreshButtonState](const eui::PointerEvent&,
+                                       const eui::Rect&) {
+            refreshButtonState.pressed = true;
+        })
+        .onRelease([&refreshButtonState](const eui::PointerEvent&,
+                                         const eui::Rect&) {
+            refreshButtonState.pressed = false;
+        })
         .onClick([&runtime] {
             runtime.requestPeerDiscovery();
         })
@@ -7673,9 +7735,10 @@ void drawRuntimeChatHeader(
     const Color statusColor =
         selectedPeer.has_value() && selectedPeer->GetOnline() ? kGreen : kOffline;
     bool& searchOpen = ui.state<bool>("chat.search.open");
-    if (!selectedPeer.has_value()) {
-        searchOpen = false;
-    }
+    IconButtonVisualState& searchButtonState =
+        ui.state<IconButtonVisualState>("chat.header.search.visual_state");
+    const Color searchButtonFill =
+        searchOpen ? kTealSoft : iconButtonFill(searchButtonState);
 
     rect(ui, "chat.header.bg", x, kContentTop, width, kChatHeaderHeight - 1.0f,
          kPanelBackground);
@@ -7690,15 +7753,33 @@ void drawRuntimeChatHeader(
          26.0f, getSelectedPeerTitle(selectedPeer), 18.0f);
     text(ui, "chat.header.ip", x + 112.0f, kContentTop + 43.0f, width - 230.0f,
          22.0f, getSelectedPeerAddress(selectedPeer), 13.0f, kMutedText);
+    ui.rect("chat.header.search.bg")
+        .position(x + width - 108.0f, kContentTop + 17.0f)
+        .size(50.0f, 50.0f)
+        .color(searchButtonFill)
+        .radius(6.0f)
+        .build();
     ui.rect("chat.header.search.hit")
         .position(x + width - 108.0f, kContentTop + 17.0f)
         .size(50.0f, 50.0f)
-        .states(searchOpen ? kTealSoft : Color{0.0f, 0.0f, 0.0f, 0.0f},
-                kTealSoft,
-                {0.790f, 0.940f, 0.930f, 1.0f})
+        .color({0.0f, 0.0f, 0.0f, 0.0f})
         .radius(6.0f)
-        .onClick([&searchOpen, selectedPeer] {
-            searchOpen = selectedPeer.has_value() ? !searchOpen : false;
+        .onHoverChanged([&searchButtonState](bool hover) {
+            searchButtonState.hover = hover;
+            if (!hover) {
+                searchButtonState.pressed = false;
+            }
+        })
+        .onPress([&searchButtonState](const eui::PointerEvent&,
+                                      const eui::Rect&) {
+            searchButtonState.pressed = true;
+        })
+        .onRelease([&searchButtonState](const eui::PointerEvent&,
+                                        const eui::Rect&) {
+            searchButtonState.pressed = false;
+        })
+        .onClick([&searchOpen] {
+            searchOpen = !searchOpen;
         })
         .build();
     icon(ui, "chat.header.search", x + width - 100.0f, kContentTop + 25.0f, 34.0f,
@@ -7778,7 +7859,7 @@ void drawChatSearchPanel(
     relaydesk::runtime::RelayDeskRuntime& runtime)
 {
     bool& searchOpen = ui.state<bool>("chat.search.open");
-    if (!searchOpen || !selectedPeer.has_value()) {
+    if (!searchOpen) {
         return;
     }
 
@@ -7791,7 +7872,9 @@ void drawChatSearchPanel(
     std::vector<ChatSearchResult>& results =
         ui.state<std::vector<ChatSearchResult>>("chat.search.results");
 
-    const std::string& peerDeviceId = selectedPeer->GetDeviceId();
+    const std::string peerDeviceId = selectedPeer.has_value()
+        ? selectedPeer->GetDeviceId()
+        : std::string{};
     if (lastPeerDeviceId != peerDeviceId) {
         query.clear();
         lastQuery.clear();
@@ -7851,6 +7934,13 @@ void drawChatSearchPanel(
         .build();
 
     const float resultStartY = panelY + 138.0f;
+    if (!selectedPeer.has_value()) {
+        text(ui, "chat.search.empty.peer", panelX + 18.0f, resultStartY,
+             panelWidth - 36.0f, 28.0f, "璇峰厛閫夋嫨璁惧鍚庡啀鎼滅储鑱婂ぉ璁板綍",
+             13.0f, kMutedText);
+        return;
+    }
+
     if (trimmedQuery.empty()) {
         text(ui, "chat.search.empty.query", panelX + 18.0f, resultStartY,
              panelWidth - 36.0f, 28.0f, "输入关键词后搜索当前设备的聊天信息",
@@ -8836,12 +8926,144 @@ void drawRuntimeComposer(
     }
 }
 
+std::filesystem::path resolveImagePreviewPath(const std::string& previewPath)
+{
+    const auto appPaths = relaydesk::storage::createAppPaths();
+    return resolveWorkRelativePath(appPaths, previewPath);
+}
+
+void ensureImagePreviewMetadata(ImagePreviewViewState& state,
+                                const std::string& previewPath)
+{
+    if (state.path != previewPath) {
+        state = {};
+        state.path = previewPath;
+    }
+    if (state.imageSizeProbed || previewPath.empty()) {
+        return;
+    }
+
+    state.imageSizeProbed = true;
+    const std::optional<relaydesk::platform::ImageSize> imageSize =
+        relaydesk::platform::probeImageSize(resolveImagePreviewPath(previewPath));
+    if (!imageSize.has_value()
+        || imageSize->width == 0u
+        || imageSize->height == 0u) {
+        return;
+    }
+
+    state.hasImageSize = true;
+    state.pixelWidth = imageSize->width;
+    state.pixelHeight = imageSize->height;
+}
+
+float imagePreviewBaseScale(const ImagePreviewViewState& state,
+                            float viewportWidth,
+                            float viewportHeight)
+{
+    if (!state.hasImageSize
+        || state.pixelWidth == 0u
+        || state.pixelHeight == 0u
+        || viewportWidth <= 0.0f
+        || viewportHeight <= 0.0f) {
+        return 1.0f;
+    }
+
+    const float widthScale = viewportWidth / static_cast<float>(state.pixelWidth);
+    const float heightScale = viewportHeight / static_cast<float>(state.pixelHeight);
+    return std::min(1.0f, std::min(widthScale, heightScale));
+}
+
+float imagePreviewMaximumZoom(float baseScale)
+{
+    constexpr float kMaximumDisplayScale = 8.0f;
+    return std::max(1.0f, kMaximumDisplayScale / std::max(baseScale, 0.001f));
+}
+
+float nextImagePreviewDisplayScale(float currentScale, bool zoomIn)
+{
+    constexpr std::array<float, 23> kDisplayScales{
+        0.01f,
+        0.02f,
+        0.033f,
+        0.05f,
+        0.067f,
+        0.075f,
+        0.10f,
+        0.125f,
+        0.167f,
+        0.20f,
+        0.25f,
+        0.333f,
+        0.50f,
+        0.667f,
+        0.75f,
+        1.0f,
+        1.25f,
+        1.5f,
+        2.0f,
+        3.0f,
+        4.0f,
+        6.0f,
+        8.0f,
+    };
+    constexpr float kScaleEpsilon = 0.001f;
+    if (zoomIn) {
+        for (const float scale : kDisplayScales) {
+            if (scale > currentScale + kScaleEpsilon) {
+                return scale;
+            }
+        }
+        return kDisplayScales.back();
+    }
+
+    for (auto scale = kDisplayScales.rbegin();
+         scale != kDisplayScales.rend();
+         ++scale) {
+        if (*scale < currentScale - kScaleEpsilon) {
+            return *scale;
+        }
+    }
+    return currentScale;
+}
+
+float imagePreviewDisplayExtent(float pixelExtent, float displayScale)
+{
+    return std::max(1.0f, std::round(pixelExtent * displayScale));
+}
+
+void clampImagePreviewPan(ImagePreviewViewState& state,
+                          float displayWidth,
+                          float displayHeight,
+                          float viewportWidth,
+                          float viewportHeight)
+{
+    const float maxPanX = std::max(0.0f, (displayWidth - viewportWidth) * 0.5f);
+    const float maxPanY = std::max(0.0f, (displayHeight - viewportHeight) * 0.5f);
+    state.panX = std::clamp(state.panX, -maxPanX, maxPanX);
+    state.panY = std::clamp(state.panY, -maxPanY, maxPanY);
+    if (maxPanX <= 0.0f) {
+        state.panX = 0.0f;
+    }
+    if (maxPanY <= 0.0f) {
+        state.panY = 0.0f;
+    }
+}
+
+std::string formatImagePreviewZoom(float scale)
+{
+    const int percent = std::max(1, static_cast<int>(std::round(scale * 100.0f)));
+    return std::to_string(percent) + "%";
+}
+
 void drawImagePreviewOverlay(eui::Ui& ui, float width, float height)
 {
     bool& previewOpen = ui.state<bool>("chat.image.preview.open");
+    bool& previewWasOpen = ui.state<bool>("chat.image.preview.was_open");
     std::string& previewPath = ui.state<std::string>("chat.image.preview.path");
     std::string& previewName = ui.state<std::string>("chat.image.preview.name");
     if (!previewOpen) {
+        previewWasOpen = false;
         return;
     }
 
@@ -8854,8 +9076,18 @@ void drawImagePreviewOverlay(eui::Ui& ui, float width, float height)
         })
         .build();
 
-    const float panelWidth = std::min(width - 48.0f, 960.0f);
-    const float panelHeight = std::min(height - 56.0f, 760.0f);
+    ImagePreviewViewState& viewState =
+        ui.state<ImagePreviewViewState>("chat.image.preview.view_state");
+    if (!previewWasOpen) {
+        viewState = {};
+        previewWasOpen = true;
+    }
+    ensureImagePreviewMetadata(viewState, previewPath);
+
+    const float marginX = width >= 980.0f ? 56.0f : 24.0f;
+    const float marginY = height >= 720.0f ? 52.0f : 24.0f;
+    const float panelWidth = std::max(1.0f, width - marginX * 2.0f);
+    const float panelHeight = std::max(1.0f, height - marginY * 2.0f);
     const float panelX = (width - panelWidth) * 0.5f;
     const float panelY = (height - panelHeight) * 0.5f;
     rect(ui, "chat.image.preview.panel", panelX, panelY, panelWidth, panelHeight,
@@ -8867,11 +9099,12 @@ void drawImagePreviewOverlay(eui::Ui& ui, float width, float height)
         .onClick([] {})
         .build();
 
+    const float titleWidth = std::max(80.0f, panelWidth - 190.0f);
     text(ui,
          "chat.image.preview.title",
          panelX + 18.0f,
          panelY + 12.0f,
-         panelWidth - 72.0f,
+         titleWidth,
          24.0f,
          previewName.empty() ? "图片预览" : previewName,
          14.0f);
@@ -8905,12 +9138,132 @@ void drawImagePreviewOverlay(eui::Ui& ui, float width, float height)
         return;
     }
 
-    ui.image("chat.image.preview.image")
-        .position(panelX + 18.0f, panelY + 52.0f)
-        .size(panelWidth - 36.0f, panelHeight - 70.0f)
-        .path(previewPath)
-        .contain()
-        .radius(6.0f)
+    constexpr float headerHeight = 52.0f;
+    constexpr float footerHeight = 32.0f;
+    const float viewportX = panelX + 18.0f;
+    const float viewportY = panelY + headerHeight;
+    const float viewportWidth = std::max(1.0f, panelWidth - 36.0f);
+    const float viewportHeight =
+        std::max(1.0f, panelHeight - headerHeight - footerHeight);
+    const float naturalWidth = viewState.hasImageSize
+        ? static_cast<float>(viewState.pixelWidth)
+        : viewportWidth;
+    const float naturalHeight = viewState.hasImageSize
+        ? static_cast<float>(viewState.pixelHeight)
+        : viewportHeight;
+    const float baseScale =
+        imagePreviewBaseScale(viewState, viewportWidth, viewportHeight);
+    viewState.zoom =
+        std::clamp(viewState.zoom, 0.05f, imagePreviewMaximumZoom(baseScale));
+    const float displayScale = baseScale * viewState.zoom;
+    const float displayWidth =
+        imagePreviewDisplayExtent(naturalWidth, displayScale);
+    const float displayHeight =
+        imagePreviewDisplayExtent(naturalHeight, displayScale);
+    const float imageX = std::round(
+        (viewportWidth - displayWidth) * 0.5f + viewState.panX);
+    const float imageY = std::round(
+        (viewportHeight - displayHeight) * 0.5f + viewState.panY);
+    const bool canPan = viewState.zoom > 1.001f
+        && (displayWidth > viewportWidth + 1.0f
+            || displayHeight > viewportHeight + 1.0f);
+    if (!canPan) {
+        viewState.dragging = false;
+    }
+    clampImagePreviewPan(viewState,
+                         displayWidth,
+                         displayHeight,
+                         viewportWidth,
+                         viewportHeight);
+
+    text(ui,
+         "chat.image.preview.zoom",
+         panelX + panelWidth - 148.0f,
+         panelY + 12.0f,
+         92.0f,
+         24.0f,
+         formatImagePreviewZoom(displayScale),
+         13.0f,
+         kMutedText,
+         eui::HorizontalAlign::Right);
+    rect(ui, "chat.image.preview.viewport.bg", viewportX, viewportY,
+         viewportWidth, viewportHeight,
+         kDarkModeEnabled ? Color{0.040f, 0.048f, 0.056f, 1.0f}
+                          : Color{0.135f, 0.145f, 0.155f, 1.0f},
+         6.0f);
+
+    ui.stack("chat.image.preview.viewport")
+        .position(viewportX, viewportY)
+        .size(viewportWidth, viewportHeight)
+        .clip()
+        .content([&] {
+            ui.image("chat.image.preview.image")
+                .position(imageX, imageY)
+                .size(displayWidth, displayHeight)
+                .path(previewPath)
+                .contain()
+                .build();
+        })
+        .build();
+
+    ui.rect("chat.image.preview.viewport.hit")
+        .position(viewportX, viewportY)
+        .size(viewportWidth, viewportHeight)
+        .color({0.0f, 0.0f, 0.0f, 0.0f})
+        .onPress([&viewState, canPan](const eui::PointerEvent&,
+                                      const eui::Rect&) {
+            viewState.dragging = canPan;
+        })
+        .onRelease([&viewState](const eui::PointerEvent&, const eui::Rect&) {
+            viewState.dragging = false;
+        })
+        .onMove([&viewState,
+                 canPan,
+                 displayWidth,
+                 displayHeight,
+                 viewportWidth,
+                 viewportHeight](const eui::PointerEvent& event,
+                                 const eui::Rect&) {
+            if (!viewState.dragging || !canPan || !event.down) {
+                return false;
+            }
+            viewState.panX += static_cast<float>(event.deltaX);
+            viewState.panY += static_cast<float>(event.deltaY);
+            clampImagePreviewPan(viewState,
+                                 displayWidth,
+                                 displayHeight,
+                                 viewportWidth,
+                                 viewportHeight);
+            return true;
+        })
+        .onScroll([&viewState,
+                   baseScale,
+                   naturalWidth,
+                   naturalHeight,
+                   viewportWidth,
+                   viewportHeight](const core::ScrollEvent& event) {
+            if (event.y == 0.0 || baseScale <= 0.0f) {
+                return;
+            }
+            const float oldDisplayScale = baseScale * viewState.zoom;
+            const float nextDisplayScale =
+                nextImagePreviewDisplayScale(oldDisplayScale, event.y > 0.0);
+            if (std::fabs(nextDisplayScale - oldDisplayScale) <= 0.0001f) {
+                return;
+            }
+            viewState.zoom = std::clamp(nextDisplayScale / baseScale,
+                                        0.05f,
+                                        imagePreviewMaximumZoom(baseScale));
+            const float clampedDisplayScale = baseScale * viewState.zoom;
+            clampImagePreviewPan(viewState,
+                                 imagePreviewDisplayExtent(naturalWidth,
+                                                           clampedDisplayScale),
+                                 imagePreviewDisplayExtent(naturalHeight,
+                                                           clampedDisplayScale),
+                                 viewportWidth,
+                                 viewportHeight);
+        })
+        .cursor(canPan ? eui::CursorShape::Hand : eui::CursorShape::Arrow)
         .build();
 }
 
