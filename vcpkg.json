@@ -7,13 +7,20 @@
   ],
   "features": {
     "skia-renderer": {
-      "description": "Experimental Skia OpenGL renderer for EUI-NEO.",
+      "description": "Skia renderer dependencies for EUI-NEO and the SkiaUI executable.",
       "dependencies": [
         {
           "name": "skia",
           "default-features": false,
           "features": [
-            "gl"
+            "gl",
+            "direct3d"
+          ]
+        },
+        {
+          "name": "skiaui",
+          "features": [
+            "win32-dx12"
           ]
         }
       ]

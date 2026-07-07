@@ -11,10 +11,11 @@
       "hidden": true,
       "toolchainFile": "${sourceDir}/../out/vcpkg/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
-        "VCPKG_TARGET_TRIPLET": "x64-windows-static",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static-md",
         "VCPKG_HOST_TRIPLET": "x64-windows",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/../out/vcpkg/installed",
         "VCPKG_MANIFEST_FEATURES": "skia-renderer",
-        "RELAYDESK_USE_SKIA_EUI_BACKEND": "ON"
+        "RELAYDESK_USE_SKIA_EUI_BACKEND": "OFF"
       }
     },
     {
@@ -26,7 +27,7 @@
       "binaryDir": "${sourceDir}/out/build/windows-msvc-debug",
       "cacheVariables": {
         "CMAKE_SYSTEM_VERSION": "10.0.26100.0",
-        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDebug"
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDebugDLL"
       }
     },
     {
@@ -38,7 +39,7 @@
       "binaryDir": "${sourceDir}/out/build/windows-msvc-release",
       "cacheVariables": {
         "CMAKE_SYSTEM_VERSION": "10.0.26100.0",
-        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded"
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDLL"
       }
     },
     {
@@ -49,7 +50,7 @@
       "binaryDir": "${sourceDir}/out/build/windows-msvc-nmake-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDebug"
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDebugDLL"
       }
     }
   ],
