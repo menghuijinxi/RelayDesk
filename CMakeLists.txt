@@ -23,6 +23,7 @@ set(EUI_DEPS_MODE bundled CACHE STRING "Use vendored EUI-NEO dependencies" FORCE
 set(EUI_ENABLE_MARKDOWN OFF CACHE BOOL "RelayDesk does not need markdown yet" FORCE)
 option(RELAYDESK_ENABLE_BOOST_ASIO "Enable Boost.Asio network backend" ON)
 option(RELAYDESK_USE_SKIA_EUI_BACKEND "Use the experimental Skia-backed EUI renderer" OFF)
+option(RELAYDESK_BUILD_SKIAUI "Build the standalone SkiaUI RelayDesk executable" OFF)
 
 set(RELAYDESK_EUI_NEO_GIT_REPOSITORY
     "https://github.com/sudoevolve/EUI-NEO.git"
@@ -265,103 +266,107 @@ if(RELAYDESK_HAS_EUI_NEO)
     )
 endif()
 
-find_package(SkiaUI CONFIG REQUIRED)
+if(RELAYDESK_BUILD_SKIAUI)
+    find_package(SkiaUI CONFIG REQUIRED)
 
-set(RELAYDESK_COMMON_RUNTIME_SOURCES
-    src/main/app_runtime.cpp
-    src/main/image_attachment_store.cpp
-    src/core/app_version.cpp
-    src/core/diagnostic_log.cpp
-    src/core/platform/async.cpp
-    src/core/time.cpp
-    src/core/uuid.cpp
-    src/platform/attachment_input_win.cpp
-    src/platform/computer_name_win.cpp
-    src/platform/text_encoding_win.cpp
-    src/platform/windows_install_id_win.cpp
-    src/net/discovery_local_announcement.cpp
-    src/net/discovery_message.cpp
-    src/net/discovery_peer_profile.cpp
-    src/net/discovery_processor.cpp
-    src/net/peer_frame.cpp
-    src/net/peer_message.cpp
-    src/storage/app_paths.cpp
-    src/storage/history_store.cpp
-    src/storage/local_identity.cpp
-    src/storage/peer_profile.cpp
-    src/storage/app_paths_win.cpp
-)
-
-add_executable(relaydesk_skiaui WIN32
-    src/main/skiaui_app.cpp
-    ${RELAYDESK_COMMON_RUNTIME_SOURCES}
-)
-
-target_include_directories(relaydesk_skiaui PRIVATE src)
-target_compile_features(relaydesk_skiaui PRIVATE cxx_std_23)
-target_link_libraries(relaydesk_skiaui PRIVATE
-    nlohmann_json::nlohmann_json
-    SkiaUI::SkuiWin32Dx12
-)
-
-if(WIN32)
-    set(RELAYDESK_SKIAUI_ASSETS_RC
-        ${CMAKE_SOURCE_DIR}/relaydesk_skiaui_assets.rc)
-    set(RELAYDESK_SKIAUI_EMBEDDED_ASSETS
-        ${CMAKE_SOURCE_DIR}/assets/skui_relay_demo/relaydesk.html
-        ${CMAKE_SOURCE_DIR}/assets/skui_relay_demo/icons/file_type_pdf.svg
-        ${CMAKE_SOURCE_DIR}/assets/skui_relay_demo/icons/file_type_zip.svg
+    set(RELAYDESK_COMMON_RUNTIME_SOURCES
+        src/main/app_runtime.cpp
+        src/main/image_attachment_store.cpp
+        src/core/app_version.cpp
+        src/core/diagnostic_log.cpp
+        src/core/platform/async.cpp
+        src/core/time.cpp
+        src/core/uuid.cpp
+        src/platform/attachment_input_win.cpp
+        src/platform/computer_name_win.cpp
+        src/platform/text_encoding_win.cpp
+        src/platform/windows_install_id_win.cpp
+        src/net/discovery_local_announcement.cpp
+        src/net/discovery_message.cpp
+        src/net/discovery_peer_profile.cpp
+        src/net/discovery_processor.cpp
+        src/net/peer_frame.cpp
+        src/net/peer_message.cpp
+        src/storage/app_paths.cpp
+        src/storage/history_store.cpp
+        src/storage/local_identity.cpp
+        src/storage/peer_profile.cpp
+        src/storage/app_paths_win.cpp
     )
-    set_source_files_properties(${RELAYDESK_SKIAUI_ASSETS_RC}
-        PROPERTIES OBJECT_DEPENDS "${RELAYDESK_SKIAUI_EMBEDDED_ASSETS}")
 
-    target_compile_definitions(relaydesk_skiaui PRIVATE
-        NOMINMAX
-        UNICODE
-        _UNICODE
-        WIN32_LEAN_AND_MEAN
+    add_executable(relaydesk_skiaui WIN32
+        src/main/skiaui_app.cpp
+        ${RELAYDESK_COMMON_RUNTIME_SOURCES}
     )
-    target_sources(relaydesk_skiaui PRIVATE
-        ${CMAKE_SOURCE_DIR}/relaydesk.rc
-        ${RELAYDESK_SKIAUI_ASSETS_RC}
-    )
+
+    target_include_directories(relaydesk_skiaui PRIVATE src)
+    target_compile_features(relaydesk_skiaui PRIVATE cxx_std_23)
     target_link_libraries(relaydesk_skiaui PRIVATE
-        advapi32
-        bcrypt
-        comdlg32
-        shell32
+        nlohmann_json::nlohmann_json
+        SkiaUI::SkuiWin32Dx12
     )
-else()
-    message(FATAL_ERROR "RelayDesk SkiaUI currently targets Windows only.")
-endif()
 
-if(MSVC)
-    target_compile_options(relaydesk_skiaui PRIVATE /W4 /permissive- /utf-8)
-    set_source_files_properties(src/main/app_runtime.cpp PROPERTIES
-        COMPILE_OPTIONS "$<$<CONFIG:Release>:/Od>;$<$<CONFIG:Release>:/Ob0>")
-endif()
+    if(WIN32)
+        set(RELAYDESK_SKIAUI_ASSETS_RC
+            ${CMAKE_SOURCE_DIR}/relaydesk_skiaui_assets.rc)
+        set(RELAYDESK_SKIAUI_EMBEDDED_ASSETS
+            ${CMAKE_SOURCE_DIR}/assets/skui_relay_demo/relaydesk.html
+            ${CMAKE_SOURCE_DIR}/assets/skui_relay_demo/icons/file_type_pdf.svg
+            ${CMAKE_SOURCE_DIR}/assets/skui_relay_demo/icons/file_type_zip.svg
+        )
+        set_source_files_properties(${RELAYDESK_SKIAUI_ASSETS_RC}
+            PROPERTIES OBJECT_DEPENDS "${RELAYDESK_SKIAUI_EMBEDDED_ASSETS}")
 
-if(RELAYDESK_HAS_BOOST_ASIO)
-    target_sources(relaydesk_skiaui PRIVATE
-        src/net/boost_asio_tcp_peer_transport.cpp
-        src/net/boost_asio_udp_discovery_transport.cpp
-        src/net/discovery_service.cpp
-        src/net/discovery_worker.cpp
-    )
-    target_compile_definitions(relaydesk_skiaui PRIVATE RELAYDESK_HAS_BOOST_ASIO)
-    target_link_libraries(relaydesk_skiaui PRIVATE relaydesk_boost_asio)
+        target_compile_definitions(relaydesk_skiaui PRIVATE
+            NOMINMAX
+            UNICODE
+            _UNICODE
+            WIN32_LEAN_AND_MEAN
+        )
+        target_sources(relaydesk_skiaui PRIVATE
+            ${CMAKE_SOURCE_DIR}/relaydesk.rc
+            ${RELAYDESK_SKIAUI_ASSETS_RC}
+        )
+        target_link_libraries(relaydesk_skiaui PRIVATE
+            advapi32
+            bcrypt
+            comdlg32
+            shell32
+        )
+    else()
+        message(FATAL_ERROR "RelayDesk SkiaUI currently targets Windows only.")
+    endif()
+
+    if(MSVC)
+        target_compile_options(relaydesk_skiaui PRIVATE /W4 /permissive- /utf-8)
+        set_source_files_properties(src/main/app_runtime.cpp PROPERTIES
+            COMPILE_OPTIONS "$<$<CONFIG:Release>:/Od>;$<$<CONFIG:Release>:/Ob0>")
+    endif()
+
+    if(RELAYDESK_HAS_BOOST_ASIO)
+        target_sources(relaydesk_skiaui PRIVATE
+            src/net/boost_asio_tcp_peer_transport.cpp
+            src/net/boost_asio_udp_discovery_transport.cpp
+            src/net/discovery_service.cpp
+            src/net/discovery_worker.cpp
+        )
+        target_compile_definitions(relaydesk_skiaui PRIVATE RELAYDESK_HAS_BOOST_ASIO)
+        target_link_libraries(relaydesk_skiaui PRIVATE relaydesk_boost_asio)
+    endif()
 endif()
 
 enable_testing()
 
-add_test(NAME relaydesk_skiaui_render_to_bgra_pixels_capture
-    COMMAND relaydesk_skiaui
-        --capture-skiaui
-        "${CMAKE_BINARY_DIR}/tmp/relaydesk_skiaui_capture.png"
-        --capture-width 1600
-        --capture-height 900
-        --capture-dpi-scale 1.0
-)
+if(RELAYDESK_BUILD_SKIAUI)
+    add_test(NAME relaydesk_skiaui_render_to_bgra_pixels_capture
+        COMMAND relaydesk_skiaui
+            --capture-skiaui
+            "${CMAKE_BINARY_DIR}/tmp/relaydesk_skiaui_capture.png"
+            --capture-width 1600
+            --capture-height 900
+            --capture-dpi-scale 1.0
+    )
+endif()
 
 add_test(NAME relaydesk_patch_eui_neo_app_shortcuts_tests
     COMMAND ${CMAKE_COMMAND}

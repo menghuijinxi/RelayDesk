@@ -5,10 +5,16 @@
 #define NOMINMAX
 #endif
 
+#include <cstdio>
+
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cctype>
 #include <cstdint>
 #include <cwchar>
+#include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -24,13 +30,19 @@
 
 #include "include/core/SkColor.h"
 #include "include/core/SkData.h"
+#include "include/core/SkFont.h"
+#include "include/core/SkFontMgr.h"
+#include "include/core/SkFontTypes.h"
 #include "include/core/SkImageInfo.h"
 #include "include/core/SkPixmap.h"
+#include "include/core/SkTypeface.h"
 #include "include/encode/SkPngEncoder.h"
+#include "include/ports/SkTypeface_win.h"
 #include "skui_win32_app.h"
 
 #include "core/platform/async.h"
 #include "main/app_runtime.h"
+#include "platform/text_encoding.h"
 
 namespace {
 
@@ -53,6 +65,25 @@ constexpr int kDeviceSectionGap = 22;
 constexpr int kDeviceSectionRowGap = 40;
 constexpr int kDeviceContentBottomPadding = 12;
 constexpr int kDeviceMinimumVirtualHeight = 180;
+constexpr int kChatMinimumVirtualHeight = 680;
+constexpr int kChatFirstMessageTop = 64;
+constexpr int kChatMessageGap = 18;
+constexpr int kChatBubbleBaseHeight = 54;
+constexpr int kChatTransferCardHeight = 152;
+constexpr int kChatContentBottomPadding = 28;
+constexpr int kChatLeftMessageX = 32;
+constexpr int kChatRightMessageRight = 88;
+constexpr int kChatTextLineHeight = 21;
+constexpr int kChatTextVerticalPadding = 26;
+constexpr int kChatMinBubbleWidth = 56;
+constexpr int kChatEstimatedTextPadding = 36;
+constexpr int kChatTimeGap = 16;
+constexpr int kChatMessagePaneLeft = 402;
+constexpr int kChatMessagePaneMinWidth = 360;
+constexpr int kChatMessageSideInset = 32;
+constexpr int kChatContextMenuWidth = 132;
+constexpr int kChatContextMenuHeight = 38;
+constexpr float kChatBubbleFontSize = 15.0f;
 constexpr UINT kSkiaUiRequestRedrawMessage = WM_APP + 0x531;
 constexpr UINT kRelayDeskSkiaUiRefreshMs = 500;
 
@@ -61,6 +92,8 @@ struct CaptureOptions {
     int width = kDefaultCaptureWidth;
     int height = kDefaultCaptureHeight;
     float dpiScale = kDefaultCaptureDpiScale;
+    int initialWidth = 0;
+    int initialHeight = 0;
 };
 
 struct SkiaUiRuntimeBinding {
@@ -73,6 +106,8 @@ struct SkiaUiRuntimeBinding {
 };
 
 SkiaUiRuntimeBinding* gRuntimeBinding = nullptr;
+std::string gMessageContextText;
+bool gMessageContextMenuVisible = false;
 
 COLORREF colorRefFromSkColor(SkColor color)
 {
@@ -286,6 +321,714 @@ std::string peerAddressText(const relaydesk::runtime::PeerListItem& peer)
     return "未知地址";
 }
 
+std::string escapeHtml(std::string_view text)
+{
+    std::string escaped;
+    escaped.reserve(text.size());
+    for (const char character : text) {
+        switch (character) {
+        case '&':
+            escaped += "&amp;";
+            break;
+        case '<':
+            escaped += "&lt;";
+            break;
+        case '>':
+            escaped += "&gt;";
+            break;
+        case '"':
+            escaped += "&quot;";
+            break;
+        case '\'':
+            escaped += "&#39;";
+            break;
+        default:
+            escaped += character;
+            break;
+        }
+    }
+    return escaped;
+}
+
+std::string truncateUtf8Bytes(std::string_view text, std::size_t maxBytes)
+{
+    if (text.size() <= maxBytes) {
+        return std::string(text);
+    }
+
+    std::size_t length = maxBytes;
+    while (length > 0 &&
+           (static_cast<unsigned char>(text[length]) & 0xC0) == 0x80) {
+        --length;
+    }
+    std::string truncated(text.substr(0, length));
+    truncated += "...";
+    return truncated;
+}
+
+std::string trimMessageWhitespace(std::string_view text)
+{
+    std::size_t first = 0;
+    while (first < text.size()) {
+        const char value = text[first];
+        if (value != ' ' && value != '\r' && value != '\n' && value != '\t') {
+            break;
+        }
+        ++first;
+    }
+
+    std::size_t last = text.size();
+    while (last > first) {
+        const char value = text[last - 1];
+        if (value != ' ' && value != '\r' && value != '\n' && value != '\t') {
+            break;
+        }
+        --last;
+    }
+    return std::string(text.substr(first, last - first));
+}
+
+bool isUrlStart(std::string_view text, std::size_t offset)
+{
+    const std::string_view rest = text.substr(offset);
+    return rest.starts_with("http://") || rest.starts_with("https://");
+}
+
+bool isUrlTerminator(char value)
+{
+    return value == ' ' || value == '\r' || value == '\n' || value == '\t' ||
+           value == '<' || value == '>' || value == '"' || value == '\'';
+}
+
+std::vector<std::pair<std::size_t, std::size_t>> findUrlRanges(std::string_view text)
+{
+    std::vector<std::pair<std::size_t, std::size_t>> ranges;
+    for (std::size_t offset = 0; offset < text.size(); ++offset) {
+        if (!isUrlStart(text, offset)) {
+            continue;
+        }
+        std::size_t end = offset;
+        while (end < text.size() && !isUrlTerminator(text[end])) {
+            ++end;
+        }
+        while (end > offset &&
+               (text[end - 1] == '.' || text[end - 1] == ',' ||
+                text[end - 1] == ';' || text[end - 1] == ')' ||
+                text[end - 1] == ']')) {
+            --end;
+        }
+        if (end > offset) {
+            ranges.emplace_back(offset, end);
+            offset = end - 1;
+        }
+    }
+    return ranges;
+}
+
+std::string makeUrlLinkAttributes(std::string_view text)
+{
+    const std::vector<std::pair<std::size_t, std::size_t>> ranges =
+        findUrlRanges(text);
+    if (ranges.empty()) {
+        return {};
+    }
+
+    std::string attributes;
+    attributes += R"( data-links=")";
+    bool first = true;
+    for (const auto& [start, end] : ranges) {
+        if (!first) {
+            attributes += "\n";
+        }
+        first = false;
+        attributes += std::to_string(start);
+        attributes += ':';
+        attributes += std::to_string(end);
+        attributes += ":open-url:";
+        attributes += escapeHtml(text.substr(start, end - start));
+    }
+    attributes += R"(")";
+    return attributes;
+}
+
+std::size_t nextUtf8Boundary(std::string_view value, std::size_t index)
+{
+    if (index >= value.size()) {
+        return value.size();
+    }
+
+    ++index;
+    while (index < value.size() &&
+           (static_cast<unsigned char>(value[index]) & 0xC0) == 0x80) {
+        ++index;
+    }
+    return index;
+}
+
+bool isTextWrapBreakCharacter(char value)
+{
+    return std::isspace(static_cast<unsigned char>(value)) != 0 ||
+           value == '/' ||
+           value == '-' ||
+           value == '_' ||
+           value == '?' ||
+           value == '&' ||
+           value == '=';
+}
+
+const SkFont& chatBubbleFont()
+{
+    static sk_sp<SkFontMgr> fontManager = [] {
+        sk_sp<SkFontMgr> manager = SkFontMgr_New_DirectWrite();
+        if (!manager) {
+            manager = SkFontMgr_New_GDI();
+        }
+        return manager;
+    }();
+    static sk_sp<SkTypeface> typeface = [] {
+        const SkFontStyle style = SkFontStyle::Bold();
+        const std::array<const char*, 5> families = {
+            "Microsoft YaHei UI",
+            "Microsoft YaHei",
+            "Segoe UI",
+            "Arial",
+            nullptr};
+        for (const char* family : families) {
+            if (!fontManager) {
+                continue;
+            }
+            sk_sp<SkTypeface> candidate =
+                fontManager->matchFamilyStyle(family, style);
+            if (candidate) {
+                return candidate;
+            }
+        }
+        return sk_sp<SkTypeface>();
+    }();
+    static SkFont font(typeface, kChatBubbleFontSize);
+    static const bool configured = [] {
+        font.setEdging(SkFont::Edging::kAntiAlias);
+        font.setSubpixel(true);
+        return true;
+    }();
+    (void)configured;
+    return font;
+}
+
+float measureChatBubbleText(std::string_view text)
+{
+    if (text.empty()) {
+        return 0.0f;
+    }
+    return chatBubbleFont().measureText(text.data(),
+                                        text.size(),
+                                        SkTextEncoding::kUTF8);
+}
+
+std::size_t findMeasuredLineEnd(std::string_view value,
+                                std::size_t start,
+                                std::size_t hardEnd,
+                                float maxWidth)
+{
+    if (maxWidth <= 0.0f || start >= hardEnd) {
+        return hardEnd;
+    }
+
+    std::size_t lineEnd = start;
+    std::size_t lastBreak = std::string_view::npos;
+    while (lineEnd < hardEnd) {
+        const std::size_t next = nextUtf8Boundary(value, lineEnd);
+        const std::string_view candidate(value.data() + start, next - start);
+        if (measureChatBubbleText(candidate) > maxWidth) {
+            break;
+        }
+        if (isTextWrapBreakCharacter(value[lineEnd])) {
+            lastBreak = next;
+        }
+        lineEnd = next;
+    }
+
+    if (lineEnd == hardEnd || lineEnd > start) {
+        if (lineEnd < hardEnd && lastBreak != std::string_view::npos &&
+            lastBreak > start) {
+            return lastBreak;
+        }
+        return lineEnd;
+    }
+    return nextUtf8Boundary(value, start);
+}
+
+int estimateTextPixelWidth(std::string_view text)
+{
+    float maxLineWidth = 0.0f;
+    std::size_t lineStart = 0;
+    for (std::size_t offset = 0; offset <= text.size(); ++offset) {
+        if (offset < text.size() && text[offset] != '\n') {
+            continue;
+        }
+
+        std::size_t lineEnd = offset;
+        if (lineEnd > lineStart && text[lineEnd - 1] == '\r') {
+            --lineEnd;
+        }
+        const std::string_view line(text.data() + lineStart,
+                                    lineEnd - lineStart);
+        maxLineWidth = std::max(maxLineWidth, measureChatBubbleText(line));
+        lineStart = offset + 1;
+    }
+    return static_cast<int>(std::ceil(maxLineWidth));
+}
+
+int runtimeLogicalWidth(const skui::Runtime& runtime)
+{
+    return std::max(1,
+                    static_cast<int>(std::lround(
+                        static_cast<float>(runtime.width()) /
+                        runtime.effectiveScale())));
+}
+
+int runtimeLogicalHeight(const skui::Runtime& runtime)
+{
+    return std::max(1,
+                    static_cast<int>(std::lround(
+                        static_cast<float>(runtime.height()) /
+                        runtime.effectiveScale())));
+}
+
+int chatTextMaxBubbleWidth(const skui::Runtime& runtime)
+{
+    const int paneWidth =
+        std::max(kChatMessagePaneMinWidth,
+                 runtimeLogicalWidth(runtime) - kChatMessagePaneLeft);
+    const int reservedWidth = kChatMessageSideInset + kChatRightMessageRight +
+        kChatTimeGap + 52;
+    return std::max(kChatMinBubbleWidth, paneWidth - reservedWidth);
+}
+
+int estimateTextLineCount(std::string_view text, int bubbleWidth)
+{
+    const int contentWidth =
+        std::max(1, bubbleWidth - kChatEstimatedTextPadding);
+    int lines = 1;
+    std::size_t lineStart = 0;
+    while (lineStart < text.size()) {
+        if (text[lineStart] == '\r') {
+            ++lineStart;
+            continue;
+        }
+        if (text[lineStart] == '\n') {
+            ++lines;
+            ++lineStart;
+            continue;
+        }
+
+        std::size_t hardEnd = lineStart;
+        while (hardEnd < text.size() && text[hardEnd] != '\n') {
+            ++hardEnd;
+        }
+
+        while (lineStart < hardEnd) {
+            const std::size_t lineEnd = findMeasuredLineEnd(
+                text,
+                lineStart,
+                hardEnd,
+                static_cast<float>(contentWidth));
+            lineStart = lineEnd;
+            while (lineStart < hardEnd &&
+                   std::isspace(static_cast<unsigned char>(text[lineStart])) != 0) {
+                ++lineStart;
+            }
+            if (lineStart < hardEnd) {
+                ++lines;
+            }
+        }
+        if (lineStart < text.size() && text[lineStart] == '\n') {
+            ++lines;
+            ++lineStart;
+        }
+    }
+    return std::max(1, lines);
+}
+
+bool writeClipboardText(std::string_view text)
+{
+    std::wstring wide;
+    try {
+        wide = relaydesk::platform::utf8ToWide(std::string(text));
+    } catch (const std::exception&) {
+        return false;
+    }
+
+    if (OpenClipboard(nullptr) == FALSE) {
+        return false;
+    }
+
+    EmptyClipboard();
+    const std::size_t bytes = (wide.size() + 1u) * sizeof(wchar_t);
+    HGLOBAL handle = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (handle == nullptr) {
+        CloseClipboard();
+        return false;
+    }
+
+    if (void* memory = GlobalLock(handle)) {
+        std::memcpy(memory, wide.c_str(), bytes);
+        GlobalUnlock(handle);
+    } else {
+        GlobalFree(handle);
+        CloseClipboard();
+        return false;
+    }
+
+    if (SetClipboardData(CF_UNICODETEXT, handle) == nullptr) {
+        GlobalFree(handle);
+        CloseClipboard();
+        return false;
+    }
+
+    CloseClipboard();
+    return true;
+}
+
+void hideMessageContextMenu(skui::Runtime& runtime)
+{
+    gMessageContextMenuVisible = false;
+    runtime.setStyleById("message-context-menu", "display: none;");
+}
+
+void showMessageContextMenu(skui::Runtime& runtime, float x, float y)
+{
+    const int mainWidth =
+        std::max(1, runtimeLogicalWidth(runtime) - kChatMessagePaneLeft);
+    const int menuLeft =
+        std::clamp(static_cast<int>(std::lround(x)) - kChatMessagePaneLeft,
+                   0,
+                   std::max(0, mainWidth - kChatContextMenuWidth));
+    const int menuTop =
+        std::clamp(static_cast<int>(std::lround(y)),
+                   0,
+                   std::max(0, runtimeLogicalHeight(runtime) - kChatContextMenuHeight));
+    std::string style = "display: flex; left: ";
+    style += std::to_string(menuLeft);
+    style += "px; top: ";
+    style += std::to_string(menuTop);
+    style += "px;";
+    gMessageContextMenuVisible = true;
+    runtime.setStyleById("message-context-menu", style);
+}
+
+bool eventHasClass(const skui::ElementEvent& event, std::string_view className)
+{
+    return std::find(event.classes.begin(), event.classes.end(), className) !=
+           event.classes.end();
+}
+
+bool isMessageContextMenuEvent(const skui::ElementEvent& event)
+{
+    return event.id == "message-context-menu" ||
+           event.id == "message-context-copy" ||
+           event.action == "copy-message-context" ||
+           eventHasClass(event, "message-context-menu") ||
+           eventHasClass(event, "message-context-item");
+}
+
+std::string shortMessageTime(const relaydesk::storage::ChatMessageRecord& message)
+{
+    const std::string& createdAt = message.GetCreatedAt();
+    if (createdAt.size() >= 16 && createdAt[10] == 'T') {
+        return createdAt.substr(11, 5);
+    }
+    if (createdAt.size() >= 5) {
+        return createdAt.substr(0, 5);
+    }
+    return {};
+}
+
+std::string formatFileSize(std::uintmax_t size)
+{
+    char buffer[32]{};
+    if (size >= 1024ull * 1024ull) {
+        const double value = static_cast<double>(size) / (1024.0 * 1024.0);
+        std::snprintf(buffer, sizeof(buffer), "%.1f MB", value);
+        return buffer;
+    }
+    if (size >= 1024ull) {
+        const double value = static_cast<double>(size) / 1024.0;
+        std::snprintf(buffer, sizeof(buffer), "%.1f KB", value);
+        return buffer;
+    }
+    return std::to_string(size) + " B";
+}
+
+std::string transferStateText(relaydesk::storage::TransferState state)
+{
+    switch (state) {
+    case relaydesk::storage::TransferState::Pending:
+        return "等待传输";
+    case relaydesk::storage::TransferState::Offered:
+        return "等待接收";
+    case relaydesk::storage::TransferState::Transferring:
+        return "传输中";
+    case relaydesk::storage::TransferState::Interrupted:
+        return "已中断";
+    case relaydesk::storage::TransferState::Completed:
+        return "已完成";
+    case relaydesk::storage::TransferState::Failed:
+        return "传输失败";
+    case relaydesk::storage::TransferState::Cancelled:
+        return "已取消";
+    case relaydesk::storage::TransferState::Rejected:
+        return "已拒绝";
+    }
+    return "未知状态";
+}
+
+int transferProgressPercent(const relaydesk::storage::ChatMessagePart& part)
+{
+    if (part.GetTransferState().has_value() &&
+        part.GetTransferState().value() ==
+            relaydesk::storage::TransferState::Completed) {
+        return 100;
+    }
+    if (!part.GetFileSize().has_value() || part.GetFileSize().value() == 0 ||
+        !part.GetTransferredSize().has_value()) {
+        return 0;
+    }
+
+    const double ratio = static_cast<double>(part.GetTransferredSize().value()) /
+        static_cast<double>(part.GetFileSize().value());
+    return std::clamp(static_cast<int>(std::round(ratio * 100.0)), 0, 100);
+}
+
+std::string partDisplayText(const relaydesk::storage::ChatMessagePart& part)
+{
+    switch (part.GetType()) {
+    case relaydesk::storage::MessagePartType::Text:
+        if (part.GetText().has_value()) {
+            return part.GetText().value();
+        }
+        return "文本消息";
+    case relaydesk::storage::MessagePartType::Emoji:
+        if (part.GetEmoji().has_value()) {
+            return part.GetEmoji().value();
+        }
+        return "表情消息";
+    case relaydesk::storage::MessagePartType::Image:
+        if (part.GetFileName().has_value()) {
+            return "[图片] " + part.GetFileName().value();
+        }
+        return "图片消息";
+    case relaydesk::storage::MessagePartType::File:
+        if (part.GetFileName().has_value()) {
+            return part.GetFileName().value();
+        }
+        return "文件消息";
+    case relaydesk::storage::MessagePartType::Folder:
+        if (part.GetFileName().has_value()) {
+            return part.GetFileName().value();
+        }
+        return "文件夹消息";
+    }
+    return "消息";
+}
+
+std::string makeTextMessageMarkup(
+    const relaydesk::storage::ChatMessageRecord& message,
+    const relaydesk::storage::ChatMessagePart& part,
+    int top,
+    int maxBubbleWidth,
+    int& height)
+{
+    const bool outgoing =
+        message.GetDirection() == relaydesk::storage::MessageDirection::Outgoing;
+    const std::string text = trimMessageWhitespace(partDisplayText(part));
+    const int estimatedWidth =
+        estimateTextPixelWidth(text) + kChatEstimatedTextPadding;
+    const int width =
+        std::clamp(estimatedWidth, kChatMinBubbleWidth, maxBubbleWidth);
+    const int lineCount = estimateTextLineCount(text, width);
+    height = std::max(kChatBubbleBaseHeight,
+                      kChatTextVerticalPadding + lineCount * kChatTextLineHeight);
+
+    std::string html;
+    html.reserve(620);
+    html += R"(<selectable class="bubble )";
+    html += outgoing ? "bubble-right" : "bubble-left";
+    html += R"(" style="top: )";
+    html += std::to_string(top);
+    html += "px; width: ";
+    html += std::to_string(width);
+    html += "px; height: ";
+    html += std::to_string(height);
+    html += R"(px; align-items: flex-start;")";
+    html += makeUrlLinkAttributes(text);
+    html += ">";
+    html += escapeHtml(text);
+    html += R"(</selectable>)";
+
+    const std::string timeText = shortMessageTime(message);
+    if (!timeText.empty()) {
+        html += R"(<div class="time-label" style="top: )";
+        html += std::to_string(top + (height - 22) / 2);
+        html += "px; ";
+        if (outgoing) {
+            html += "right: ";
+            html += std::to_string(kChatRightMessageRight + width + kChatTimeGap);
+        } else {
+            html += "left: ";
+            html += std::to_string(kChatLeftMessageX + width + kChatTimeGap);
+        }
+        html += R"(px;">)";
+        html += escapeHtml(timeText);
+        html += R"(</div>)";
+    }
+    return html;
+}
+
+std::string makeTransferMessageMarkup(
+    const relaydesk::storage::ChatMessageRecord& message,
+    const relaydesk::storage::ChatMessagePart& part,
+    int top)
+{
+    const bool outgoing =
+        message.GetDirection() == relaydesk::storage::MessageDirection::Outgoing;
+    const int progress = transferProgressPercent(part);
+    const bool warning = part.GetTransferState().has_value() &&
+        (part.GetTransferState().value() ==
+             relaydesk::storage::TransferState::Failed ||
+         part.GetTransferState().value() ==
+             relaydesk::storage::TransferState::Interrupted ||
+         part.GetTransferState().value() ==
+             relaydesk::storage::TransferState::Cancelled ||
+         part.GetTransferState().value() ==
+             relaydesk::storage::TransferState::Rejected);
+    const std::string title = partDisplayText(part);
+    const std::string sizeText =
+        part.GetFileSize().has_value() ? formatFileSize(part.GetFileSize().value())
+                                       : "文件夹";
+    const std::string stateText = part.GetTransferState().has_value()
+        ? transferStateText(part.GetTransferState().value())
+        : "等待传输";
+
+    std::string html;
+    html.reserve(760);
+    html += R"(<div class="transfer-card )";
+    html += outgoing ? "card-upload" : "card-download";
+    if (warning) {
+        html += " warning";
+    }
+    html += R"(" style="top: )";
+    html += std::to_string(top);
+    html += R"(px;">)";
+    html += R"(<div class="file-icon doc-icon doc-icon-zip"><div class="doc-fold"></div></div>)";
+    html += R"(<div class="file-name">)";
+    html += escapeHtml(title);
+    html += R"(</div><div class="file-size">)";
+    html += escapeHtml(sizeText);
+    html += R"(</div><div class="transfer-percent)";
+    if (progress == 100) {
+        html += " done";
+    }
+    html += R"(">)";
+    html += std::to_string(progress);
+    html += R"(%</div><progress class="progress-main)";
+    if (warning) {
+        html += " warning";
+    }
+    html += R"(" value=")";
+    html += std::to_string(progress);
+    html += R"(" max="100"></progress><div class="transfer-meta">)";
+    html += escapeHtml(stateText);
+    html += R"(</div>)";
+    const std::string timeText = shortMessageTime(message);
+    if (!timeText.empty()) {
+        html += R"(<div class="card-time">)";
+        html += escapeHtml(timeText);
+        html += R"(</div>)";
+    }
+    if (outgoing) {
+        html += R"(<svg class="card-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5 6 17.5 15 8.5"></path><path d="M9 15.5 11 17.5 22 6.5"></path></svg>)";
+    }
+    html += R"(</div>)";
+    return html;
+}
+
+std::string makeChatContentMarkup(
+    const relaydesk::runtime::RelayDeskRuntime& relayRuntime,
+    int maxBubbleWidth,
+    int& contentHeight)
+{
+    std::string body;
+    body.reserve(4096);
+    body += R"(<div class="day-pill">今天</div>)";
+
+    int top = kChatFirstMessageTop;
+    const auto& messages = relayRuntime.GetSelectedPeerMessages();
+    if (!relayRuntime.GetSelectedPeer().has_value()) {
+        relaydesk::storage::ChatMessageRecord placeholder;
+        relaydesk::storage::ChatMessagePart part;
+        part.SetText("请选择左侧设备查看聊天记录");
+        int height = kChatBubbleBaseHeight;
+        body +=
+            makeTextMessageMarkup(placeholder, part, top, maxBubbleWidth, height);
+        top += height + kChatMessageGap;
+    } else if (messages.empty()) {
+        relaydesk::storage::ChatMessageRecord placeholder;
+        relaydesk::storage::ChatMessagePart part;
+        part.SetText("暂无聊天消息");
+        int height = kChatBubbleBaseHeight;
+        body +=
+            makeTextMessageMarkup(placeholder, part, top, maxBubbleWidth, height);
+        top += height + kChatMessageGap;
+    } else {
+        for (const auto& message : messages) {
+            bool rendered = false;
+            for (const auto& part : message.GetParts()) {
+                if (part.GetType() == relaydesk::storage::MessagePartType::File ||
+                    part.GetType() == relaydesk::storage::MessagePartType::Folder ||
+                    part.GetType() == relaydesk::storage::MessagePartType::Image) {
+                    body += makeTransferMessageMarkup(message, part, top);
+                    top += kChatTransferCardHeight + kChatMessageGap;
+                } else {
+                    int height = kChatBubbleBaseHeight;
+                    body += makeTextMessageMarkup(
+                        message,
+                        part,
+                        top,
+                        maxBubbleWidth,
+                        height);
+                    top += height + kChatMessageGap;
+                }
+                rendered = true;
+            }
+
+            if (!rendered) {
+                relaydesk::storage::ChatMessagePart part;
+                part.SetText("空消息");
+                int height = kChatBubbleBaseHeight;
+                body += makeTextMessageMarkup(
+                    message,
+                    part,
+                    top,
+                    maxBubbleWidth,
+                    height);
+                top += height + kChatMessageGap;
+            }
+        }
+    }
+
+    contentHeight = std::max(kChatMinimumVirtualHeight,
+                             top + kChatContentBottomPadding);
+    std::string html;
+    html.reserve(body.size() + 120);
+    html += R"(<div id="chat-content" class="chat-content" style="height: )";
+    html += std::to_string(contentHeight);
+    html += R"(px;">)";
+    html += body;
+    html += R"(</div>)";
+    return html;
+}
+
 void addTextUpdate(skui::RuntimeUpdates& updates,
                    std::string id,
                    std::string text)
@@ -335,6 +1078,69 @@ std::string makeDeviceListSignature(
         signature += '|';
         signature += std::to_string(peer.GetUnreadMessageCount());
     }
+    return signature;
+}
+
+std::string makeChatSignature(
+    const relaydesk::runtime::RelayDeskRuntime& relayRuntime)
+{
+    std::string signature = relayRuntime.GetSelectedPeerDeviceId();
+    signature += '|';
+    signature += relayRuntime.GetSelectedPeerHasMoreMessages() ? '1' : '0';
+    for (const auto& message : relayRuntime.GetSelectedPeerMessages()) {
+        signature += '\n';
+        signature += message.GetMessageId();
+        signature += '|';
+        signature += message.GetCreatedAt();
+        signature += '|';
+        signature += std::to_string(static_cast<int>(message.GetDirection()));
+        signature += '|';
+        signature += std::to_string(static_cast<int>(message.GetDeliveryState()));
+        for (const auto& part : message.GetParts()) {
+            signature += '|';
+            signature += part.GetPartId();
+            signature += ':';
+            signature += std::to_string(static_cast<int>(part.GetType()));
+            if (part.GetText().has_value()) {
+                signature += ':';
+                signature += part.GetText().value();
+            }
+            if (part.GetEmoji().has_value()) {
+                signature += ':';
+                signature += part.GetEmoji().value();
+            }
+            if (part.GetFileName().has_value()) {
+                signature += ':';
+                signature += part.GetFileName().value();
+            }
+            if (part.GetFileSize().has_value()) {
+                signature += ':';
+                signature += std::to_string(part.GetFileSize().value());
+            }
+            if (part.GetTransferredSize().has_value()) {
+                signature += ':';
+                signature += std::to_string(part.GetTransferredSize().value());
+            }
+            if (part.GetTransferState().has_value()) {
+                signature += ':';
+                signature +=
+                    std::to_string(static_cast<int>(part.GetTransferState().value()));
+            }
+        }
+    }
+    return signature;
+}
+
+std::string makeRelayDeskUiSignature(
+    const relaydesk::runtime::RelayDeskRuntime& relayRuntime,
+    int layoutWidth)
+{
+    std::string signature = "layout-width:";
+    signature += std::to_string(layoutWidth);
+    signature += "\n--devices--\n";
+    signature += makeDeviceListSignature(relayRuntime);
+    signature += "\n--chat--\n";
+    signature += makeChatSignature(relayRuntime);
     return signature;
 }
 
@@ -394,6 +1200,10 @@ void applyRelayDeskDevicePanel(skui::Runtime& skiaRuntime,
                                relaydesk::runtime::RelayDeskRuntime& relayRuntime)
 {
     relayRuntime.refreshPeersIfNeeded();
+    int chatContentHeight = kChatMinimumVirtualHeight;
+    const int maxBubbleWidth = chatTextMaxBubbleWidth(skiaRuntime);
+    const std::string chatContentHtml =
+        makeChatContentMarkup(relayRuntime, maxBubbleWidth, chatContentHeight);
 
     const auto& localUser = relayRuntime.GetLocalUser();
     skui::RuntimeUpdates updates;
@@ -509,8 +1319,13 @@ void applyRelayDeskDevicePanel(skui::Runtime& skiaRuntime,
     addStyleUpdate(updates,
                    "device-list-content",
                    "height: " + std::to_string(contentHeight) + "px;");
+    addAttributeUpdate(updates,
+                       "chat-scroll",
+                       "data-virtual-height",
+                       std::to_string(chatContentHeight));
 
     skiaRuntime.applyUpdates(updates);
+    skiaRuntime.replaceHtmlById("chat-content", chatContentHtml);
 }
 
 void selectTab(skui::Runtime& runtime, std::string_view id)
@@ -526,25 +1341,53 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
 {
     runtime.setElementEventCallback([&runtime, &relayRuntime](
                                         const skui::ElementEvent& event) {
-        if (event.type != skui::ElementEventType::Click || event.action.empty()) {
+        if (event.type == skui::ElementEventType::MouseUp &&
+            event.button == skui::MouseButton::Right &&
+            event.tag == "selectable" &&
+            eventHasClass(event, "bubble")) {
+            gMessageContextText = event.text;
+            showMessageContextMenu(runtime, event.x, event.y);
             return;
+        }
+
+        if (gMessageContextMenuVisible &&
+            event.type == skui::ElementEventType::MouseDown &&
+            event.button == skui::MouseButton::Left &&
+            !isMessageContextMenuEvent(event)) {
+            hideMessageContextMenu(runtime);
         }
 
         constexpr std::string_view devicePrefix = "select-device:";
         constexpr std::string_view tabPrefix = "tab:";
+        constexpr std::string_view urlPrefix = "open-url:";
+        if (event.type != skui::ElementEventType::Click || event.action.empty()) {
+            return;
+        }
+
         const std::string_view action(event.action);
         if (action.starts_with(devicePrefix)) {
+            hideMessageContextMenu(runtime);
             relayRuntime.selectPeer(std::string(action.substr(devicePrefix.size())));
             applyRelayDeskDevicePanel(runtime, relayRuntime);
         } else if (action.starts_with(tabPrefix)) {
+            hideMessageContextMenu(runtime);
             selectTab(runtime, action.substr(tabPrefix.size()));
+        } else if (action.starts_with(urlPrefix)) {
+            hideMessageContextMenu(runtime);
+            const std::string url(action.substr(urlPrefix.size()));
+            ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        } else if (action == "copy-message-context") {
+            (void)writeClipboardText(gMessageContextText);
+            hideMessageContextMenu(runtime);
         } else if (action == "send-message") {
+            hideMessageContextMenu(runtime);
             runtime.setAttributeById("composer", "value", "");
             runtime.setAttributeById(
                 "composer",
                 "placeholder",
                 "消息已发送，可以继续输入...");
         } else if (action == "finish-transfer") {
+            hideMessageContextMenu(runtime);
             runtime.setAttributeById("upload-progress", "value", "100");
             runtime.setAttributeById("download-progress", "value", "100");
             runtime.setAttributeById(
@@ -623,7 +1466,8 @@ bool refreshRelayDeskDevicePanelIfChanged(SkiaUiRuntimeBinding& binding,
     core::async::dispatchReady();
     binding.relayRuntime->refreshPeersIfNeeded();
     const std::string nextSignature =
-        makeDeviceListSignature(*binding.relayRuntime);
+        makeRelayDeskUiSignature(*binding.relayRuntime,
+                                 runtimeLogicalWidth(*binding.skiaRuntime));
     if (!force && nextSignature == binding.lastDeviceSignature) {
         return false;
     }
@@ -655,11 +1499,159 @@ relaydesk::runtime::RelayDeskRuntimeOptions makeCaptureRuntimeOptions()
     return options;
 }
 
+relaydesk::storage::ChatMessagePart makeCaptureTextPart(std::string partId,
+                                                        std::string text)
+{
+    relaydesk::storage::ChatMessagePart part;
+    part.SetPartId(std::move(partId));
+    part.SetType(relaydesk::storage::MessagePartType::Text);
+    part.SetText(std::move(text));
+    return part;
+}
+
+relaydesk::storage::ChatMessagePart makeCaptureFilePart(
+    std::string partId,
+    relaydesk::storage::MessagePartType type,
+    std::string fileName,
+    std::uintmax_t fileSize,
+    std::uintmax_t transferredSize,
+    relaydesk::storage::TransferState transferState)
+{
+    relaydesk::storage::ChatMessagePart part;
+    part.SetPartId(std::move(partId));
+    part.SetType(type);
+    part.SetTransferId("capture-transfer-" + part.GetPartId());
+    part.SetFileName(std::move(fileName));
+    part.SetFileSize(fileSize);
+    part.SetTransferredSize(transferredSize);
+    part.SetTransferState(transferState);
+    part.SetLocalPath("capture");
+    return part;
+}
+
+relaydesk::storage::ChatMessageRecord makeCaptureMessage(
+    std::string messageId,
+    relaydesk::storage::MessageDirection direction,
+    std::string createdAt,
+    std::vector<relaydesk::storage::ChatMessagePart> parts)
+{
+    relaydesk::storage::ChatMessageRecord record;
+    record.SetMessageId(std::move(messageId));
+    record.SetConversationId("capture-conversation");
+    record.SetDirection(direction);
+    record.SetSenderDeviceId(direction == relaydesk::storage::MessageDirection::Outgoing
+                                 ? "capture-local"
+                                 : "capture-peer");
+    record.SetReceiverDeviceId(direction == relaydesk::storage::MessageDirection::Outgoing
+                                   ? "capture-peer"
+                                   : "capture-local");
+    record.SetSenderDisplayNameSnapshot(
+        direction == relaydesk::storage::MessageDirection::Outgoing
+            ? "许靖"
+            : "Alex-PC");
+    record.SetReceiverDisplayNameSnapshot(
+        direction == relaydesk::storage::MessageDirection::Outgoing
+            ? "Alex-PC"
+            : "许靖");
+    record.SetCreatedAt(std::move(createdAt));
+    record.SetDeliveryState(direction == relaydesk::storage::MessageDirection::Outgoing
+                                ? relaydesk::storage::DeliveryState::Delivered
+                                : relaydesk::storage::DeliveryState::Received);
+    record.SetParts(std::move(parts));
+    return record;
+}
+
+std::vector<relaydesk::storage::ChatMessageRecord> makeCaptureChatMessages()
+{
+    std::vector<relaydesk::storage::ChatMessageRecord> messages;
+    messages.push_back(makeCaptureMessage(
+        "capture-1",
+        relaydesk::storage::MessageDirection::Incoming,
+        "2026-07-09T06:48:00Z",
+        {makeCaptureTextPart("p1", "emmm")}));
+    messages.push_back(makeCaptureMessage(
+        "capture-2",
+        relaydesk::storage::MessageDirection::Incoming,
+        "2026-07-09T06:49:00Z",
+        {makeCaptureTextPart(
+            "p1",
+            "【队友说给我表演空翻】 https://www.bilibili.com/video/BV1jGTC6zEod/?share_source=copy_web&vd_source=eab9a93ad11792ced0b8dd2d8f6d2f1a")}));
+    messages.push_back(makeCaptureMessage(
+        "capture-3",
+        relaydesk::storage::MessageDirection::Outgoing,
+        "2026-07-09T06:50:00Z",
+        {makeCaptureFilePart("p1",
+                             relaydesk::storage::MessagePartType::Image,
+                             "clipboard.bmp",
+                             8ull * 1024ull * 1024ull + 420000ull,
+                             8ull * 1024ull * 1024ull + 420000ull,
+                             relaydesk::storage::TransferState::Completed)}));
+    messages.push_back(makeCaptureMessage(
+        "capture-4",
+        relaydesk::storage::MessageDirection::Outgoing,
+        "2026-07-09T06:51:00Z",
+        {makeCaptureTextPart("p1", "为什么你看不懂还要阅读一下")}));
+    messages.push_back(makeCaptureMessage(
+        "capture-5",
+        relaydesk::storage::MessageDirection::Incoming,
+        "2026-07-09T06:52:00Z",
+        {makeCaptureTextPart(
+            "p1",
+            "我就想看看这代码是不是符合你那个规范，之前的代码不都不显示过程对话嘛，谁知道他用没用那个技能")}));
+    messages.push_back(makeCaptureMessage(
+        "capture-6",
+        relaydesk::storage::MessageDirection::Incoming,
+        "2026-07-09T09:53:00Z",
+        {makeCaptureTextPart("p1", "这个是图标地址 https://igoutu.cn/icons/styles 可以打开")}));
+    messages.push_back(makeCaptureMessage(
+        "capture-7",
+        relaydesk::storage::MessageDirection::Incoming,
+        "2026-07-09T09:54:00Z",
+        {makeCaptureTextPart(
+            "p1",
+            "混合长链接 https://igoutu.cn/icon/lchz7JPUz9qU/%E8%AE%BE%E7%BD%AE 后面还有文字")}));
+    messages.push_back(makeCaptureMessage(
+        "capture-8",
+        relaydesk::storage::MessageDirection::Outgoing,
+        "2026-07-09T09:55:00Z",
+        {makeCaptureTextPart("p1", "这是svg?")}));
+    messages.push_back(makeCaptureMessage(
+        "capture-9",
+        relaydesk::storage::MessageDirection::Outgoing,
+        "2026-07-09T09:56:00Z",
+        {makeCaptureTextPart(
+            "p1",
+            "撒大声地撒实打实大大撒大声地撒实打实大大撒大声地撒实打实大大撒大声地撒实打实大大撒大声地撒实打实大大 sdasda大叔大婶大萨达啊实打实大大 撒大声地撒实打实大大")}));
+    messages.push_back(makeCaptureMessage(
+        "capture-10",
+        relaydesk::storage::MessageDirection::Incoming,
+        "2026-07-09T09:57:00Z",
+        {makeCaptureTextPart(
+            "p1",
+            R"(<svg xmlns="http://www.w3.org/2000/svg" x="0px" y="0px" width="100" height="100" viewBox="0 0 48 48"> <path d="M 22.5 1 C 21.130937 1 20 2.1309372 20 3.5 L 20 6.5371094 C 18.010362 6.9917419 16.155535 7.7661122 14.476562 8.8203125 L 12.332031 6.6757812 C 11.36392 5.7076702 9.7643118 5.7066907 8.796875 6.6757812 L 6.6757812 8.796875 C 5.7076702 9.7649862 5.7066907 11.364594 6.6757812 12.332031 L 8.8203125 14.476562 C 7.7660236 16.155411 6.9919343 18.010216 6.5371094 20 L 3.5 20 C 2.1309372 20 1 21.130937 1 22.5 L 1 25.5 C 1 26.869063 2.1309372 28 3.5 28 L 6.5371094 28 C 6.9917419 29.989638 7.7661122 31.844465 8.8203125 33.523438 L 6.6757812 35.667969 C 5.7076702 36.63608 5.7066907 38.235688 6.6757812 39.203125 L 8.7949219 41.324219 C 9.7626308 42.291928 11.364322 42.291928 12.332031 41.324219 L 14.476562 39.179688 C 16.15488 40.233632 18.008815 41.006656 19.998047 41.460938 L 19.998047 44.498047 C 19.998047 45.86711 21.128984 46.998047 22.498047 46.998047 L 25.498047 46.998047 C 26.86711 46.998047 27.998047 45.86711 27.998047 44.498047 L 27.998047 41.462891 C 29.987843 41.008272 31.842394 40.233961 33.521484 39.179688 L 35.666016 41.324219 C 36.633669 42.291872 38.233595 42.291935 39.201172 41.324219 L 41.322266 39.203125 C 42.290377 38.235014 42.291356 36.635406 41.322266 35.667969 L 39.177734 33.523438 C 40.232026 31.844568 41.006723 29.989968 41.460938 28 L 44.498047 28 C 45.86711 28 46.998047 26.869063 46.998047 25.5 L 46.998047 22.501953 L 46.998047 22.5 C 47.000284 21.130507 45.868417 20 44.5 20 L 41.462891 20 C 41.008258 18.010362 40.233888 16.155535 39.179688 14.476562 L 41.324219 12.332031 C 42.29233 11.36392 42.293309 9.7643118 41.324219 8.796875 L 39.205078 6.6757812 C 38.237369 5.7080724 36.635678 5.7080724 35.667969 6.6757812 L 33.523438 8.8203125 C 31.844075 7.7661119 29.989786 6.9919346 28 6.5371094 L 28 3.5 C 28 2.1309372 26.869063 1 25.5 1 L 22.5 1 z M 22.5 3 L 25.5 3 C 25.786937 3 26 3.2130628 26 3.5 L 26 7.2792969 A 1.0001 1.0001 0 0 0 26.824219 8.2636719 C 29.139966 8.6770973 31.279492 9.5803763 33.134766 10.873047 A 1.0001 1.0001 0 0 0 34.414062 10.759766 L 37.083984 8.0898438 C 37.288275 7.8855527 37.584772 7.8855527 37.789062 8.0898438 L 39.910156 10.210938 A 1.0001 1.0001 0 0 0 39.912109 10.210938 C 40.115019 10.4135 40.114092 10.71408 39.910156 10.917969 L 37.240234 13.587891 A 1.0001 1.0001 0 0 0 37.126953 14.867188 C 38.419347 16.721122 39.322857 18.859775 39.736328 21.175781 A 1.0001 1.0001 0 0 0 40.720703 22 L 44.5 22 C 44.786937 22 44.998737 22.212412 44.998047 22.498047 A 1.0001 1.0001 0 0 0 44.998047 22.5 L 44.998047 25.5 C 44.998047 25.786937 44.784984 26 44.498047 26 L 40.71875 26 A 1.0001 1.0001 0 0 0 39.734375 26.824219 C 39.321939 29.139649 38.417524 31.27869 37.125 33.132812 A 1.0001 1.0001 0 0 0 37.238281 34.412109 L 39.908203 37.082031 A 1.0001 1.0001 0 0 0 39.910156 37.082031 C 40.113066 37.284594 40.112139 37.585175 39.908203 37.789062 L 37.787109 39.910156 C 37.584546 40.113066 37.28592 40.114045 37.082031 39.910156 L 34.410156 37.240234 A 1.0001 1.0001 0 0 0 33.132812 37.126953 C 31.278878 38.419347 29.140225 39.320903 26.824219 39.734375 A 1.0001 1.0001 0 0 0 25.998047 40.71875 L 25.998047 44.498047 C 25.998047 44.784984 25.784984 44.998047 25.498047 44.998047 L 22.498047 44.998047 C 22.21111 44.998047 21.998047 44.784984 21.998047 44.498047 L 21.998047 40.71875 A 1.0001 1.0001 0 0 0 21.173828 39.734375 C 18.85835 39.321939 16.719357 38.419477 14.865234 37.126953 A 1.0001 1.0001 0 0 0 13.585938 37.240234 L 10.916016 39.910156 C 10.711725 40.114447 10.415229 40.114447 10.210938 39.910156 L 8.0898438 37.789062 A 1.0001 1.0001 0 0 0 8.0878906 37.789062 C 7.884978 37.5865 7.8859549 37.28592 8.0898438 37.082031 L 10.759766 34.412109 A 1.0001 1.0001 0 0 0 10.873047 33.132812 C 9.5806532 31.278878 8.6771435 29.140225 8.2636719 26.824219 A 1.0001 1.0001 0 0 0 7.2792969 26 L 3.5 26 C 3.2130628 26 3 25.786937 3 25.5 L 3 22.5 C 3 22.213063 3.2130628 22 3.5 22 L 7.2792969 22 A 1.0001 1.0001 0 0 0 8.2636719 21.175781 C 8.6770973 18.860034 9.580523 16.72131 10.873047 14.867188 A 1.0001 1.0001 0 0 0 10.759766 13.587891 L 8.0898438 10.917969 C 7.8869343 10.715406 7.8859548 10.414825 8.0898438 10.210938 L 10.210938 8.0898438 A 1.0001 1.0001 0 0 0 10.210938 8.0878906 C 10.4135 7.8849812 10.71408 7.8859581 10.917969 8.0898438 L 13.587891 10.759766 A 1.0001 1.0001 0 0 0 14.867188 10.873047 C 16.721122 9.5806532 18.859775 8.6771435 21.175781 8.2636719 A 1.0001 1.0001 0 0 0 22 7.2792969 L 22 3.5 C 22 3.2130628 22.213063 3 22.5 3 z M 24 14 C 18.488994 14 14 18.488998 14 24 C 14 29.511002 18.488994 34 24 34 C 29.511006 34 34 29.511002 34 24 C 34 18.488998 29.511006 14 24 14 z M 24 16 C 28.430126 16 32 19.569877 32 24 C 32 28.430123 28.430126 32 24 32 C 19.569874 32 16 28.430123 16 24 C 16 19.569877 19.569874 16 24 16 z"></path> </svg>)")}));
+    return messages;
+}
+
 class CaptureRelayDeskRuntime : public relaydesk::runtime::RelayDeskRuntime {
 public:
     CaptureRelayDeskRuntime()
         : RelayDeskRuntime(makeCaptureRuntimeOptions())
     {
+        localUser_.SetDisplayName("许靖");
+        localUser_.SetHostName("MENG");
+        localUser_.SetDeviceId("capture-local");
+
+        relaydesk::runtime::PeerListItem peer;
+        peer.SetDeviceId("capture-peer");
+        peer.SetDisplayName("Alex-PC");
+        peer.SetHostName("Alex-PC");
+        peer.SetAddress("192.168.1.24");
+        peer.SetOnline(true);
+        peers_.clear();
+        peers_.push_back(std::move(peer));
+        selectedPeerDeviceId_ = "capture-peer";
+        selectedPeerHasMoreMessages_ = false;
+        selectedPeerMessages_ = makeCaptureChatMessages();
     }
 };
 
@@ -729,6 +1721,12 @@ std::optional<CaptureOptions> parseCaptureOptions()
         } else if (argument == L"--capture-dpi-scale") {
             valid = index + 1 < argc &&
                     parsePositiveFloat(argv[++index], options.dpiScale);
+        } else if (argument == L"--capture-initial-width") {
+            valid = index + 1 < argc &&
+                    parsePositiveInt(argv[++index], options.initialWidth);
+        } else if (argument == L"--capture-initial-height") {
+            valid = index + 1 < argc &&
+                    parsePositiveInt(argv[++index], options.initialHeight);
         }
     }
 
@@ -797,11 +1795,19 @@ int captureSkiaUiPng(const CaptureOptions& options)
     CaptureRelayDeskRuntime relayRuntime;
     skui::Runtime runtime(runtimeOptions);
     installRelayDeskInteractions(runtime, relayRuntime);
-    runtime.resize(options.width, options.height, options.dpiScale);
+    const int initialWidth =
+        options.initialWidth > 0 ? options.initialWidth : options.width;
+    const int initialHeight =
+        options.initialHeight > 0 ? options.initialHeight : options.height;
+    runtime.resize(initialWidth, initialHeight, options.dpiScale);
     if (!runtime.loadDocumentFromString(html)) {
         return 4;
     }
     applyRelayDeskDevicePanel(runtime, relayRuntime);
+    if (initialWidth != options.width || initialHeight != options.height) {
+        runtime.resize(options.width, options.height, options.dpiScale);
+        applyRelayDeskDevicePanel(runtime, relayRuntime);
+    }
 
     const std::size_t rowBytes =
         static_cast<std::size_t>(options.width) * sizeof(std::uint32_t);
@@ -856,11 +1862,14 @@ int runSkiaUiApp(HINSTANCE instance, int showCmd)
             refreshRelayDeskSkiaUiTimer);
     };
     options.onRuntimeResize = [html, documentLoaded, binding](skui::Runtime& runtime) {
-        if (!*documentLoaded && runtime.loadDocumentFromString(*html)) {
+        if (!*documentLoaded) {
+            if (!runtime.loadDocumentFromString(*html)) {
+                return;
+            }
             *documentLoaded = true;
             binding->documentLoaded = true;
-            (void)refreshRelayDeskDevicePanelIfChanged(*binding, true);
         }
+        (void)refreshRelayDeskDevicePanelIfChanged(*binding, true);
     };
 
     skui::win32::Dx12WindowApp app(std::move(options));

@@ -7,16 +7,20 @@
   ],
   "features": {
     "skia-renderer": {
-      "description": "Skia renderer dependencies for EUI-NEO and the SkiaUI executable.",
+      "description": "Experimental Skia OpenGL renderer for EUI-NEO.",
       "dependencies": [
         {
           "name": "skia",
           "default-features": false,
           "features": [
-            "gl",
-            "direct3d"
+            "gl"
           ]
-        },
+        }
+      ]
+    },
+    "skiaui-renderer": {
+      "description": "SkiaUI executable dependencies.",
+      "dependencies": [
         {
           "name": "skiaui",
           "features": [

@@ -11,11 +11,23 @@
       "hidden": true,
       "toolchainFile": "${sourceDir}/../out/vcpkg/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static",
+        "VCPKG_HOST_TRIPLET": "x64-windows",
+        "VCPKG_MANIFEST_FEATURES": "skia-renderer",
+        "RELAYDESK_USE_SKIA_EUI_BACKEND": "ON"
+      }
+    },
+    {
+      "name": "windows-skiaui-vcpkg-base",
+      "hidden": true,
+      "toolchainFile": "${sourceDir}/../out/vcpkg/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
         "VCPKG_TARGET_TRIPLET": "x64-windows-static-md",
         "VCPKG_HOST_TRIPLET": "x64-windows",
         "VCPKG_INSTALLED_DIR": "${sourceDir}/../out/vcpkg/installed",
-        "VCPKG_MANIFEST_FEATURES": "skia-renderer",
-        "RELAYDESK_USE_SKIA_EUI_BACKEND": "OFF"
+        "VCPKG_MANIFEST_FEATURES": "skiaui-renderer",
+        "RELAYDESK_USE_SKIA_EUI_BACKEND": "OFF",
+        "RELAYDESK_BUILD_SKIAUI": "ON"
       }
     },
     {
@@ -52,6 +64,17 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDebugDLL"
       }
+    },
+    {
+      "name": "windows-msvc-nmake-release-skiaui",
+      "displayName": "Windows MSVC NMake Release SkiaUI",
+      "inherits": "windows-skiaui-vcpkg-base",
+      "generator": "NMake Makefiles",
+      "binaryDir": "${sourceDir}/out/build/windows-msvc-nmake-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDLL"
+      }
     }
   ],
   "buildPresets": [
@@ -68,6 +91,10 @@
     {
       "name": "windows-msvc-nmake-debug",
       "configurePreset": "windows-msvc-nmake-debug"
+    },
+    {
+      "name": "windows-msvc-nmake-release-skiaui",
+      "configurePreset": "windows-msvc-nmake-release-skiaui"
     }
   ],
   "testPresets": [

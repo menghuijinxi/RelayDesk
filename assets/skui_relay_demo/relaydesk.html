@@ -363,6 +363,34 @@
       border-color: #98dfdc;
       color: #17202a;
     }
+    .message-context-menu {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      width: 132px;
+      height: 38px;
+      display: none;
+      border-radius: 7px;
+      border-color: #cfd9e5;
+      border-width: 1px;
+      border-style: solid;
+      background-color: #ffffff;
+      color: #1f2937;
+      font-size: 14px;
+      font-weight: bold;
+    }
+    .message-context-item {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      width: 132px;
+      height: 38px;
+      align-items: center;
+      justify-content: center;
+    }
+    .message-context-item:hover {
+      background-color: #eef6f8;
+    }
     .msg-q2 {
       top: 63px;
       width: 285px;
@@ -762,8 +790,8 @@
       <div id="tab-history" class="tab tab-history" data-action="tab:tab-history">历史</div>
       <div id="tab-transfer" class="tab tab-transfer" data-action="tab:tab-transfer">传输</div>
       <div class="timeline-line"></div>
-      <div class="chat-scroll">
-        <div class="chat-content">
+      <div id="chat-scroll" class="chat-scroll" data-virtual-height="680">
+        <div id="chat-content" class="chat-content">
       <div class="day-pill">今天</div>
       <selectable class="bubble bubble-left msg-q2">能把最新的 Q2 报告发我吗?</selectable>
       <div class="time-label time-q2">09:21</div>
@@ -789,6 +817,9 @@
         <svg class="compose-icon attach-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.1-8.9 8.9a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"></path></svg>
         <svg class="compose-icon folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"></path></svg>
         <div class="send-button" data-action="send-message">发送</div>
+      </div>
+      <div id="message-context-menu" class="message-context-menu">
+          <div id="message-context-copy" class="message-context-item" data-action="copy-message-context">复制文本</div>
       </div>
     </div>
 
