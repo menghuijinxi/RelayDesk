@@ -8,9 +8,7 @@
 #include <cstdio>
 
 #include <algorithm>
-#include <array>
 #include <cmath>
-#include <cctype>
 #include <cstdint>
 #include <cwchar>
 #include <cstring>
@@ -30,14 +28,9 @@
 
 #include "include/core/SkColor.h"
 #include "include/core/SkData.h"
-#include "include/core/SkFont.h"
-#include "include/core/SkFontMgr.h"
-#include "include/core/SkFontTypes.h"
 #include "include/core/SkImageInfo.h"
 #include "include/core/SkPixmap.h"
-#include "include/core/SkTypeface.h"
 #include "include/encode/SkPngEncoder.h"
-#include "include/ports/SkTypeface_win.h"
 #include "skui_win32_app.h"
 
 #include "core/platform/async.h"
@@ -65,25 +58,9 @@ constexpr int kDeviceSectionGap = 22;
 constexpr int kDeviceSectionRowGap = 40;
 constexpr int kDeviceContentBottomPadding = 12;
 constexpr int kDeviceMinimumVirtualHeight = 180;
-constexpr int kChatMinimumVirtualHeight = 680;
-constexpr int kChatFirstMessageTop = 64;
-constexpr int kChatMessageGap = 18;
-constexpr int kChatBubbleBaseHeight = 54;
-constexpr int kChatTransferCardHeight = 152;
-constexpr int kChatContentBottomPadding = 28;
-constexpr int kChatLeftMessageX = 32;
-constexpr int kChatRightMessageRight = 88;
-constexpr int kChatTextLineHeight = 21;
-constexpr int kChatTextVerticalPadding = 26;
-constexpr int kChatMinBubbleWidth = 56;
-constexpr int kChatEstimatedTextPadding = 36;
-constexpr int kChatTimeGap = 16;
 constexpr int kChatMessagePaneLeft = 402;
-constexpr int kChatMessagePaneMinWidth = 360;
-constexpr int kChatMessageSideInset = 32;
 constexpr int kChatContextMenuWidth = 132;
 constexpr int kChatContextMenuHeight = 38;
-constexpr float kChatBubbleFontSize = 15.0f;
 constexpr UINT kSkiaUiRequestRedrawMessage = WM_APP + 0x531;
 constexpr UINT kRelayDeskSkiaUiRefreshMs = 500;
 
@@ -451,134 +428,6 @@ std::string makeUrlLinkAttributes(std::string_view text)
     return attributes;
 }
 
-std::size_t nextUtf8Boundary(std::string_view value, std::size_t index)
-{
-    if (index >= value.size()) {
-        return value.size();
-    }
-
-    ++index;
-    while (index < value.size() &&
-           (static_cast<unsigned char>(value[index]) & 0xC0) == 0x80) {
-        ++index;
-    }
-    return index;
-}
-
-bool isTextWrapBreakCharacter(char value)
-{
-    return std::isspace(static_cast<unsigned char>(value)) != 0 ||
-           value == '/' ||
-           value == '-' ||
-           value == '_' ||
-           value == '?' ||
-           value == '&' ||
-           value == '=';
-}
-
-const SkFont& chatBubbleFont()
-{
-    static sk_sp<SkFontMgr> fontManager = [] {
-        sk_sp<SkFontMgr> manager = SkFontMgr_New_DirectWrite();
-        if (!manager) {
-            manager = SkFontMgr_New_GDI();
-        }
-        return manager;
-    }();
-    static sk_sp<SkTypeface> typeface = [] {
-        const SkFontStyle style = SkFontStyle::Bold();
-        const std::array<const char*, 5> families = {
-            "Microsoft YaHei UI",
-            "Microsoft YaHei",
-            "Segoe UI",
-            "Arial",
-            nullptr};
-        for (const char* family : families) {
-            if (!fontManager) {
-                continue;
-            }
-            sk_sp<SkTypeface> candidate =
-                fontManager->matchFamilyStyle(family, style);
-            if (candidate) {
-                return candidate;
-            }
-        }
-        return sk_sp<SkTypeface>();
-    }();
-    static SkFont font(typeface, kChatBubbleFontSize);
-    static const bool configured = [] {
-        font.setEdging(SkFont::Edging::kAntiAlias);
-        font.setSubpixel(true);
-        return true;
-    }();
-    (void)configured;
-    return font;
-}
-
-float measureChatBubbleText(std::string_view text)
-{
-    if (text.empty()) {
-        return 0.0f;
-    }
-    return chatBubbleFont().measureText(text.data(),
-                                        text.size(),
-                                        SkTextEncoding::kUTF8);
-}
-
-std::size_t findMeasuredLineEnd(std::string_view value,
-                                std::size_t start,
-                                std::size_t hardEnd,
-                                float maxWidth)
-{
-    if (maxWidth <= 0.0f || start >= hardEnd) {
-        return hardEnd;
-    }
-
-    std::size_t lineEnd = start;
-    std::size_t lastBreak = std::string_view::npos;
-    while (lineEnd < hardEnd) {
-        const std::size_t next = nextUtf8Boundary(value, lineEnd);
-        const std::string_view candidate(value.data() + start, next - start);
-        if (measureChatBubbleText(candidate) > maxWidth) {
-            break;
-        }
-        if (isTextWrapBreakCharacter(value[lineEnd])) {
-            lastBreak = next;
-        }
-        lineEnd = next;
-    }
-
-    if (lineEnd == hardEnd || lineEnd > start) {
-        if (lineEnd < hardEnd && lastBreak != std::string_view::npos &&
-            lastBreak > start) {
-            return lastBreak;
-        }
-        return lineEnd;
-    }
-    return nextUtf8Boundary(value, start);
-}
-
-int estimateTextPixelWidth(std::string_view text)
-{
-    float maxLineWidth = 0.0f;
-    std::size_t lineStart = 0;
-    for (std::size_t offset = 0; offset <= text.size(); ++offset) {
-        if (offset < text.size() && text[offset] != '\n') {
-            continue;
-        }
-
-        std::size_t lineEnd = offset;
-        if (lineEnd > lineStart && text[lineEnd - 1] == '\r') {
-            --lineEnd;
-        }
-        const std::string_view line(text.data() + lineStart,
-                                    lineEnd - lineStart);
-        maxLineWidth = std::max(maxLineWidth, measureChatBubbleText(line));
-        lineStart = offset + 1;
-    }
-    return static_cast<int>(std::ceil(maxLineWidth));
-}
-
 int runtimeLogicalWidth(const skui::Runtime& runtime)
 {
     return std::max(1,
@@ -593,61 +442,6 @@ int runtimeLogicalHeight(const skui::Runtime& runtime)
                     static_cast<int>(std::lround(
                         static_cast<float>(runtime.height()) /
                         runtime.effectiveScale())));
-}
-
-int chatTextMaxBubbleWidth(const skui::Runtime& runtime)
-{
-    const int paneWidth =
-        std::max(kChatMessagePaneMinWidth,
-                 runtimeLogicalWidth(runtime) - kChatMessagePaneLeft);
-    const int reservedWidth = kChatMessageSideInset + kChatRightMessageRight +
-        kChatTimeGap + 52;
-    return std::max(kChatMinBubbleWidth, paneWidth - reservedWidth);
-}
-
-int estimateTextLineCount(std::string_view text, int bubbleWidth)
-{
-    const int contentWidth =
-        std::max(1, bubbleWidth - kChatEstimatedTextPadding);
-    int lines = 1;
-    std::size_t lineStart = 0;
-    while (lineStart < text.size()) {
-        if (text[lineStart] == '\r') {
-            ++lineStart;
-            continue;
-        }
-        if (text[lineStart] == '\n') {
-            ++lines;
-            ++lineStart;
-            continue;
-        }
-
-        std::size_t hardEnd = lineStart;
-        while (hardEnd < text.size() && text[hardEnd] != '\n') {
-            ++hardEnd;
-        }
-
-        while (lineStart < hardEnd) {
-            const std::size_t lineEnd = findMeasuredLineEnd(
-                text,
-                lineStart,
-                hardEnd,
-                static_cast<float>(contentWidth));
-            lineStart = lineEnd;
-            while (lineStart < hardEnd &&
-                   std::isspace(static_cast<unsigned char>(text[lineStart])) != 0) {
-                ++lineStart;
-            }
-            if (lineStart < hardEnd) {
-                ++lines;
-            }
-        }
-        if (lineStart < text.size() && text[lineStart] == '\n') {
-            ++lines;
-            ++lineStart;
-        }
-    }
-    return std::max(1, lines);
 }
 
 bool writeClipboardText(std::string_view text)
@@ -834,61 +628,42 @@ std::string partDisplayText(const relaydesk::storage::ChatMessagePart& part)
 
 std::string makeTextMessageMarkup(
     const relaydesk::storage::ChatMessageRecord& message,
-    const relaydesk::storage::ChatMessagePart& part,
-    int top,
-    int maxBubbleWidth,
-    int& height)
+    const relaydesk::storage::ChatMessagePart& part)
 {
     const bool outgoing =
         message.GetDirection() == relaydesk::storage::MessageDirection::Outgoing;
     const std::string text = trimMessageWhitespace(partDisplayText(part));
-    const int estimatedWidth =
-        estimateTextPixelWidth(text) + kChatEstimatedTextPadding;
-    const int width =
-        std::clamp(estimatedWidth, kChatMinBubbleWidth, maxBubbleWidth);
-    const int lineCount = estimateTextLineCount(text, width);
-    height = std::max(kChatBubbleBaseHeight,
-                      kChatTextVerticalPadding + lineCount * kChatTextLineHeight);
+    const std::string timeText = shortMessageTime(message);
 
     std::string html;
     html.reserve(620);
+    html += R"(<div class="message-row )";
+    html += outgoing ? "message-row-right" : "message-row-left";
+    html += R"(">)";
+    if (outgoing && !timeText.empty()) {
+        html += R"(<div class="time-label">)";
+        html += escapeHtml(timeText);
+        html += R"(</div>)";
+    }
     html += R"(<selectable class="bubble )";
     html += outgoing ? "bubble-right" : "bubble-left";
-    html += R"(" style="top: )";
-    html += std::to_string(top);
-    html += "px; width: ";
-    html += std::to_string(width);
-    html += "px; height: ";
-    html += std::to_string(height);
-    html += R"(px; align-items: flex-start;")";
+    html += R"(")";
     html += makeUrlLinkAttributes(text);
     html += ">";
     html += escapeHtml(text);
     html += R"(</selectable>)";
-
-    const std::string timeText = shortMessageTime(message);
-    if (!timeText.empty()) {
-        html += R"(<div class="time-label" style="top: )";
-        html += std::to_string(top + (height - 22) / 2);
-        html += "px; ";
-        if (outgoing) {
-            html += "right: ";
-            html += std::to_string(kChatRightMessageRight + width + kChatTimeGap);
-        } else {
-            html += "left: ";
-            html += std::to_string(kChatLeftMessageX + width + kChatTimeGap);
-        }
-        html += R"(px;">)";
+    if (!outgoing && !timeText.empty()) {
+        html += R"(<div class="time-label">)";
         html += escapeHtml(timeText);
         html += R"(</div>)";
     }
+    html += R"(</div>)";
     return html;
 }
 
 std::string makeTransferMessageMarkup(
     const relaydesk::storage::ChatMessageRecord& message,
-    const relaydesk::storage::ChatMessagePart& part,
-    int top)
+    const relaydesk::storage::ChatMessagePart& part)
 {
     const bool outgoing =
         message.GetDirection() == relaydesk::storage::MessageDirection::Outgoing;
@@ -912,14 +687,12 @@ std::string makeTransferMessageMarkup(
 
     std::string html;
     html.reserve(760);
-    html += R"(<div class="transfer-card )";
-    html += outgoing ? "card-upload" : "card-download";
+    html += R"(<div class="message-row message-row-transfer">)";
+    html += R"(<div class="transfer-card)";
     if (warning) {
         html += " warning";
     }
-    html += R"(" style="top: )";
-    html += std::to_string(top);
-    html += R"(px;">)";
+    html += R"(">)";
     html += R"(<div class="file-icon doc-icon doc-icon-zip"><div class="doc-fold"></div></div>)";
     html += R"(<div class="file-name">)";
     html += escapeHtml(title);
@@ -949,37 +722,29 @@ std::string makeTransferMessageMarkup(
     if (outgoing) {
         html += R"(<svg class="card-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5 6 17.5 15 8.5"></path><path d="M9 15.5 11 17.5 22 6.5"></path></svg>)";
     }
-    html += R"(</div>)";
+    html += R"(</div></div>)";
     return html;
 }
 
 std::string makeChatContentMarkup(
-    const relaydesk::runtime::RelayDeskRuntime& relayRuntime,
-    int maxBubbleWidth,
-    int& contentHeight)
+    const relaydesk::runtime::RelayDeskRuntime& relayRuntime)
 {
-    std::string body;
-    body.reserve(4096);
-    body += R"(<div class="day-pill">今天</div>)";
+    std::string html;
+    html.reserve(4096);
+    html += R"(<div id="chat-content" class="chat-content">)";
+    html += R"(<div class="day-row"><div class="day-pill">今天</div></div>)";
 
-    int top = kChatFirstMessageTop;
     const auto& messages = relayRuntime.GetSelectedPeerMessages();
     if (!relayRuntime.GetSelectedPeer().has_value()) {
         relaydesk::storage::ChatMessageRecord placeholder;
         relaydesk::storage::ChatMessagePart part;
         part.SetText("请选择左侧设备查看聊天记录");
-        int height = kChatBubbleBaseHeight;
-        body +=
-            makeTextMessageMarkup(placeholder, part, top, maxBubbleWidth, height);
-        top += height + kChatMessageGap;
+        html += makeTextMessageMarkup(placeholder, part);
     } else if (messages.empty()) {
         relaydesk::storage::ChatMessageRecord placeholder;
         relaydesk::storage::ChatMessagePart part;
         part.SetText("暂无聊天消息");
-        int height = kChatBubbleBaseHeight;
-        body +=
-            makeTextMessageMarkup(placeholder, part, top, maxBubbleWidth, height);
-        top += height + kChatMessageGap;
+        html += makeTextMessageMarkup(placeholder, part);
     } else {
         for (const auto& message : messages) {
             bool rendered = false;
@@ -987,17 +752,9 @@ std::string makeChatContentMarkup(
                 if (part.GetType() == relaydesk::storage::MessagePartType::File ||
                     part.GetType() == relaydesk::storage::MessagePartType::Folder ||
                     part.GetType() == relaydesk::storage::MessagePartType::Image) {
-                    body += makeTransferMessageMarkup(message, part, top);
-                    top += kChatTransferCardHeight + kChatMessageGap;
+                    html += makeTransferMessageMarkup(message, part);
                 } else {
-                    int height = kChatBubbleBaseHeight;
-                    body += makeTextMessageMarkup(
-                        message,
-                        part,
-                        top,
-                        maxBubbleWidth,
-                        height);
-                    top += height + kChatMessageGap;
+                    html += makeTextMessageMarkup(message, part);
                 }
                 rendered = true;
             }
@@ -1005,26 +762,11 @@ std::string makeChatContentMarkup(
             if (!rendered) {
                 relaydesk::storage::ChatMessagePart part;
                 part.SetText("空消息");
-                int height = kChatBubbleBaseHeight;
-                body += makeTextMessageMarkup(
-                    message,
-                    part,
-                    top,
-                    maxBubbleWidth,
-                    height);
-                top += height + kChatMessageGap;
+                html += makeTextMessageMarkup(message, part);
             }
         }
     }
 
-    contentHeight = std::max(kChatMinimumVirtualHeight,
-                             top + kChatContentBottomPadding);
-    std::string html;
-    html.reserve(body.size() + 120);
-    html += R"(<div id="chat-content" class="chat-content" style="height: )";
-    html += std::to_string(contentHeight);
-    html += R"(px;">)";
-    html += body;
     html += R"(</div>)";
     return html;
 }
@@ -1132,12 +874,9 @@ std::string makeChatSignature(
 }
 
 std::string makeRelayDeskUiSignature(
-    const relaydesk::runtime::RelayDeskRuntime& relayRuntime,
-    int layoutWidth)
+    const relaydesk::runtime::RelayDeskRuntime& relayRuntime)
 {
-    std::string signature = "layout-width:";
-    signature += std::to_string(layoutWidth);
-    signature += "\n--devices--\n";
+    std::string signature = "--devices--\n";
     signature += makeDeviceListSignature(relayRuntime);
     signature += "\n--chat--\n";
     signature += makeChatSignature(relayRuntime);
@@ -1200,10 +939,7 @@ void applyRelayDeskDevicePanel(skui::Runtime& skiaRuntime,
                                relaydesk::runtime::RelayDeskRuntime& relayRuntime)
 {
     relayRuntime.refreshPeersIfNeeded();
-    int chatContentHeight = kChatMinimumVirtualHeight;
-    const int maxBubbleWidth = chatTextMaxBubbleWidth(skiaRuntime);
-    const std::string chatContentHtml =
-        makeChatContentMarkup(relayRuntime, maxBubbleWidth, chatContentHeight);
+    const std::string chatContentHtml = makeChatContentMarkup(relayRuntime);
 
     const auto& localUser = relayRuntime.GetLocalUser();
     skui::RuntimeUpdates updates;
@@ -1319,11 +1055,6 @@ void applyRelayDeskDevicePanel(skui::Runtime& skiaRuntime,
     addStyleUpdate(updates,
                    "device-list-content",
                    "height: " + std::to_string(contentHeight) + "px;");
-    addAttributeUpdate(updates,
-                       "chat-scroll",
-                       "data-virtual-height",
-                       std::to_string(chatContentHeight));
-
     skiaRuntime.applyUpdates(updates);
     skiaRuntime.replaceHtmlById("chat-content", chatContentHtml);
 }
@@ -1466,8 +1197,7 @@ bool refreshRelayDeskDevicePanelIfChanged(SkiaUiRuntimeBinding& binding,
     core::async::dispatchReady();
     binding.relayRuntime->refreshPeersIfNeeded();
     const std::string nextSignature =
-        makeRelayDeskUiSignature(*binding.relayRuntime,
-                                 runtimeLogicalWidth(*binding.skiaRuntime));
+        makeRelayDeskUiSignature(*binding.relayRuntime);
     if (!force && nextSignature == binding.lastDeviceSignature) {
         return false;
     }

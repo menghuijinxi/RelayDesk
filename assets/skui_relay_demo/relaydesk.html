@@ -3,9 +3,18 @@
 <head>
   <meta charset="utf-8">
   <style>
+    html {
+      width: 100%;
+      height: 100%;
+    }
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+    }
     .screen {
-      flex-grow: 1;
-      flex-shrink: 1;
+      width: 100%;
+      height: 100%;
       position: relative;
       background-color: #f8fafc;
       color: #111827;
@@ -25,6 +34,7 @@
     }
     .profile-avatar {
       position: absolute;
+      display: flex;
       left: 24px;
       top: 22px;
       width: 52px;
@@ -279,6 +289,7 @@
     }
     .tab {
       position: absolute;
+      display: flex;
       top: 119px;
       width: 188px;
       height: 40px;
@@ -316,15 +327,26 @@
     }
     .chat-content {
       position: absolute;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 18px;
       left: 0px;
       top: 0px;
       right: 0px;
-      height: 680px;
+      min-height: 680px;
+      padding-top: 18px;
+      padding-bottom: 28px;
+    }
+    .day-row {
+      position: relative;
+      display: flex;
+      justify-content: center;
+      flex-shrink: 0;
     }
     .day-pill {
-      position: absolute;
-      left: 376px;
-      top: 18px;
+      position: relative;
+      display: flex;
       width: 66px;
       height: 30px;
       border-radius: 7px;
@@ -339,26 +361,28 @@
       font-size: 13px;
     }
     .bubble {
-      position: absolute;
+      position: relative;
+      flex-shrink: 1;
+      width: auto;
+      height: auto;
+      min-width: 56px;
+      max-width: 72%;
       border-radius: 8px;
       border-width: 1px;
       border-style: solid;
       font-size: 15px;
       font-weight: bold;
-      align-items: center;
       padding-left: 18px;
       padding-top: 12px;
       padding-right: 18px;
       padding-bottom: 12px;
     }
     .bubble-left {
-      left: 32px;
       background-color: #ffffff;
       border-color: #d6dee8;
       color: #1f2937;
     }
     .bubble-right {
-      right: 88px;
       background-color: #dff8f6;
       border-color: #98dfdc;
       color: #17202a;
@@ -381,6 +405,7 @@
     }
     .message-context-item {
       position: absolute;
+      display: flex;
       left: 0px;
       top: 0px;
       width: 132px;
@@ -391,75 +416,39 @@
     .message-context-item:hover {
       background-color: #eef6f8;
     }
-    .msg-q2 {
-      top: 63px;
-      width: 285px;
-      height: 54px;
+    .message-row {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-shrink: 0;
+      padding-left: 32px;
+      padding-right: 32px;
     }
-    .time-q2 {
-      left: 340px;
-      top: 81px;
+    .message-row-left {
+      justify-content: flex-start;
     }
-    .msg-upload {
-      top: 131px;
-      width: 210px;
-      height: 54px;
+    .message-row-right {
+      justify-content: flex-end;
+      padding-right: 88px;
     }
-    .time-upload {
-      right: 34px;
-      top: 149px;
-    }
-    .mark-upload {
-      right: 18px;
-      top: 145px;
-    }
-    .card-upload {
-      top: 191px;
-    }
-    .msg-spec {
-      top: 353px;
-      width: 275px;
-      height: 54px;
-    }
-    .time-spec {
-      left: 322px;
-      top: 371px;
-    }
-    .card-download {
-      top: 419px;
-    }
-    .msg-latest {
-      top: 577px;
-      width: 255px;
-      height: 54px;
-    }
-    .time-latest {
-      right: 34px;
-      top: 595px;
-    }
-    .mark-latest {
-      right: 18px;
-      top: 591px;
+    .message-row-transfer {
+      justify-content: flex-end;
+      padding-right: 36px;
     }
     .time-label {
-      position: absolute;
+      position: relative;
+      flex-shrink: 0;
       width: 52px;
       height: 22px;
       font-size: 13px;
       color: #718094;
     }
-    .read-mark {
-      position: absolute;
-      width: 22px;
-      height: 22px;
-      color: #0aa39e;
-      font-size: 20px;
-      font-weight: bold;
-    }
     .transfer-card {
-      position: absolute;
-      right: 36px;
+      position: relative;
+      flex-shrink: 1;
       width: 640px;
+      max-width: 75%;
       height: 152px;
       border-radius: 8px;
       border-width: 1px;
@@ -595,6 +584,7 @@
     }
     .send-button {
       position: absolute;
+      display: flex;
       right: 14px;
       top: 13px;
       width: 88px;
@@ -613,22 +603,6 @@
     @media (max-width: 1599px) {
       .main {
         right: 0px;
-      }
-      .transfer-card {
-        left: 122px;
-        right: 64px;
-        width: auto;
-      }
-      .bubble-right {
-        right: 118px;
-      }
-      .time-upload,
-      .time-latest {
-        right: 62px;
-      }
-      .mark-upload,
-      .mark-latest {
-        right: 30px;
       }
     }
     @media (max-width: 940px) {
@@ -694,29 +668,17 @@
         right: 24px;
         width: auto;
       }
+      .message-row,
+      .message-row-right,
+      .message-row-transfer {
+        padding-left: 24px;
+        padding-right: 24px;
+      }
+      .bubble {
+        max-width: 78%;
+      }
       .transfer-card {
-        left: 24px;
-        right: 24px;
-        width: auto;
-      }
-      .bubble-left {
-        left: 24px;
-      }
-      .bubble-right {
-        right: 72px;
-      }
-      .time-q2,
-      .time-spec {
-        left: auto;
-        right: 18px;
-      }
-      .time-upload,
-      .time-latest {
-        right: 38px;
-      }
-      .mark-upload,
-      .mark-latest {
-        right: 12px;
+        max-width: 100%;
       }
       .file-icon {
         left: 18px;
@@ -790,25 +752,19 @@
       <div id="tab-history" class="tab tab-history" data-action="tab:tab-history">历史</div>
       <div id="tab-transfer" class="tab tab-transfer" data-action="tab:tab-transfer">传输</div>
       <div class="timeline-line"></div>
-      <div id="chat-scroll" class="chat-scroll" data-virtual-height="680">
+      <div id="chat-scroll" class="chat-scroll">
         <div id="chat-content" class="chat-content">
-      <div class="day-pill">今天</div>
-      <selectable class="bubble bubble-left msg-q2">能把最新的 Q2 报告发我吗?</selectable>
-      <div class="time-label time-q2">09:21</div>
-      <selectable class="bubble bubble-right msg-upload">可以，正在上传。</selectable>
-      <div class="time-label time-upload">09:21</div>
-      <svg class="read-mark mark-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5 6 17.5 15 8.5"></path><path d="M9 15.5 11 17.5 22 6.5"></path></svg>
-      <div class="transfer-card card-upload">
+      <div class="day-row"><div class="day-pill">今天</div></div>
+      <div class="message-row message-row-left"><selectable class="bubble bubble-left">能把最新的 Q2 报告发我吗?</selectable><div class="time-label">09:21</div></div>
+      <div class="message-row message-row-right"><div class="time-label">09:21</div><selectable class="bubble bubble-right">可以，正在上传。</selectable></div>
+      <div class="message-row message-row-transfer"><div class="transfer-card">
         <img class="file-icon" src="icons/file_type_pdf.svg"><div class="file-name">Q2_Report_2024.pdf</div><div class="file-size">24.8 MB</div><div id="upload-percent" class="transfer-percent">78%</div><progress id="upload-progress" class="progress-main" value="78" max="100"></progress><div class="transfer-meta">19.4 MB / 24.8 MB · 5.2 MB/s · 剩余 00:00:01</div><div class="card-time">09:22</div><svg class="card-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5 6 17.5 15 8.5"></path><path d="M9 15.5 11 17.5 22 6.5"></path></svg>
-      </div>
-      <selectable class="bubble bubble-left msg-spec">谢谢! 设计说明也在吗?</selectable>
-      <div class="time-label time-spec">09:23</div>
-      <div class="transfer-card card-download warning" data-action="finish-transfer">
+      </div></div>
+      <div class="message-row message-row-left"><selectable class="bubble bubble-left">谢谢! 设计说明也在吗?</selectable><div class="time-label">09:23</div></div>
+      <div class="message-row message-row-transfer"><div class="transfer-card warning" data-action="finish-transfer">
         <img class="file-icon" src="icons/file_type_zip.svg"><div class="file-name">Design_Specs_v2.zip</div><div class="file-size">112.6 MB</div><div id="download-percent" class="transfer-percent">45%</div><progress id="download-progress" class="progress-main warning" value="45" max="100"></progress><div class="transfer-meta">50.7 MB / 112.6 MB · 4.1 MB/s · 剩余 00:00:15</div><div class="card-time">09:24</div><svg class="card-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5 6 17.5 15 8.5"></path><path d="M9 15.5 11 17.5 22 6.5"></path></svg>
-      </div>
-      <selectable class="bubble bubble-right msg-latest">是的，这是最新版本。</selectable>
-      <div class="time-label time-latest">09:25</div>
-      <svg class="read-mark mark-latest" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5 6 17.5 15 8.5"></path><path d="M9 15.5 11 17.5 22 6.5"></path></svg>
+      </div></div>
+      <div class="message-row message-row-right"><div class="time-label">09:25</div><selectable class="bubble bubble-right">是的，这是最新版本。</selectable></div>
         </div>
       </div>
       <div class="composer-wrap">
