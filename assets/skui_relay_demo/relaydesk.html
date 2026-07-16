@@ -418,7 +418,7 @@
     }
     .image-context-menu {
       width: 160px;
-      height: 76px;
+      height: 114px;
     }
     .image-context-item {
       width: 160px;
@@ -426,6 +426,9 @@
     }
     .image-context-copy {
       top: 38px;
+    }
+    .image-context-save {
+      top: 76px;
     }
     .image-preview-overlay {
       position: absolute;
@@ -846,6 +849,7 @@
       <div id="image-context-menu" class="message-context-menu image-context-menu">
           <div id="image-context-reveal" class="message-context-item image-context-item" data-action="reveal-image-context">打开所在位置</div>
           <div id="image-context-copy" class="message-context-item image-context-item image-context-copy" data-action="copy-image-context">复制图片</div>
+          <div id="image-context-save" class="message-context-item image-context-item image-context-save" data-action="save-image-context">另存为</div>
       </div>
       <div id="image-preview-overlay" class="image-preview-overlay">
           <img id="image-preview-image" class="image-preview-image" src="">
