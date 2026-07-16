@@ -1133,44 +1133,6 @@ bool shellOpenPath(const std::filesystem::path& filePath)
 #endif
 }
 
-#if defined(_WIN32)
-std::wstring quoteWindowsShellArgument(const std::wstring& argument)
-{
-    return L"\"" + argument + L"\"";
-}
-#endif
-
-bool shellRevealPath(const std::filesystem::path& filePath)
-{
-#if defined(_WIN32)
-    std::error_code error;
-    if (std::filesystem::is_regular_file(filePath, error)
-        || std::filesystem::is_directory(filePath, error)) {
-        const std::wstring parameters =
-            L"/select," + quoteWindowsShellArgument(filePath.wstring());
-        const HINSTANCE result = ShellExecuteW(nullptr,
-                                               L"open",
-                                               L"explorer.exe",
-                                               parameters.c_str(),
-                                               nullptr,
-                                               SW_SHOWNORMAL);
-        return reinterpret_cast<std::intptr_t>(result) > 32;
-    }
-
-    const std::filesystem::path directoryPath =
-        std::filesystem::is_directory(filePath, error)
-        ? filePath
-        : filePath.parent_path();
-    if (directoryPath.empty()) {
-        return false;
-    }
-    return shellOpenPath(directoryPath);
-#else
-    (void)filePath;
-    return false;
-#endif
-}
-
 std::string fileTypeIconSvgMarkup(const std::string& iconFileName)
 {
     static std::unordered_map<std::string, std::string> svgMarkupCache;
@@ -6607,7 +6569,7 @@ void drawMessageFilePart(eui::Ui& ui,
                     shellOpenPath(openPath);
                     return;
                 }
-                shellRevealPath(openPath);
+                relaydesk::platform::revealPathInFileManager(openPath);
         });
         return;
     }

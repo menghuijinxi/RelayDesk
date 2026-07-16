@@ -641,6 +641,38 @@ bool startScreenClipCapture()
     return shellExecuteSucceeded(result);
 }
 
+bool revealPathInFileManager(const std::filesystem::path& sourcePath)
+{
+    if (sourcePath.empty()) {
+        return false;
+    }
+
+    std::error_code error;
+    if (std::filesystem::exists(sourcePath, error) && !error) {
+        const std::wstring parameters =
+            L"/select,\"" + sourcePath.wstring() + L"\"";
+        const HINSTANCE result = ShellExecuteW(nullptr,
+                                               L"open",
+                                               L"explorer.exe",
+                                               parameters.c_str(),
+                                               nullptr,
+                                               SW_SHOWNORMAL);
+        return shellExecuteSucceeded(result);
+    }
+
+    const std::filesystem::path directoryPath = sourcePath.parent_path();
+    if (directoryPath.empty()) {
+        return false;
+    }
+    const HINSTANCE result = ShellExecuteW(nullptr,
+                                           L"open",
+                                           directoryPath.c_str(),
+                                           nullptr,
+                                           nullptr,
+                                           SW_SHOWNORMAL);
+    return shellExecuteSucceeded(result);
+}
+
 bool copyImageFileToClipboard(const std::filesystem::path& sourcePath)
 {
     if (sourcePath.empty()) {

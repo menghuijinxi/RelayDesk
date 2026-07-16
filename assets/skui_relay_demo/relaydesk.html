@@ -416,6 +416,53 @@
     .message-context-item:hover {
       background-color: #eef6f8;
     }
+    .image-context-menu {
+      width: 160px;
+      height: 76px;
+    }
+    .image-context-item {
+      width: 160px;
+      height: 38px;
+    }
+    .image-context-copy {
+      top: 38px;
+    }
+    .image-preview-overlay {
+      position: absolute;
+      display: none;
+      left: 0px;
+      top: 0px;
+      right: 0px;
+      bottom: 0px;
+      align-items: center;
+      justify-content: center;
+      background-color: rgba(10, 18, 24, 0.88);
+      z-index: 100;
+    }
+    .image-preview-image {
+      position: relative;
+      flex-shrink: 0;
+      border-radius: 6px;
+      background-color: #ffffff;
+    }
+    .image-preview-close {
+      position: absolute;
+      display: flex;
+      right: 22px;
+      top: 22px;
+      width: 38px;
+      height: 38px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      background-color: #ffffff;
+      color: #17202a;
+      font-size: 24px;
+      font-weight: bold;
+    }
+    .image-preview-close:hover {
+      background-color: #dff8f6;
+    }
     .message-row {
       position: relative;
       display: flex;
@@ -435,6 +482,25 @@
     .message-row-transfer {
       justify-content: flex-end;
       padding-right: 36px;
+    }
+    .message-image-card {
+      position: relative;
+      flex-shrink: 0;
+      border-radius: 8px;
+      border-width: 1px;
+      border-style: solid;
+      border-color: #cfd9e5;
+      background-color: #ffffff;
+    }
+    .message-image-card:hover {
+      border-color: #74d4d0;
+      background-color: #f5fffe;
+    }
+    .message-image {
+      position: absolute;
+      left: 6px;
+      top: 6px;
+      border-radius: 6px;
     }
     .time-label {
       position: relative;
@@ -776,6 +842,14 @@
       </div>
       <div id="message-context-menu" class="message-context-menu">
           <div id="message-context-copy" class="message-context-item" data-action="copy-message-context">复制文本</div>
+      </div>
+      <div id="image-context-menu" class="message-context-menu image-context-menu">
+          <div id="image-context-reveal" class="message-context-item image-context-item" data-action="reveal-image-context">打开所在位置</div>
+          <div id="image-context-copy" class="message-context-item image-context-item image-context-copy" data-action="copy-image-context">复制图片</div>
+      </div>
+      <div id="image-preview-overlay" class="image-preview-overlay">
+          <img id="image-preview-image" class="image-preview-image" src="">
+          <div class="image-preview-close" data-action="close-image-preview">×</div>
       </div>
     </div>
 

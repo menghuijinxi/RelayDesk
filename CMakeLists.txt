@@ -365,6 +365,16 @@ if(RELAYDESK_BUILD_SKIAUI)
             --capture-width 1600
             --capture-height 900
             --capture-dpi-scale 1.0
+            --capture-test-peer-switch
+    )
+    add_test(NAME relaydesk_skiaui_image_message_capture
+        COMMAND relaydesk_skiaui
+            --capture-skiaui
+            "${CMAKE_BINARY_DIR}/tmp/relaydesk_skiaui_image_message.png"
+            --capture-width 1600
+            --capture-height 900
+            --capture-dpi-scale 1.0
+            --capture-test-image-message
     )
 endif()
 

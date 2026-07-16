@@ -30,6 +30,7 @@ std::optional<std::filesystem::path> selectSavePathFromDialog(
 std::optional<std::filesystem::path> selectFolderFromDialog();
 bool copyImageFileToClipboard(const std::filesystem::path& sourcePath);
 bool copyAttachmentPathToClipboard(const std::filesystem::path& sourcePath);
+bool revealPathInFileManager(const std::filesystem::path& sourcePath);
 bool consumeBackspacePressed();
 
 }

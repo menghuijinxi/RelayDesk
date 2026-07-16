@@ -35,7 +35,9 @@
 
 #include "core/platform/async.h"
 #include "main/app_runtime.h"
+#include "platform/attachment_input.h"
 #include "platform/text_encoding.h"
+#include "storage/app_paths.h"
 
 namespace {
 
@@ -61,6 +63,10 @@ constexpr int kDeviceMinimumVirtualHeight = 180;
 constexpr int kChatMessagePaneLeft = 402;
 constexpr int kChatContextMenuWidth = 132;
 constexpr int kChatContextMenuHeight = 38;
+constexpr int kImageContextMenuWidth = 160;
+constexpr int kImageContextMenuHeight = 76;
+constexpr float kMessageImageMaxWidth = 420.0f;
+constexpr float kMessageImageMaxHeight = 300.0f;
 constexpr float kChatScrollBottomTolerance = 0.5f;
 constexpr UINT kSkiaUiRequestRedrawMessage = WM_APP + 0x531;
 constexpr UINT kRelayDeskSkiaUiRefreshMs = 500;
@@ -72,6 +78,8 @@ struct CaptureOptions {
     float dpiScale = kDefaultCaptureDpiScale;
     int initialWidth = 0;
     int initialHeight = 0;
+    bool testPeerSwitch = false;
+    bool testImageMessage = false;
 };
 
 struct SkiaUiRuntimeBinding {
@@ -79,14 +87,18 @@ struct SkiaUiRuntimeBinding {
     skui::Runtime* skiaRuntime = nullptr;
     HWND window = nullptr;
     UINT_PTR timerId = 0;
+    UINT_PTR peerSwitchTimerId = 0;
     bool documentLoaded = false;
     bool chatInitialized = false;
+    bool scrollChatToLatestPending = false;
     std::string lastDeviceSignature;
 };
 
 SkiaUiRuntimeBinding* gRuntimeBinding = nullptr;
 std::string gMessageContextText;
+std::filesystem::path gImageContextPath;
 bool gMessageContextMenuVisible = false;
+bool gImagePreviewVisible = false;
 
 COLORREF colorRefFromSkColor(SkColor color)
 {
@@ -446,6 +458,40 @@ int runtimeLogicalHeight(const skui::Runtime& runtime)
                         runtime.effectiveScale())));
 }
 
+std::filesystem::path filesystemPathFromUtf8(std::string_view pathText)
+{
+    return std::filesystem::path(
+        relaydesk::platform::utf8ToWide(std::string(pathText)));
+}
+
+std::optional<std::filesystem::path> tryFilesystemPathFromUtf8(
+    std::string_view pathText)
+{
+    try {
+        return filesystemPathFromUtf8(pathText);
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+std::string filesystemPathToGenericUtf8(
+    const std::filesystem::path& filePath)
+{
+    const auto value = filePath.generic_u8string();
+    return std::string(value.begin(), value.end());
+}
+
+std::filesystem::path resolveWorkRelativePath(
+    const relaydesk::storage::AppPaths& appPaths,
+    std::string_view pathText)
+{
+    std::filesystem::path filePath = filesystemPathFromUtf8(pathText);
+    if (filePath.is_relative()) {
+        filePath = appPaths.GetWorkDirectory() / filePath;
+    }
+    return filePath.lexically_normal();
+}
+
 bool writeClipboardText(std::string_view text)
 {
     std::wstring wide;
@@ -490,27 +536,55 @@ void hideMessageContextMenu(skui::Runtime& runtime)
 {
     gMessageContextMenuVisible = false;
     runtime.setStyleById("message-context-menu", "display: none;");
+    runtime.setStyleById("image-context-menu", "display: none;");
 }
 
-void showMessageContextMenu(skui::Runtime& runtime, float x, float y)
+void showMessageContextMenu(skui::Runtime& runtime,
+                            std::string_view menuId,
+                            float x,
+                            float y,
+                            int menuWidth,
+                            int menuHeight)
 {
     const int mainWidth =
         std::max(1, runtimeLogicalWidth(runtime) - kChatMessagePaneLeft);
     const int menuLeft =
         std::clamp(static_cast<int>(std::lround(x)) - kChatMessagePaneLeft,
                    0,
-                   std::max(0, mainWidth - kChatContextMenuWidth));
+                   std::max(0, mainWidth - menuWidth));
     const int menuTop =
         std::clamp(static_cast<int>(std::lround(y)),
                    0,
-                   std::max(0, runtimeLogicalHeight(runtime) - kChatContextMenuHeight));
+                   std::max(0, runtimeLogicalHeight(runtime) - menuHeight));
     std::string style = "display: flex; left: ";
     style += std::to_string(menuLeft);
     style += "px; top: ";
     style += std::to_string(menuTop);
     style += "px;";
     gMessageContextMenuVisible = true;
-    runtime.setStyleById("message-context-menu", style);
+    runtime.setStyleById(menuId, style);
+}
+
+void showTextMessageContextMenu(skui::Runtime& runtime, float x, float y)
+{
+    runtime.setStyleById("image-context-menu", "display: none;");
+    showMessageContextMenu(runtime,
+                           "message-context-menu",
+                           x,
+                           y,
+                           kChatContextMenuWidth,
+                           kChatContextMenuHeight);
+}
+
+void showImageMessageContextMenu(skui::Runtime& runtime, float x, float y)
+{
+    runtime.setStyleById("message-context-menu", "display: none;");
+    showMessageContextMenu(runtime,
+                           "image-context-menu",
+                           x,
+                           y,
+                           kImageContextMenuWidth,
+                           kImageContextMenuHeight);
 }
 
 bool eventHasClass(const skui::ElementEvent& event, std::string_view className)
@@ -522,8 +596,13 @@ bool eventHasClass(const skui::ElementEvent& event, std::string_view className)
 bool isMessageContextMenuEvent(const skui::ElementEvent& event)
 {
     return event.id == "message-context-menu" ||
+           event.id == "image-context-menu" ||
            event.id == "message-context-copy" ||
+           event.id == "image-context-reveal" ||
+           event.id == "image-context-copy" ||
            event.action == "copy-message-context" ||
+           event.action == "reveal-image-context" ||
+           event.action == "copy-image-context" ||
            eventHasClass(event, "message-context-menu") ||
            eventHasClass(event, "message-context-item");
 }
@@ -728,6 +807,113 @@ std::string makeTransferMessageMarkup(
     return html;
 }
 
+struct MessageImageAsset {
+    std::filesystem::path sourcePath;
+    relaydesk::platform::ImageSize displaySize;
+};
+
+std::optional<MessageImageAsset> resolveMessageImageAsset(
+    const relaydesk::storage::ChatMessagePart& part)
+{
+    if (part.GetType() != relaydesk::storage::MessagePartType::Image ||
+        !part.GetLocalPath().has_value() || part.GetLocalPath()->empty()) {
+        return std::nullopt;
+    }
+
+    try {
+        const relaydesk::storage::AppPaths appPaths =
+            relaydesk::storage::createAppPaths();
+        const std::filesystem::path sourcePath =
+            resolveWorkRelativePath(appPaths, part.GetLocalPath().value());
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(sourcePath, error) || error) {
+            return std::nullopt;
+        }
+
+        const std::optional<relaydesk::platform::ImageSize> displaySize =
+            relaydesk::platform::probeImageSize(sourcePath);
+        if (!displaySize.has_value() || displaySize->width == 0u ||
+            displaySize->height == 0u) {
+            return std::nullopt;
+        }
+
+        return MessageImageAsset{sourcePath, displaySize.value()};
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+std::pair<int, int> messageImageDisplaySize(
+    const relaydesk::platform::ImageSize& imageSize)
+{
+    const float width = static_cast<float>(imageSize.width);
+    const float height = static_cast<float>(imageSize.height);
+    const float maximumScale =
+        std::min(kMessageImageMaxWidth / width,
+                 kMessageImageMaxHeight / height);
+    float scale = std::min(1.0f, maximumScale);
+    const float longestSide = std::max(width, height);
+    if (longestSide < 120.0f) {
+        scale = std::min(maximumScale, 120.0f / longestSide);
+    }
+    return {
+        std::max(1, static_cast<int>(std::lround(width * scale))),
+        std::max(1, static_cast<int>(std::lround(height * scale)))
+    };
+}
+
+std::string makeImageMessageMarkup(
+    const relaydesk::storage::ChatMessageRecord& message,
+    const relaydesk::storage::ChatMessagePart& part)
+{
+    const std::optional<MessageImageAsset> asset =
+        resolveMessageImageAsset(part);
+    if (!asset.has_value()) {
+        return makeTransferMessageMarkup(message, part);
+    }
+
+    const bool outgoing =
+        message.GetDirection() == relaydesk::storage::MessageDirection::Outgoing;
+    const std::string timeText = shortMessageTime(message);
+    const auto [imageWidth, imageHeight] =
+        messageImageDisplaySize(asset->displaySize);
+    const std::string sourcePath =
+        filesystemPathToGenericUtf8(asset->sourcePath);
+
+    std::string html;
+    html.reserve(720);
+    html += R"(<div class="message-row message-row-image )";
+    html += outgoing ? "message-row-right" : "message-row-left";
+    html += R"(">)";
+    if (outgoing && !timeText.empty()) {
+        html += R"(<div class="time-label">)";
+        html += escapeHtml(timeText);
+        html += R"(</div>)";
+    }
+    html += R"(<div class="message-image-card" data-action="image-context:)";
+    html += escapeHtml(sourcePath);
+    html += R"(" style="width: )";
+    html += std::to_string(imageWidth + 12);
+    html += "px; height: ";
+    html += std::to_string(imageHeight + 12);
+    html += R"(px;"><img class="message-image" src=")";
+    html += escapeHtml(sourcePath);
+    html += R"(" data-action="image-context:)";
+    html += escapeHtml(sourcePath);
+    html += R"(" style="width: )";
+    html += std::to_string(imageWidth);
+    html += "px; height: ";
+    html += std::to_string(imageHeight);
+    html += R"(px;"></div>)";
+    if (!outgoing && !timeText.empty()) {
+        html += R"(<div class="time-label">)";
+        html += escapeHtml(timeText);
+        html += R"(</div>)";
+    }
+    html += R"(</div>)";
+    return html;
+}
+
 std::string makeChatContentMarkup(
     const relaydesk::runtime::RelayDeskRuntime& relayRuntime)
 {
@@ -751,9 +937,12 @@ std::string makeChatContentMarkup(
         for (const auto& message : messages) {
             bool rendered = false;
             for (const auto& part : message.GetParts()) {
-                if (part.GetType() == relaydesk::storage::MessagePartType::File ||
-                    part.GetType() == relaydesk::storage::MessagePartType::Folder ||
-                    part.GetType() == relaydesk::storage::MessagePartType::Image) {
+                if (part.GetType() == relaydesk::storage::MessagePartType::Image) {
+                    html += makeImageMessageMarkup(message, part);
+                } else if (part.GetType() ==
+                               relaydesk::storage::MessagePartType::File ||
+                           part.GetType() ==
+                               relaydesk::storage::MessagePartType::Folder) {
                     html += makeTransferMessageMarkup(message, part);
                 } else {
                     html += makeTextMessageMarkup(message, part);
@@ -771,6 +960,48 @@ std::string makeChatContentMarkup(
 
     html += R"(</div>)";
     return html;
+}
+
+void showImagePreview(skui::Runtime& runtime,
+                      const std::filesystem::path& imagePath)
+{
+    const std::optional<relaydesk::platform::ImageSize> imageSize =
+        relaydesk::platform::probeImageSize(imagePath);
+    if (!imageSize.has_value() || imageSize->width == 0u ||
+        imageSize->height == 0u) {
+        return;
+    }
+
+    const float availableWidth = static_cast<float>(std::max(
+        1,
+        runtimeLogicalWidth(runtime) - kChatMessagePaneLeft - 96));
+    const float availableHeight = static_cast<float>(
+        std::max(1, runtimeLogicalHeight(runtime) - 96));
+    const float width = static_cast<float>(imageSize->width);
+    const float height = static_cast<float>(imageSize->height);
+    const float scale = std::min(
+        1.0f,
+        std::min(availableWidth / width, availableHeight / height));
+    const int displayWidth =
+        std::max(1, static_cast<int>(std::lround(width * scale)));
+    const int displayHeight =
+        std::max(1, static_cast<int>(std::lround(height * scale)));
+
+    runtime.setAttributeById("image-preview-image",
+                             "src",
+                             filesystemPathToGenericUtf8(imagePath));
+    runtime.setStyleById(
+        "image-preview-image",
+        "width: " + std::to_string(displayWidth) +
+            "px; height: " + std::to_string(displayHeight) + "px;");
+    runtime.setStyleById("image-preview-overlay", "display: flex;");
+    gImagePreviewVisible = true;
+}
+
+void hideImagePreview(skui::Runtime& runtime)
+{
+    runtime.setStyleById("image-preview-overlay", "display: none;");
+    gImagePreviewVisible = false;
 }
 
 void addTextUpdate(skui::RuntimeUpdates& updates,
@@ -1100,17 +1331,57 @@ void selectTab(skui::Runtime& runtime, std::string_view id)
     runtime.addClassById(id, "tab-active");
 }
 
-void installRelayDeskInteractions(skui::Runtime& runtime,
-                                  relaydesk::runtime::RelayDeskRuntime& relayRuntime)
+void CALLBACK refreshRelayDeskSkiaUiAfterPeerSwitch(
+    HWND,
+    UINT,
+    UINT_PTR timerId,
+    DWORD);
+
+void scheduleChatScrollToLatest(SkiaUiRuntimeBinding& binding)
 {
-    runtime.setElementEventCallback([&runtime, &relayRuntime](
+    binding.scrollChatToLatestPending = true;
+    if (binding.timerId != 0 && binding.peerSwitchTimerId == 0) {
+        binding.peerSwitchTimerId = SetTimer(
+            nullptr,
+            0,
+            1,
+            refreshRelayDeskSkiaUiAfterPeerSwitch);
+    }
+}
+
+void installRelayDeskInteractions(skui::Runtime& runtime,
+                                  relaydesk::runtime::RelayDeskRuntime& relayRuntime,
+                                  SkiaUiRuntimeBinding& binding)
+{
+    runtime.setElementEventCallback([&runtime, &relayRuntime, &binding](
                                         const skui::ElementEvent& event) {
+        constexpr std::string_view imageContextPrefix = "image-context:";
+        if (event.type == skui::ElementEventType::MouseUp &&
+            event.button == skui::MouseButton::Right &&
+            event.action.starts_with(imageContextPrefix)) {
+            const std::optional<std::filesystem::path> imagePath =
+                tryFilesystemPathFromUtf8(
+                    std::string_view(event.action).substr(
+                        imageContextPrefix.size()));
+            if (imagePath.has_value()) {
+                std::error_code error;
+                if (std::filesystem::is_regular_file(imagePath.value(), error) &&
+                    !error) {
+                    gImageContextPath = imagePath.value();
+                    showImageMessageContextMenu(runtime, event.x, event.y);
+                }
+            } else {
+                gImageContextPath.clear();
+            }
+            return;
+        }
+
         if (event.type == skui::ElementEventType::MouseUp &&
             event.button == skui::MouseButton::Right &&
             event.tag == "selectable" &&
             eventHasClass(event, "bubble")) {
             gMessageContextText = event.text;
-            showMessageContextMenu(runtime, event.x, event.y);
+            showTextMessageContextMenu(runtime, event.x, event.y);
             return;
         }
 
@@ -1124,14 +1395,30 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
         constexpr std::string_view devicePrefix = "select-device:";
         constexpr std::string_view tabPrefix = "tab:";
         constexpr std::string_view urlPrefix = "open-url:";
-        if (event.type != skui::ElementEventType::Click || event.action.empty()) {
+        if (event.type != skui::ElementEventType::Click ||
+            event.button != skui::MouseButton::Left ||
+            event.action.empty()) {
             return;
         }
 
         const std::string_view action(event.action);
-        if (action.starts_with(devicePrefix)) {
+        if (action.starts_with(imageContextPrefix)) {
             hideMessageContextMenu(runtime);
+            const std::optional<std::filesystem::path> imagePath =
+                tryFilesystemPathFromUtf8(
+                    action.substr(imageContextPrefix.size()));
+            if (imagePath.has_value()) {
+                std::error_code error;
+                if (std::filesystem::is_regular_file(imagePath.value(), error) &&
+                    !error) {
+                    showImagePreview(runtime, imagePath.value());
+                }
+            }
+        } else if (action.starts_with(devicePrefix)) {
+            hideMessageContextMenu(runtime);
+            hideImagePreview(runtime);
             relayRuntime.selectPeer(std::string(action.substr(devicePrefix.size())));
+            scheduleChatScrollToLatest(binding);
             applyRelayDeskDevicePanel(runtime, relayRuntime, true);
         } else if (action.starts_with(tabPrefix)) {
             hideMessageContextMenu(runtime);
@@ -1143,6 +1430,16 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
         } else if (action == "copy-message-context") {
             (void)writeClipboardText(gMessageContextText);
             hideMessageContextMenu(runtime);
+        } else if (action == "reveal-image-context") {
+            (void)relaydesk::platform::revealPathInFileManager(
+                gImageContextPath);
+            hideMessageContextMenu(runtime);
+        } else if (action == "copy-image-context") {
+            (void)relaydesk::platform::copyImageFileToClipboard(
+                gImageContextPath);
+            hideMessageContextMenu(runtime);
+        } else if (action == "close-image-preview") {
+            hideImagePreview(runtime);
         } else if (action == "send-message") {
             hideMessageContextMenu(runtime);
             runtime.setAttributeById("composer", "value", "");
@@ -1231,16 +1528,37 @@ bool refreshRelayDeskDevicePanelIfChanged(SkiaUiRuntimeBinding& binding,
     binding.relayRuntime->refreshPeersIfNeeded();
     const std::string nextSignature =
         makeRelayDeskUiSignature(*binding.relayRuntime);
-    if (!force && nextSignature == binding.lastDeviceSignature) {
+    const bool scrollChatToLatest =
+        !binding.chatInitialized || binding.scrollChatToLatestPending;
+    if (!force && !scrollChatToLatest &&
+        nextSignature == binding.lastDeviceSignature) {
         return false;
     }
 
     binding.lastDeviceSignature = nextSignature;
     applyRelayDeskDevicePanel(*binding.skiaRuntime,
                               *binding.relayRuntime,
-                              !binding.chatInitialized);
+                              scrollChatToLatest);
     binding.chatInitialized = true;
+    binding.scrollChatToLatestPending = false;
     return true;
+}
+
+void CALLBACK refreshRelayDeskSkiaUiAfterPeerSwitch(
+    HWND,
+    UINT,
+    UINT_PTR timerId,
+    DWORD)
+{
+    KillTimer(nullptr, timerId);
+    if (gRuntimeBinding == nullptr) {
+        return;
+    }
+
+    gRuntimeBinding->peerSwitchTimerId = 0;
+    if (refreshRelayDeskDevicePanelIfChanged(*gRuntimeBinding, false)) {
+        requestSkiaUiWindowRedraw(*gRuntimeBinding);
+    }
 }
 
 void CALLBACK refreshRelayDeskSkiaUiTimer(HWND, UINT, UINT_PTR, DWORD)
@@ -1281,7 +1599,8 @@ relaydesk::storage::ChatMessagePart makeCaptureFilePart(
     std::string fileName,
     std::uintmax_t fileSize,
     std::uintmax_t transferredSize,
-    relaydesk::storage::TransferState transferState)
+    relaydesk::storage::TransferState transferState,
+    std::string localPath = "capture")
 {
     relaydesk::storage::ChatMessagePart part;
     part.SetPartId(std::move(partId));
@@ -1291,7 +1610,7 @@ relaydesk::storage::ChatMessagePart makeCaptureFilePart(
     part.SetFileSize(fileSize);
     part.SetTransferredSize(transferredSize);
     part.SetTransferState(transferState);
-    part.SetLocalPath("capture");
+    part.SetLocalPath(std::move(localPath));
     return part;
 }
 
@@ -1327,7 +1646,8 @@ relaydesk::storage::ChatMessageRecord makeCaptureMessage(
     return record;
 }
 
-std::vector<relaydesk::storage::ChatMessageRecord> makeCaptureChatMessages()
+std::vector<relaydesk::storage::ChatMessageRecord> makeCaptureChatMessages(
+    const std::string& imagePath = "capture")
 {
     std::vector<relaydesk::storage::ChatMessageRecord> messages;
     messages.push_back(makeCaptureMessage(
@@ -1351,7 +1671,8 @@ std::vector<relaydesk::storage::ChatMessageRecord> makeCaptureChatMessages()
                              "clipboard.bmp",
                              8ull * 1024ull * 1024ull + 420000ull,
                              8ull * 1024ull * 1024ull + 420000ull,
-                             relaydesk::storage::TransferState::Completed)}));
+                             relaydesk::storage::TransferState::Completed,
+                             imagePath)}));
     messages.push_back(makeCaptureMessage(
         "capture-4",
         relaydesk::storage::MessageDirection::Outgoing,
@@ -1400,8 +1721,9 @@ std::vector<relaydesk::storage::ChatMessageRecord> makeCaptureChatMessages()
 
 class CaptureRelayDeskRuntime : public relaydesk::runtime::RelayDeskRuntime {
 public:
-    CaptureRelayDeskRuntime()
-        : RelayDeskRuntime(makeCaptureRuntimeOptions())
+    explicit CaptureRelayDeskRuntime(std::string imagePath = "capture")
+        : RelayDeskRuntime(makeCaptureRuntimeOptions()),
+          imagePath_(std::move(imagePath))
     {
         localUser_.SetDisplayName("许靖");
         localUser_.SetHostName("MENG");
@@ -1417,8 +1739,31 @@ public:
         peers_.push_back(std::move(peer));
         selectedPeerDeviceId_ = "capture-peer";
         selectedPeerHasMoreMessages_ = false;
-        selectedPeerMessages_ = makeCaptureChatMessages();
+        selectedPeerMessages_ = makeCaptureChatMessages(imagePath_);
     }
+
+    void showShortConversation()
+    {
+        std::vector<relaydesk::storage::ChatMessageRecord> messages =
+            makeCaptureChatMessages(imagePath_);
+        messages.resize(1);
+        selectedPeerMessages_ = std::move(messages);
+    }
+
+    void showFullConversation()
+    {
+        selectedPeerMessages_ = makeCaptureChatMessages(imagePath_);
+    }
+
+    void showImageConversation()
+    {
+        std::vector<relaydesk::storage::ChatMessageRecord> messages =
+            makeCaptureChatMessages(imagePath_);
+        selectedPeerMessages_ = {std::move(messages.at(2))};
+    }
+
+protected:
+    std::string imagePath_;
 };
 
 bool parsePositiveInt(const wchar_t* text, int& value)
@@ -1493,6 +1838,10 @@ std::optional<CaptureOptions> parseCaptureOptions()
         } else if (argument == L"--capture-initial-height") {
             valid = index + 1 < argc &&
                     parsePositiveInt(argv[++index], options.initialHeight);
+        } else if (argument == L"--capture-test-peer-switch") {
+            options.testPeerSwitch = true;
+        } else if (argument == L"--capture-test-image-message") {
+            options.testImageMessage = true;
         }
     }
 
@@ -1542,6 +1891,21 @@ bool writePngFile(const std::filesystem::path& outputPath,
     return output.good();
 }
 
+bool writeCaptureImageFixture(const std::filesystem::path& outputPath)
+{
+    constexpr int kWidth = 320;
+    constexpr int kHeight = 180;
+    const std::vector<std::uint32_t> pixels(
+        static_cast<std::size_t>(kWidth) * static_cast<std::size_t>(kHeight),
+        0xFFFF00FFu);
+    return writePngFile(outputPath,
+                        pixels,
+                        kWidth,
+                        kHeight,
+                        static_cast<std::size_t>(kWidth) *
+                            sizeof(std::uint32_t));
+}
+
 int captureSkiaUiPng(const CaptureOptions& options)
 {
     if (options.outputPath.empty()) {
@@ -1558,9 +1922,36 @@ int captureSkiaUiPng(const CaptureOptions& options)
     skui::RuntimeOptions runtimeOptions;
     runtimeOptions.clearColor = kDemoClearColor;
 
-    CaptureRelayDeskRuntime relayRuntime;
+    std::filesystem::path captureImagePath;
+    if (options.testImageMessage) {
+        captureImagePath = outputPath.parent_path() /
+            "relaydesk_skiaui_capture_message.png";
+        if (!writeCaptureImageFixture(captureImagePath)) {
+            return 9;
+        }
+    }
+    const auto captureImagePathText = captureImagePath.u8string();
+    CaptureRelayDeskRuntime relayRuntime(
+        captureImagePathText.empty()
+            ? "capture"
+            : std::string(captureImagePathText.begin(),
+                          captureImagePathText.end()));
+    if (options.testImageMessage) {
+        relayRuntime.showImageConversation();
+    }
+    if (options.testImageMessage &&
+        makeChatContentMarkup(relayRuntime).find(
+            R"(class="message-image)") == std::string::npos) {
+        return 10;
+    }
+    if (options.testPeerSwitch) {
+        relayRuntime.showShortConversation();
+    }
     skui::Runtime runtime(runtimeOptions);
-    installRelayDeskInteractions(runtime, relayRuntime);
+    SkiaUiRuntimeBinding binding;
+    binding.relayRuntime = &relayRuntime;
+    binding.skiaRuntime = &runtime;
+    installRelayDeskInteractions(runtime, relayRuntime, binding);
     const int initialWidth =
         options.initialWidth > 0 ? options.initialWidth : options.width;
     const int initialHeight =
@@ -1574,6 +1965,57 @@ int captureSkiaUiPng(const CaptureOptions& options)
         runtime.resize(options.width, options.height, options.dpiScale);
         applyRelayDeskDevicePanel(runtime, relayRuntime, false);
     }
+    if (options.testImageMessage) {
+        const float imageX =
+            static_cast<float>(options.width - 220) * options.dpiScale;
+        const float imageY = 330.0f * options.dpiScale;
+        skui::Event mouseDown;
+        mouseDown.type = skui::EventType::MouseDown;
+        mouseDown.x = imageX;
+        mouseDown.y = imageY;
+        mouseDown.button = skui::MouseButton::Right;
+        (void)runtime.handleEvent(mouseDown);
+        skui::Event mouseUp = mouseDown;
+        mouseUp.type = skui::EventType::MouseUp;
+        (void)runtime.handleEvent(mouseUp);
+        if (!gMessageContextMenuVisible || gImageContextPath.empty()) {
+            return 12;
+        }
+        hideMessageContextMenu(runtime);
+
+        mouseDown.button = skui::MouseButton::Left;
+        (void)runtime.handleEvent(mouseDown);
+        mouseUp = mouseDown;
+        mouseUp.type = skui::EventType::MouseUp;
+        (void)runtime.handleEvent(mouseUp);
+        if (!gImagePreviewVisible) {
+            return 11;
+        }
+        hideImagePreview(runtime);
+    }
+    if (options.testPeerSwitch) {
+        binding.documentLoaded = true;
+        binding.chatInitialized = true;
+        binding.lastDeviceSignature = makeRelayDeskUiSignature(relayRuntime);
+
+        relayRuntime.showFullConversation();
+        skui::Event mouseDown;
+        mouseDown.type = skui::EventType::MouseDown;
+        mouseDown.x = 100.0f * options.dpiScale;
+        mouseDown.y = 310.0f * options.dpiScale;
+        mouseDown.button = skui::MouseButton::Left;
+        (void)runtime.handleEvent(mouseDown);
+        skui::Event mouseUp = mouseDown;
+        mouseUp.type = skui::EventType::MouseUp;
+        (void)runtime.handleEvent(mouseUp);
+
+        const std::optional<skui::ScrollState> switchedScroll =
+            runtime.scrollStateById("chat-scroll");
+        if (!switchedScroll.has_value() || switchedScroll->maxScrollY <= 0.0f) {
+            return 8;
+        }
+        (void)refreshRelayDeskDevicePanelIfChanged(binding, false);
+    }
     if (!isChatScrolledToLatest(runtime)) {
         return 7;
     }
@@ -1583,10 +2025,41 @@ int captureSkiaUiPng(const CaptureOptions& options)
     std::vector<std::uint32_t> pixels(
         static_cast<std::size_t>(options.width) *
         static_cast<std::size_t>(options.height));
-    if (!runtime.renderToBgraPixels(pixels.data(), options.width,
-                                    options.height, rowBytes,
-                                    options.dpiScale)) {
-        return 5;
+    bool imageRendered = !options.testImageMessage;
+    constexpr int kMaximumImageRenderAttempts = 50;
+    for (int attempt = 0;
+         attempt < kMaximumImageRenderAttempts && !imageRendered;
+         ++attempt) {
+        if (!runtime.renderToBgraPixels(pixels.data(),
+                                        options.width,
+                                        options.height,
+                                        rowBytes,
+                                        options.dpiScale)) {
+            return 5;
+        }
+        imageRendered = std::any_of(
+            pixels.begin(),
+            pixels.end(),
+            [](std::uint32_t pixel) {
+                const std::uint32_t red = (pixel >> 16u) & 0xFFu;
+                const std::uint32_t green = (pixel >> 8u) & 0xFFu;
+                const std::uint32_t blue = pixel & 0xFFu;
+                return red >= 240u && green <= 20u && blue >= 240u;
+            });
+        if (!imageRendered) {
+            Sleep(10);
+        }
+    }
+    if (!options.testImageMessage) {
+        if (!runtime.renderToBgraPixels(pixels.data(),
+                                        options.width,
+                                        options.height,
+                                        rowBytes,
+                                        options.dpiScale)) {
+            return 5;
+        }
+    } else if (!imageRendered) {
+        return 13;
     }
 
     return writePngFile(outputPath, pixels, options.width, options.height, rowBytes)
@@ -1623,7 +2096,7 @@ int runSkiaUiApp(HINSTANCE instance, int showCmd)
     options.runtime.clearColor = kDemoClearColor;
     options.onRuntimeReady = [binding](skui::Runtime& runtime) {
         binding->skiaRuntime = &runtime;
-        installRelayDeskInteractions(runtime, *binding->relayRuntime);
+        installRelayDeskInteractions(runtime, *binding->relayRuntime, *binding);
         binding->timerId = SetTimer(
             nullptr,
             0,
@@ -1645,6 +2118,9 @@ int runSkiaUiApp(HINSTANCE instance, int showCmd)
     const int result = app.run(instance, showCmd);
     if (binding->timerId != 0) {
         KillTimer(nullptr, binding->timerId);
+    }
+    if (binding->peerSwitchTimerId != 0) {
+        KillTimer(nullptr, binding->peerSwitchTimerId);
     }
     if (gRuntimeBinding == binding.get()) {
         gRuntimeBinding = nullptr;
