@@ -61,6 +61,7 @@ constexpr int kDeviceMinimumVirtualHeight = 180;
 constexpr int kChatMessagePaneLeft = 402;
 constexpr int kChatContextMenuWidth = 132;
 constexpr int kChatContextMenuHeight = 38;
+constexpr float kChatScrollBottomTolerance = 0.5f;
 constexpr UINT kSkiaUiRequestRedrawMessage = WM_APP + 0x531;
 constexpr UINT kRelayDeskSkiaUiRefreshMs = 500;
 
@@ -79,6 +80,7 @@ struct SkiaUiRuntimeBinding {
     HWND window = nullptr;
     UINT_PTR timerId = 0;
     bool documentLoaded = false;
+    bool chatInitialized = false;
     std::string lastDeviceSignature;
 };
 
@@ -935,9 +937,28 @@ int deviceContentHeightForLastRowTop(int rowTop)
                     rowTop + kDeviceRowHeight + kDeviceContentBottomPadding);
 }
 
-void applyRelayDeskDevicePanel(skui::Runtime& skiaRuntime,
-                               relaydesk::runtime::RelayDeskRuntime& relayRuntime)
+bool isChatScrolledToLatest(const skui::Runtime& runtime)
 {
+    const std::optional<skui::ScrollState> scrollState =
+        runtime.scrollStateById("chat-scroll");
+    return scrollState.has_value() &&
+        (scrollState->maxScrollY <= kChatScrollBottomTolerance ||
+         std::abs(scrollState->maxScrollY - scrollState->scrollY) <=
+             kChatScrollBottomTolerance);
+}
+
+void applyRelayDeskDevicePanel(skui::Runtime& skiaRuntime,
+                               relaydesk::runtime::RelayDeskRuntime& relayRuntime,
+                               bool forceChatToLatest)
+{
+    const std::optional<skui::ScrollState> previousChatScroll =
+        skiaRuntime.scrollStateById("chat-scroll");
+    const bool keepChatAtLatest = forceChatToLatest ||
+        !previousChatScroll.has_value() ||
+        previousChatScroll->maxScrollY <= kChatScrollBottomTolerance ||
+        std::abs(previousChatScroll->maxScrollY - previousChatScroll->scrollY) <=
+            kChatScrollBottomTolerance;
+
     relayRuntime.refreshPeersIfNeeded();
     const std::string chatContentHtml = makeChatContentMarkup(relayRuntime);
 
@@ -1057,6 +1078,18 @@ void applyRelayDeskDevicePanel(skui::Runtime& skiaRuntime,
                    "height: " + std::to_string(contentHeight) + "px;");
     skiaRuntime.applyUpdates(updates);
     skiaRuntime.replaceHtmlById("chat-content", chatContentHtml);
+
+    const std::optional<skui::ScrollState> updatedChatScroll =
+        skiaRuntime.scrollStateById("chat-scroll");
+    if (!updatedChatScroll.has_value()) {
+        return;
+    }
+
+    const float targetScrollY = keepChatAtLatest
+        ? updatedChatScroll->maxScrollY
+        : std::min(previousChatScroll->scrollY, updatedChatScroll->maxScrollY);
+    (void)skiaRuntime.setScrollOffsetById(
+        "chat-scroll", updatedChatScroll->scrollX, targetScrollY);
 }
 
 void selectTab(skui::Runtime& runtime, std::string_view id)
@@ -1099,7 +1132,7 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
         if (action.starts_with(devicePrefix)) {
             hideMessageContextMenu(runtime);
             relayRuntime.selectPeer(std::string(action.substr(devicePrefix.size())));
-            applyRelayDeskDevicePanel(runtime, relayRuntime);
+            applyRelayDeskDevicePanel(runtime, relayRuntime, true);
         } else if (action.starts_with(tabPrefix)) {
             hideMessageContextMenu(runtime);
             selectTab(runtime, action.substr(tabPrefix.size()));
@@ -1203,7 +1236,10 @@ bool refreshRelayDeskDevicePanelIfChanged(SkiaUiRuntimeBinding& binding,
     }
 
     binding.lastDeviceSignature = nextSignature;
-    applyRelayDeskDevicePanel(*binding.skiaRuntime, *binding.relayRuntime);
+    applyRelayDeskDevicePanel(*binding.skiaRuntime,
+                              *binding.relayRuntime,
+                              !binding.chatInitialized);
+    binding.chatInitialized = true;
     return true;
 }
 
@@ -1533,10 +1569,13 @@ int captureSkiaUiPng(const CaptureOptions& options)
     if (!runtime.loadDocumentFromString(html)) {
         return 4;
     }
-    applyRelayDeskDevicePanel(runtime, relayRuntime);
+    applyRelayDeskDevicePanel(runtime, relayRuntime, true);
     if (initialWidth != options.width || initialHeight != options.height) {
         runtime.resize(options.width, options.height, options.dpiScale);
-        applyRelayDeskDevicePanel(runtime, relayRuntime);
+        applyRelayDeskDevicePanel(runtime, relayRuntime, false);
+    }
+    if (!isChatScrolledToLatest(runtime)) {
+        return 7;
     }
 
     const std::size_t rowBytes =
