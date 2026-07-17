@@ -80,6 +80,7 @@ struct CaptureOptions {
     int initialHeight = 0;
     bool testPeerSwitch = false;
     bool testImageMessage = false;
+    bool testFileCard = false;
 };
 
 struct SkiaUiRuntimeBinding {
@@ -704,6 +705,41 @@ std::string transferStateText(relaydesk::storage::TransferState state)
     return "未知状态";
 }
 
+bool isCompletedAttachmentMissing(
+    const relaydesk::storage::ChatMessagePart& part)
+{
+    if (!part.GetTransferState().has_value() ||
+        part.GetTransferState().value() !=
+            relaydesk::storage::TransferState::Completed ||
+        !part.GetLocalPath().has_value() || part.GetLocalPath()->empty()) {
+        return false;
+    }
+
+    try {
+        const relaydesk::storage::AppPaths appPaths =
+            relaydesk::storage::createAppPaths();
+        const std::filesystem::path attachmentPath =
+            resolveWorkRelativePath(appPaths, part.GetLocalPath().value());
+        std::error_code error;
+        const bool exists = std::filesystem::exists(attachmentPath, error);
+        return !error && !exists;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+std::string transferStateText(
+    const relaydesk::storage::ChatMessagePart& part)
+{
+    if (isCompletedAttachmentMissing(part)) {
+        return "已清理";
+    }
+    if (part.GetTransferState().has_value()) {
+        return transferStateText(part.GetTransferState().value());
+    }
+    return "等待传输";
+}
+
 int transferProgressPercent(const relaydesk::storage::ChatMessagePart& part)
 {
     if (part.GetTransferState().has_value() &&
@@ -808,9 +844,7 @@ std::string makeTransferMessageMarkup(
     const std::string sizeText =
         part.GetFileSize().has_value() ? formatFileSize(part.GetFileSize().value())
                                        : "文件夹";
-    const std::string stateText = part.GetTransferState().has_value()
-        ? transferStateText(part.GetTransferState().value())
-        : "等待传输";
+    const std::string stateText = transferStateText(part);
 
     std::string html;
     html.reserve(760);
@@ -821,9 +855,9 @@ std::string makeTransferMessageMarkup(
     }
     html += R"(">)";
     html += R"(<div class="file-icon doc-icon doc-icon-zip"><div class="doc-fold"></div></div>)";
-    html += R"(<div class="file-name">)";
+    html += R"(<div class="transfer-content"><selectable class="file-name">)";
     html += escapeHtml(title);
-    html += R"(</div><div class="file-size">)";
+    html += R"(</selectable><div class="transfer-summary"><div class="file-size">)";
     html += escapeHtml(sizeText);
     html += R"(</div><div class="transfer-percent)";
     if (progress == 100) {
@@ -831,15 +865,19 @@ std::string makeTransferMessageMarkup(
     }
     html += R"(">)";
     html += std::to_string(progress);
-    html += R"(%</div><progress class="progress-main)";
+    html += R"(%</div></div><progress class="progress-main)";
     if (warning) {
         html += " warning";
     }
     html += R"(" value=")";
     html += std::to_string(progress);
-    html += R"(" max="100"></progress><div class="transfer-meta">)";
+    html += R"(" max="100"></progress><div class="transfer-footer"><div class="transfer-meta)";
+    if (stateText == "已清理") {
+        html += " cleaned";
+    }
+    html += R"(">)";
     html += escapeHtml(stateText);
-    html += R"(</div>)";
+    html += R"(</div><div class="transfer-tail">)";
     const std::string timeText = shortMessageTime(message);
     if (!timeText.empty()) {
         html += R"(<div class="card-time">)";
@@ -849,7 +887,7 @@ std::string makeTransferMessageMarkup(
     if (outgoing) {
         html += R"(<svg class="card-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5 6 17.5 15 8.5"></path><path d="M9 15.5 11 17.5 22 6.5"></path></svg>)";
     }
-    html += R"(</div></div>)";
+    html += R"(</div></div></div></div></div>)";
     return html;
 }
 
@@ -1773,6 +1811,47 @@ std::vector<relaydesk::storage::ChatMessageRecord> makeCaptureChatMessages(
     return messages;
 }
 
+std::vector<relaydesk::storage::ChatMessageRecord> makeCaptureFileCardMessages()
+{
+    std::vector<relaydesk::storage::ChatMessageRecord> messages;
+    messages.push_back(makeCaptureMessage(
+        "capture-file-filler",
+        relaydesk::storage::MessageDirection::Outgoing,
+        "2026-07-09T09:35:00Z",
+        {makeCaptureFilePart("filler-file",
+                             relaydesk::storage::MessagePartType::File,
+                             "capture-layout-baseline.dat",
+                             2048,
+                             2048,
+                             relaydesk::storage::TransferState::Completed,
+                             "capture")}));
+    messages.push_back(makeCaptureMessage(
+        "capture-file-short",
+        relaydesk::storage::MessageDirection::Outgoing,
+        "2026-07-09T09:36:00Z",
+        {makeCaptureFilePart("short-file",
+                             relaydesk::storage::MessagePartType::File,
+                             "dynamic_dom.html",
+                             11200,
+                             11200,
+                             relaydesk::storage::TransferState::Completed,
+                             "capture")}));
+    messages.push_back(makeCaptureMessage(
+        "capture-file-long",
+        relaydesk::storage::MessageDirection::Outgoing,
+        "2026-07-09T09:37:00Z",
+        {makeCaptureFilePart(
+            "long-file",
+            relaydesk::storage::MessagePartType::File,
+            "f224b2fa81c6d8465bdd43a796fb94e84d4bede67dd08e86b75f0fa5242c9c899"
+            "7047aa9bf78193d7b4dd17798c1f551f.png",
+            842300,
+            842300,
+            relaydesk::storage::TransferState::Completed,
+            "capture")}));
+    return messages;
+}
+
 class CaptureRelayDeskRuntime : public relaydesk::runtime::RelayDeskRuntime {
 public:
     explicit CaptureRelayDeskRuntime(std::string imagePath = "capture")
@@ -1814,6 +1893,11 @@ public:
         std::vector<relaydesk::storage::ChatMessageRecord> messages =
             makeCaptureChatMessages(imagePath_);
         selectedPeerMessages_ = {std::move(messages.at(2))};
+    }
+
+    void showFileCardConversation()
+    {
+        selectedPeerMessages_ = makeCaptureFileCardMessages();
     }
 
 protected:
@@ -1896,6 +1980,8 @@ std::optional<CaptureOptions> parseCaptureOptions()
             options.testPeerSwitch = true;
         } else if (argument == L"--capture-test-image-message") {
             options.testImageMessage = true;
+        } else if (argument == L"--capture-test-file-card") {
+            options.testFileCard = true;
         }
     }
 
@@ -1960,6 +2046,83 @@ bool writeCaptureImageFixture(const std::filesystem::path& outputPath)
                             sizeof(std::uint32_t));
 }
 
+struct CapturePixelBounds {
+    int left = 0;
+    int top = 0;
+    int right = 0;
+    int bottom = 0;
+};
+
+std::vector<CapturePixelBounds> findTransferCardPixelBounds(
+    const std::vector<std::uint32_t>& pixels,
+    int width,
+    int height)
+{
+    constexpr std::uint32_t kTransferCardBackground = 0xFFE9FBFAu;
+    constexpr int kMinimumBackgroundPixelsPerRow = 100;
+    constexpr int kMinimumCardSpan = 200;
+    constexpr int kMaximumInternalGap = 12;
+    std::vector<CapturePixelBounds> regions;
+    for (int y = 0; y < height; ++y) {
+        int left = width;
+        int right = -1;
+        int count = 0;
+        for (int x = kChatMessagePaneLeft; x < width; ++x) {
+            const std::size_t index =
+                static_cast<std::size_t>(y) * static_cast<std::size_t>(width) +
+                static_cast<std::size_t>(x);
+            if (pixels[index] != kTransferCardBackground) {
+                continue;
+            }
+            left = std::min(left, x);
+            right = std::max(right, x);
+            ++count;
+        }
+        if (count < kMinimumBackgroundPixelsPerRow ||
+            right - left + 1 < kMinimumCardSpan) {
+            continue;
+        }
+        if (!regions.empty() &&
+            y <= regions.back().bottom + kMaximumInternalGap + 1) {
+            regions.back().left = std::min(regions.back().left, left);
+            regions.back().right = std::max(regions.back().right, right);
+            regions.back().bottom = y;
+        } else {
+            regions.push_back({left, y, right, y});
+        }
+    }
+    return regions;
+}
+
+int findRightmostTransferProgressPixel(
+    const std::vector<std::uint32_t>& pixels,
+    int width,
+    const CapturePixelBounds& bounds)
+{
+    constexpr std::uint32_t kTransferAccent = 0xFF0AA39Eu;
+    constexpr int kMinimumProgressSpan = 100;
+    int rightmost = -1;
+    for (int y = bounds.top; y <= bounds.bottom; ++y) {
+        int runStart = -1;
+        for (int x = bounds.left; x <= bounds.right; ++x) {
+            const std::size_t index =
+                static_cast<std::size_t>(y) * static_cast<std::size_t>(width) +
+                static_cast<std::size_t>(x);
+            if (pixels[index] == kTransferAccent) {
+                if (runStart < 0) {
+                    runStart = x;
+                }
+                if (x - runStart + 1 >= kMinimumProgressSpan) {
+                    rightmost = std::max(rightmost, x);
+                }
+            } else {
+                runStart = -1;
+            }
+        }
+    }
+    return rightmost;
+}
+
 int captureSkiaUiPng(const CaptureOptions& options)
 {
     if (options.outputPath.empty()) {
@@ -1992,6 +2155,42 @@ int captureSkiaUiPng(const CaptureOptions& options)
                           captureImagePathText.end()));
     if (options.testImageMessage) {
         relayRuntime.showImageConversation();
+    }
+    if (options.testFileCard) {
+        relayRuntime.showFileCardConversation();
+        if (makeChatContentMarkup(relayRuntime).find(
+                R"(class="transfer-meta cleaned">已清理)") ==
+            std::string::npos) {
+            return 24;
+        }
+        const relaydesk::storage::AppPaths appPaths =
+            relaydesk::storage::createAppPaths();
+        const std::string executablePath =
+            filesystemPathToGenericUtf8(appPaths.GetExecutablePath());
+        const relaydesk::storage::ChatMessagePart existingPart =
+            makeCaptureFilePart(
+                "existing-file",
+                relaydesk::storage::MessagePartType::File,
+                "relaydesk_skiaui.exe",
+                1,
+                1,
+                relaydesk::storage::TransferState::Completed,
+                executablePath);
+        if (transferStateText(existingPart) != "已完成") {
+            return 25;
+        }
+        const relaydesk::storage::ChatMessagePart cancelledPart =
+            makeCaptureFilePart(
+                "cancelled-file",
+                relaydesk::storage::MessagePartType::File,
+                "cancelled.bin",
+                1,
+                0,
+                relaydesk::storage::TransferState::Cancelled,
+                "capture");
+        if (transferStateText(cancelledPart) != "已取消") {
+            return 26;
+        }
     }
     if (options.testImageMessage &&
         makeChatContentMarkup(relayRuntime).find(
@@ -2151,6 +2350,48 @@ int captureSkiaUiPng(const CaptureOptions& options)
         return 13;
     }
 
+    if (options.testFileCard &&
+        !writePngFile(outputPath, pixels, options.width, options.height, rowBytes)) {
+        return 6;
+    }
+
+    if (options.testFileCard) {
+        const std::vector<CapturePixelBounds> cardBounds =
+            findTransferCardPixelBounds(
+                pixels, options.width, options.height);
+        if (cardBounds.size() < 2) {
+            return 19;
+        }
+        const CapturePixelBounds& shortCard = cardBounds[cardBounds.size() - 2];
+        const CapturePixelBounds& longCard = cardBounds.back();
+        const int shortWidth = shortCard.right - shortCard.left + 1;
+        const int longWidth = longCard.right - longCard.left + 1;
+        const int shortHeight = shortCard.bottom - shortCard.top + 1;
+        const int longHeight = longCard.bottom - longCard.top + 1;
+        const bool hasCardExpansionRoom = options.width >= 1400;
+        if (hasCardExpansionRoom && shortWidth + 40 >= longWidth) {
+            return 20;
+        }
+        if (shortHeight + 12 >= longHeight) {
+            return 21;
+        }
+        if (shortCard.right >= options.width - 24 ||
+            longCard.right >= options.width - 24) {
+            return 22;
+        }
+        constexpr int kMaximumTransferContentRightGap = 40;
+        const int shortProgressRight = findRightmostTransferProgressPixel(
+            pixels, options.width, shortCard);
+        if (shortProgressRight < 0 ||
+            shortCard.right - shortProgressRight >
+                kMaximumTransferContentRightGap) {
+            return 23;
+        }
+    }
+
+    if (options.testFileCard) {
+        return 0;
+    }
     return writePngFile(outputPath, pixels, options.width, options.height, rowBytes)
         ? 0
         : 6;

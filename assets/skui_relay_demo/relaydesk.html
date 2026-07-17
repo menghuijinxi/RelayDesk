@@ -515,10 +515,16 @@
     }
     .transfer-card {
       position: relative;
+      display: flex;
+      flex-direction: row;
+      align-items: flex-start;
       flex-shrink: 1;
-      width: 640px;
+      width: auto;
+      min-width: 640px;
       max-width: 75%;
-      height: 152px;
+      height: auto;
+      padding: 20px 24px 16px 16px;
+      box-sizing: border-box;
       border-radius: 8px;
       border-width: 1px;
       border-style: solid;
@@ -530,37 +536,53 @@
       border-color: #ffbd69;
     }
     .file-icon {
-      position: absolute;
-      left: 16px;
-      top: 32px;
+      position: relative;
+      flex-shrink: 0;
       width: 48px;
       height: 48px;
+      margin-top: 9px;
+    }
+    .transfer-content {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      flex-grow: 1;
+      flex-shrink: 1;
+      width: auto;
+      min-width: 220px;
+      margin-left: 32px;
     }
     .file-name {
-      position: absolute;
-      left: 96px;
-      top: 23px;
-      right: 150px;
-      height: 26px;
+      position: relative;
+      display: block;
+      width: auto;
+      height: auto;
+      margin-bottom: 8px;
       font-size: 16px;
       font-weight: bold;
       color: #1f2937;
     }
+    .transfer-summary {
+      position: relative;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      height: 20px;
+      margin-bottom: 10px;
+    }
     .file-size {
-      position: absolute;
-      left: 96px;
-      top: 62px;
-      right: 430px;
+      position: relative;
+      width: auto;
       height: 20px;
       font-size: 14px;
       font-weight: bold;
       color: #5d6b7c;
     }
     .progress-main {
-      position: absolute;
-      left: 96px;
-      top: 92px;
-      right: 30px;
+      position: relative;
+      width: 100%;
       height: 7px;
       border-radius: 4px;
       background-color: #cbd5df;
@@ -570,9 +592,8 @@
       color: #ec8d00;
     }
     .transfer-percent {
-      position: absolute;
-      right: 86px;
-      top: 62px;
+      position: relative;
+      flex-shrink: 0;
       width: 46px;
       height: 20px;
       text-align: right;
@@ -583,20 +604,37 @@
     .transfer-percent.done {
       color: #0aa39e;
     }
+    .transfer-footer {
+      position: relative;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      margin-top: 10px;
+    }
     .transfer-meta {
-      position: absolute;
-      left: 96px;
-      top: 117px;
-      right: 150px;
+      position: relative;
+      flex-shrink: 1;
+      width: auto;
       height: 20px;
+      margin-right: 18px;
       font-size: 13px;
       font-weight: bold;
       color: #5d6b7c;
     }
+    .transfer-meta.cleaned {
+      color: #dc2626;
+    }
+    .transfer-tail {
+      position: relative;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      flex-shrink: 0;
+    }
     .card-time {
-      position: absolute;
-      right: 56px;
-      top: 117px;
+      position: relative;
       width: 48px;
       height: 22px;
       text-align: right;
@@ -604,11 +642,11 @@
       color: #718094;
     }
     .card-mark {
-      position: absolute;
-      right: 24px;
-      top: 114px;
+      position: relative;
+      flex-shrink: 0;
       width: 22px;
       height: 22px;
+      margin-left: 10px;
       color: #0aa39e;
       font-size: 20px;
       font-weight: bold;
@@ -672,6 +710,12 @@
     @media (max-width: 1599px) {
       .main {
         right: 0px;
+      }
+    }
+    @media (max-width: 1120px) {
+      .transfer-card {
+        min-width: 0px;
+        max-width: 100%;
       }
     }
     @media (max-width: 940px) {
@@ -747,16 +791,12 @@
         max-width: 78%;
       }
       .transfer-card {
+        min-width: 0px;
         max-width: 100%;
       }
-      .file-icon {
-        left: 18px;
-      }
-      .file-name,
-      .file-size,
-      .progress-main,
-      .transfer-meta {
-        left: 78px;
+      .transfer-content {
+        min-width: 0px;
+        margin-left: 14px;
       }
       .composer-wrap {
         left: 18px;
@@ -827,11 +867,11 @@
       <div class="message-row message-row-left"><selectable class="bubble bubble-left">能把最新的 Q2 报告发我吗?</selectable><div class="time-label">09:21</div></div>
       <div class="message-row message-row-right"><div class="time-label">09:21</div><selectable class="bubble bubble-right">可以，正在上传。</selectable></div>
       <div class="message-row message-row-transfer"><div class="transfer-card">
-        <img class="file-icon" src="icons/file_type_pdf.svg"><div class="file-name">Q2_Report_2024.pdf</div><div class="file-size">24.8 MB</div><div id="upload-percent" class="transfer-percent">78%</div><progress id="upload-progress" class="progress-main" value="78" max="100"></progress><div class="transfer-meta">19.4 MB / 24.8 MB · 5.2 MB/s · 剩余 00:00:01</div><div class="card-time">09:22</div><svg class="card-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5 6 17.5 15 8.5"></path><path d="M9 15.5 11 17.5 22 6.5"></path></svg>
+        <img class="file-icon" src="icons/file_type_pdf.svg"><div class="transfer-content"><selectable class="file-name">Q2_Report_2024.pdf</selectable><div class="transfer-summary"><div class="file-size">24.8 MB</div><div id="upload-percent" class="transfer-percent">78%</div></div><progress id="upload-progress" class="progress-main" value="78" max="100"></progress><div class="transfer-footer"><div class="transfer-meta">19.4 MB / 24.8 MB · 5.2 MB/s · 剩余 00:00:01</div><div class="transfer-tail"><div class="card-time">09:22</div><svg class="card-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5 6 17.5 15 8.5"></path><path d="M9 15.5 11 17.5 22 6.5"></path></svg></div></div></div>
       </div></div>
       <div class="message-row message-row-left"><selectable class="bubble bubble-left">谢谢! 设计说明也在吗?</selectable><div class="time-label">09:23</div></div>
       <div class="message-row message-row-transfer"><div class="transfer-card warning" data-action="finish-transfer">
-        <img class="file-icon" src="icons/file_type_zip.svg"><div class="file-name">Design_Specs_v2.zip</div><div class="file-size">112.6 MB</div><div id="download-percent" class="transfer-percent">45%</div><progress id="download-progress" class="progress-main warning" value="45" max="100"></progress><div class="transfer-meta">50.7 MB / 112.6 MB · 4.1 MB/s · 剩余 00:00:15</div><div class="card-time">09:24</div><svg class="card-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5 6 17.5 15 8.5"></path><path d="M9 15.5 11 17.5 22 6.5"></path></svg>
+        <img class="file-icon" src="icons/file_type_zip.svg"><div class="transfer-content"><selectable class="file-name">Design_Specs_v2.zip</selectable><div class="transfer-summary"><div class="file-size">112.6 MB</div><div id="download-percent" class="transfer-percent">45%</div></div><progress id="download-progress" class="progress-main warning" value="45" max="100"></progress><div class="transfer-footer"><div class="transfer-meta">50.7 MB / 112.6 MB · 4.1 MB/s · 剩余 00:00:15</div><div class="transfer-tail"><div class="card-time">09:24</div><svg class="card-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5 6 17.5 15 8.5"></path><path d="M9 15.5 11 17.5 22 6.5"></path></svg></div></div></div>
       </div></div>
       <div class="message-row message-row-right"><div class="time-label">09:25</div><selectable class="bubble bubble-right">是的，这是最新版本。</selectable></div>
         </div>
