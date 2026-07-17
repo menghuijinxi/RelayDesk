@@ -259,6 +259,89 @@ std::filesystem::path processTestRoot()
     return std::filesystem::path(RELAYDESK_APP_RUNTIME_PROCESS_TEST_WORK_DIR);
 }
 
+std::filesystem::path normalizedAbsoluteTestPath(
+    const std::filesystem::path& path)
+{
+    std::error_code error;
+    std::filesystem::path normalizedPath =
+        std::filesystem::weakly_canonical(path, error);
+    if (error) {
+        throw std::runtime_error("Failed to normalize test path.");
+    }
+    return normalizedPath.lexically_normal();
+}
+
+bool isStrictDescendantOfProcessTestRoot(
+    const std::filesystem::path& path)
+{
+    const std::filesystem::path relativePath =
+        normalizedAbsoluteTestPath(path).lexically_relative(
+            normalizedAbsoluteTestPath(processTestRoot()));
+    if (relativePath.empty() || relativePath == "." ||
+        relativePath.is_absolute()) {
+        return false;
+    }
+
+    for (const auto& component : relativePath) {
+        if (component == "..") {
+            return false;
+        }
+    }
+    return true;
+}
+
+void requireTestProcessIsolation()
+{
+    const relaydesk::storage::AppPaths appPaths =
+        relaydesk::storage::createAppPaths();
+    if (!isStrictDescendantOfProcessTestRoot(
+            appPaths.GetDataDirectory())) {
+        throw std::runtime_error(
+            "Refusing to run with a data directory outside the test root.");
+    }
+}
+
+void removeTestDirectory(const std::filesystem::path& directory)
+{
+    if (!isStrictDescendantOfProcessTestRoot(directory)) {
+        throw std::runtime_error(
+            "Refusing to remove a directory outside the test root.");
+    }
+
+    std::error_code error;
+    std::filesystem::remove_all(directory, error);
+    if (error) {
+        throw std::runtime_error("Failed to remove test directory.");
+    }
+}
+
+void removeTestDataDirectory(
+    const relaydesk::storage::AppPaths& appPaths)
+{
+    const std::filesystem::path& dataDirectory =
+        appPaths.GetDataDirectory();
+    if (dataDirectory.filename() != "data") {
+        throw std::runtime_error("Refusing to remove a non-data directory.");
+    }
+    removeTestDirectory(dataDirectory);
+}
+
+int refusesCleanupOutsideProcessTestRoot()
+{
+    const std::filesystem::path outsideDataDirectory =
+        processTestRoot().parent_path() / "data";
+    if (isStrictDescendantOfProcessTestRoot(outsideDataDirectory)) {
+        return fail("Test cleanup guard accepted a path outside the test root.");
+    }
+
+    try {
+        removeTestDirectory(outsideDataDirectory);
+    } catch (const std::runtime_error&) {
+        return 0;
+    }
+    return fail("Test cleanup guard did not reject an external path.");
+}
+
 std::filesystem::path makeUniqueProcessScenarioRoot(const std::string& prefix)
 {
     return processTestRoot()
@@ -607,8 +690,7 @@ DWORD runCommandAndWait(const std::filesystem::path& executablePath,
 
 void removeScenarioRoot(const std::filesystem::path& scenarioRoot)
 {
-    std::error_code error;
-    std::filesystem::remove_all(scenarioRoot, error);
+    removeTestDirectory(scenarioRoot);
 }
 
 template <typename Predicate>
@@ -1421,7 +1503,7 @@ int queuesUserNotificationForIncomingChatMessage()
 {
     const relaydesk::storage::AppPaths appPaths =
         relaydesk::storage::createAppPaths();
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
 
     {
         TestableRelayDeskRuntime runtime;
@@ -1464,7 +1546,7 @@ int queuesUserNotificationForIncomingChatMessage()
         }
     }
 
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     return 0;
 }
 
@@ -1472,7 +1554,7 @@ int persistsIncomingChatMessageBeforeUiDrain()
 {
     const relaydesk::storage::AppPaths appPaths =
         relaydesk::storage::createAppPaths();
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     relaydesk::storage::ensureAppDirectories(appPaths);
     relaydesk::storage::savePeerProfile(appPaths, makeTransferPeerProfile(39171));
 
@@ -1512,7 +1594,7 @@ int persistsIncomingChatMessageBeforeUiDrain()
         }
     }
 
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     return 0;
 }
 
@@ -1520,7 +1602,7 @@ int selectsPeerWithPagedHistory()
 {
     const relaydesk::storage::AppPaths appPaths =
         relaydesk::storage::createAppPaths();
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     relaydesk::storage::ensureAppDirectories(appPaths);
     relaydesk::storage::savePeerProfile(appPaths, makeTransferPeerProfile(39171));
 
@@ -1599,7 +1681,7 @@ int selectsPeerWithPagedHistory()
         }
     }
 
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     return 0;
 }
 
@@ -1607,7 +1689,7 @@ int offersAppUpdatePromptWhenOnlinePeerVersionIncreases()
 {
     const relaydesk::storage::AppPaths appPaths =
         relaydesk::storage::createAppPaths();
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
 
     {
         TestableRelayDeskRuntime runtime;
@@ -1652,7 +1734,7 @@ int offersAppUpdatePromptWhenOnlinePeerVersionIncreases()
         }
     }
 
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     return 0;
 }
 
@@ -1660,7 +1742,7 @@ int suppressesScheduledInstallOnExitVersionUntilHigherVersionArrives()
 {
     const relaydesk::storage::AppPaths appPaths =
         relaydesk::storage::createAppPaths();
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
 
     {
         TestableRelayDeskRuntime runtime;
@@ -1719,7 +1801,7 @@ int suppressesScheduledInstallOnExitVersionUntilHigherVersionArrives()
         runtime.clearScheduledAppUpdate();
     }
 
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     return 0;
 }
 
@@ -1727,7 +1809,7 @@ int keepsHighestAppUpdatePromptAcrossMultiplePeers()
 {
     const relaydesk::storage::AppPaths appPaths =
         relaydesk::storage::createAppPaths();
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
 
     {
         TestableRelayDeskRuntime runtime;
@@ -1802,7 +1884,7 @@ int keepsHighestAppUpdatePromptAcrossMultiplePeers()
         }
     }
 
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     return 0;
 }
 
@@ -1810,7 +1892,7 @@ int requestsProcessExitAfterLaunchingRestartUpdateHelper()
 {
     const relaydesk::storage::AppPaths appPaths =
         relaydesk::storage::createAppPaths();
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     relaydesk::storage::ensureAppDirectories(appPaths);
 
     {
@@ -1864,7 +1946,7 @@ int requestsProcessExitAfterLaunchingRestartUpdateHelper()
         }
     }
 
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     return 0;
 }
 
@@ -1872,7 +1954,7 @@ int continuesInterruptedIncomingTransferFromAcceptedOffset()
 {
     const relaydesk::storage::AppPaths appPaths =
         relaydesk::storage::createAppPaths();
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     relaydesk::storage::ensureAppDirectories(appPaths);
 
     const std::filesystem::path finalPath =
@@ -1936,7 +2018,7 @@ int continuesInterruptedIncomingTransferFromAcceptedOffset()
         }
     }
 
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     return 0;
 }
 
@@ -1944,7 +2026,7 @@ int restartsInterruptedIncomingTransferWhenFreshOfferStartsAtZero()
 {
     const relaydesk::storage::AppPaths appPaths =
         relaydesk::storage::createAppPaths();
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     relaydesk::storage::ensureAppDirectories(appPaths);
 
     const std::filesystem::path finalPath =
@@ -2003,7 +2085,7 @@ int restartsInterruptedIncomingTransferWhenFreshOfferStartsAtZero()
         }
     }
 
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     return 0;
 }
 
@@ -2011,7 +2093,7 @@ int answersResumeRequestFromStoredHistoryOffset()
 {
     const relaydesk::storage::AppPaths appPaths =
         relaydesk::storage::createAppPaths();
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     relaydesk::storage::ensureAppDirectories(appPaths);
 
     const std::filesystem::path finalPath =
@@ -2086,7 +2168,7 @@ int answersResumeRequestFromStoredHistoryOffset()
         }
     }
 
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     return 0;
 }
 
@@ -2094,7 +2176,7 @@ int answersRepeatedResumeRequestsWithStoredOffset()
 {
     const relaydesk::storage::AppPaths appPaths =
         relaydesk::storage::createAppPaths();
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     relaydesk::storage::ensureAppDirectories(appPaths);
 
     const std::filesystem::path finalPath =
@@ -2186,7 +2268,7 @@ int answersRepeatedResumeRequestsWithStoredOffset()
         }
     }
 
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     return 0;
 }
 
@@ -2194,7 +2276,7 @@ int acceptsRepeatedInterruptedIncomingTransferWithStoredOffset()
 {
     const relaydesk::storage::AppPaths appPaths =
         relaydesk::storage::createAppPaths();
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     relaydesk::storage::ensureAppDirectories(appPaths);
 
     const std::filesystem::path finalPath =
@@ -2284,7 +2366,7 @@ int acceptsRepeatedInterruptedIncomingTransferWithStoredOffset()
         }
     }
 
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     return 0;
 }
 
@@ -2292,7 +2374,7 @@ int resumesInterruptedOutgoingTransferAfterResumeAccept()
 {
     const relaydesk::storage::AppPaths appPaths =
         relaydesk::storage::createAppPaths();
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     relaydesk::storage::ensureAppDirectories(appPaths);
 
     const std::filesystem::path sourcePath =
@@ -2457,7 +2539,7 @@ int resumesInterruptedOutgoingTransferAfterResumeAccept()
         }
     }
 
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     return 0;
 }
 
@@ -2465,7 +2547,7 @@ int acceptsIncomingFolderTransferAndExtractsPayload()
 {
     const relaydesk::storage::AppPaths appPaths =
         relaydesk::storage::createAppPaths();
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     relaydesk::storage::ensureAppDirectories(appPaths);
 
     const std::uint16_t runtimeListenPort = reserveAvailableTcpPort();
@@ -2651,7 +2733,7 @@ int acceptsIncomingFolderTransferAndExtractsPayload()
         }
     }
 
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     return 0;
 }
 
@@ -2659,7 +2741,7 @@ int resumesInterruptedIncomingFolderTransferFromExistingFiles()
 {
     const relaydesk::storage::AppPaths appPaths =
         relaydesk::storage::createAppPaths();
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     relaydesk::storage::ensureAppDirectories(appPaths);
 
     const std::filesystem::path targetRoot =
@@ -2813,7 +2895,7 @@ int resumesInterruptedIncomingFolderTransferFromExistingFiles()
         }
     }
 
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     return 0;
 }
 
@@ -2821,7 +2903,7 @@ int sendsOutgoingFolderTransferWithPackageProgressAndSourcePath()
 {
     const relaydesk::storage::AppPaths appPaths =
         relaydesk::storage::createAppPaths();
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     relaydesk::storage::ensureAppDirectories(appPaths);
 
     const std::filesystem::path sourceFolder =
@@ -2983,7 +3065,7 @@ int sendsOutgoingFolderTransferWithPackageProgressAndSourcePath()
         }
     }
 
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     return 0;
 }
 
@@ -2991,7 +3073,7 @@ int interruptsIncomingTransferWhenTcpStreamBreaksMidFrame()
 {
     const relaydesk::storage::AppPaths appPaths =
         relaydesk::storage::createAppPaths();
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     relaydesk::storage::ensureAppDirectories(appPaths);
 
     const std::uint16_t runtimeListenPort = reserveAvailableTcpPort();
@@ -3086,7 +3168,7 @@ int interruptsIncomingTransferWhenTcpStreamBreaksMidFrame()
         }
     }
 
-    std::filesystem::remove_all(appPaths.GetDataDirectory());
+    removeTestDataDirectory(appPaths);
     return 0;
 }
 
@@ -3852,7 +3934,7 @@ int sendsFileTransferBetweenTwoRuntimeProcesses()
     const std::uint16_t receiverListenPort = reserveAvailableTcpPort();
     const relaydesk::storage::AppPaths senderAppPaths(currentExecutablePath());
     const relaydesk::storage::AppPaths receiverAppPaths(childExecutablePath);
-    std::filesystem::remove_all(senderAppPaths.GetDataDirectory());
+    removeTestDataDirectory(senderAppPaths);
     relaydesk::storage::ensureAppDirectories(senderAppPaths);
     relaydesk::storage::ensureAppDirectories(receiverAppPaths);
 
@@ -4027,7 +4109,7 @@ int sendsFileTransferBetweenTwoRuntimeProcesses()
     }
 
     std::filesystem::remove(sourcePath);
-    std::filesystem::remove_all(senderAppPaths.GetDataDirectory());
+    removeTestDataDirectory(senderAppPaths);
     removeScenarioRoot(scenarioRoot);
     return 0;
 }
@@ -4042,7 +4124,7 @@ int sendsFolderTransferBetweenTwoRuntimeProcesses()
     const std::uint16_t receiverListenPort = reserveAvailableTcpPort();
     const relaydesk::storage::AppPaths senderAppPaths(currentExecutablePath());
     const relaydesk::storage::AppPaths receiverAppPaths(childExecutablePath);
-    std::filesystem::remove_all(senderAppPaths.GetDataDirectory());
+    removeTestDataDirectory(senderAppPaths);
     relaydesk::storage::ensureAppDirectories(senderAppPaths);
     relaydesk::storage::ensureAppDirectories(receiverAppPaths);
 
@@ -4226,7 +4308,7 @@ int sendsFolderTransferBetweenTwoRuntimeProcesses()
         return result;
     }
 
-    std::filesystem::remove_all(senderAppPaths.GetDataDirectory());
+    removeTestDataDirectory(senderAppPaths);
     removeScenarioRoot(scenarioRoot);
     return 0;
 }
@@ -4241,7 +4323,7 @@ int resumesInterruptedFileTransferBetweenTwoRuntimeProcesses()
     const std::uint16_t receiverListenPort = reserveAvailableTcpPort();
     const relaydesk::storage::AppPaths senderAppPaths(currentExecutablePath());
     const relaydesk::storage::AppPaths receiverAppPaths(childExecutablePath);
-    std::filesystem::remove_all(senderAppPaths.GetDataDirectory());
+    removeTestDataDirectory(senderAppPaths);
     relaydesk::storage::ensureAppDirectories(senderAppPaths);
     relaydesk::storage::ensureAppDirectories(receiverAppPaths);
 
@@ -4438,7 +4520,7 @@ int resumesInterruptedFileTransferBetweenTwoRuntimeProcesses()
         return result;
     }
 
-    std::filesystem::remove_all(senderAppPaths.GetDataDirectory());
+    removeTestDataDirectory(senderAppPaths);
     removeScenarioRoot(scenarioRoot);
     return 0;
 }
@@ -4943,6 +5025,12 @@ int main(int argc, char** argv)
     } asyncShutdownGuard;
 
     try {
+        requireTestProcessIsolation();
+        if (const int cleanupGuardResult =
+                refusesCleanupOutsideProcessTestRoot();
+            cleanupGuardResult != 0) {
+            return cleanupGuardResult;
+        }
         const std::vector<std::wstring> wideArguments =
             currentProcessWideArgumentsForTest();
         const std::optional<relaydesk::runtime::AppUpdateApplyOptions>

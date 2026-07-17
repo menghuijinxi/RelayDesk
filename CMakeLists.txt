@@ -452,6 +452,9 @@ if(WIN32)
 endif()
 
 if(WIN32 AND RELAYDESK_HAS_EUI_NEO AND RELAYDESK_HAS_BOOST_ASIO)
+    set(RELAYDESK_APP_RUNTIME_PROCESS_TEST_WORK_DIR
+        "${CMAKE_SOURCE_DIR}/tmp/tests/app_runtime_process")
+
     add_executable(relaydesk_app_runtime_update_prompt_tests
         tests/main/app_runtime_update_prompt_tests.cpp
         src/main/app_runtime.cpp
@@ -483,12 +486,16 @@ if(WIN32 AND RELAYDESK_HAS_EUI_NEO AND RELAYDESK_HAS_BOOST_ASIO)
         src/storage/ui_preferences.cpp
     )
 
+    set_target_properties(relaydesk_app_runtime_update_prompt_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY
+            "${RELAYDESK_APP_RUNTIME_PROCESS_TEST_WORK_DIR}/runner")
+
     target_include_directories(relaydesk_app_runtime_update_prompt_tests
         PRIVATE src)
     target_compile_features(relaydesk_app_runtime_update_prompt_tests
         PRIVATE cxx_std_23)
     target_compile_definitions(relaydesk_app_runtime_update_prompt_tests PRIVATE
-        "RELAYDESK_APP_RUNTIME_PROCESS_TEST_WORK_DIR=\"${CMAKE_SOURCE_DIR}/tmp/tests/app_runtime_process\""
+        "RELAYDESK_APP_RUNTIME_PROCESS_TEST_WORK_DIR=\"${RELAYDESK_APP_RUNTIME_PROCESS_TEST_WORK_DIR}\""
         RELAYDESK_HAS_BOOST_ASIO
         NOMINMAX
         UNICODE
