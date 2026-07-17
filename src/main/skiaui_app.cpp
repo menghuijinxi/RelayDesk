@@ -65,6 +65,8 @@ constexpr int kChatContextMenuWidth = 132;
 constexpr int kChatContextMenuHeight = 38;
 constexpr int kImageContextMenuWidth = 160;
 constexpr int kImageContextMenuHeight = 114;
+constexpr int kFileContextMenuWidth = 160;
+constexpr int kFileContextMenuHeight = 114;
 constexpr float kMessageImageMaxWidth = 420.0f;
 constexpr float kMessageImageMaxHeight = 300.0f;
 constexpr float kChatScrollBottomTolerance = 0.5f;
@@ -98,6 +100,7 @@ struct SkiaUiRuntimeBinding {
 SkiaUiRuntimeBinding* gRuntimeBinding = nullptr;
 std::string gMessageContextText;
 std::filesystem::path gImageContextPath;
+std::filesystem::path gFileContextPath;
 bool gMessageContextMenuVisible = false;
 bool gImagePreviewVisible = false;
 
@@ -535,8 +538,8 @@ bool writeClipboardText(std::string_view text)
     return true;
 }
 
-bool copyImageFileToPath(const std::filesystem::path& sourcePath,
-                         const std::filesystem::path& targetPath)
+bool copyFileToPath(const std::filesystem::path& sourcePath,
+                    const std::filesystem::path& targetPath)
 {
     std::error_code error;
     if (!std::filesystem::is_regular_file(sourcePath, error) || error) {
@@ -557,24 +560,24 @@ bool copyImageFileToPath(const std::filesystem::path& sourcePath,
            !error;
 }
 
-enum class SaveImageResult {
+enum class SaveFileResult {
     Cancelled,
     Saved,
     Failed,
 };
 
-SaveImageResult saveImageFileAs(const std::filesystem::path& sourcePath)
+SaveFileResult saveFileAs(const std::filesystem::path& sourcePath)
 {
     const std::optional<std::filesystem::path> targetPath =
         relaydesk::platform::selectSavePathFromDialog(
             sourcePath.parent_path(),
             filesystemPathToGenericUtf8(sourcePath.filename()));
     if (!targetPath.has_value()) {
-        return SaveImageResult::Cancelled;
+        return SaveFileResult::Cancelled;
     }
-    return copyImageFileToPath(sourcePath, targetPath.value())
-        ? SaveImageResult::Saved
-        : SaveImageResult::Failed;
+    return copyFileToPath(sourcePath, targetPath.value())
+        ? SaveFileResult::Saved
+        : SaveFileResult::Failed;
 }
 
 void hideMessageContextMenu(skui::Runtime& runtime)
@@ -582,6 +585,7 @@ void hideMessageContextMenu(skui::Runtime& runtime)
     gMessageContextMenuVisible = false;
     runtime.setStyleById("message-context-menu", "display: none;");
     runtime.setStyleById("image-context-menu", "display: none;");
+    runtime.setStyleById("file-context-menu", "display: none;");
 }
 
 void showMessageContextMenu(skui::Runtime& runtime,
@@ -613,6 +617,7 @@ void showMessageContextMenu(skui::Runtime& runtime,
 void showTextMessageContextMenu(skui::Runtime& runtime, float x, float y)
 {
     runtime.setStyleById("image-context-menu", "display: none;");
+    runtime.setStyleById("file-context-menu", "display: none;");
     showMessageContextMenu(runtime,
                            "message-context-menu",
                            x,
@@ -624,12 +629,25 @@ void showTextMessageContextMenu(skui::Runtime& runtime, float x, float y)
 void showImageMessageContextMenu(skui::Runtime& runtime, float x, float y)
 {
     runtime.setStyleById("message-context-menu", "display: none;");
+    runtime.setStyleById("file-context-menu", "display: none;");
     showMessageContextMenu(runtime,
                            "image-context-menu",
                            x,
                            y,
                            kImageContextMenuWidth,
                            kImageContextMenuHeight);
+}
+
+void showFileMessageContextMenu(skui::Runtime& runtime, float x, float y)
+{
+    runtime.setStyleById("message-context-menu", "display: none;");
+    runtime.setStyleById("image-context-menu", "display: none;");
+    showMessageContextMenu(runtime,
+                           "file-context-menu",
+                           x,
+                           y,
+                           kFileContextMenuWidth,
+                           kFileContextMenuHeight);
 }
 
 bool eventHasClass(const skui::ElementEvent& event, std::string_view className)
@@ -642,14 +660,21 @@ bool isMessageContextMenuEvent(const skui::ElementEvent& event)
 {
     return event.id == "message-context-menu" ||
            event.id == "image-context-menu" ||
+           event.id == "file-context-menu" ||
            event.id == "message-context-copy" ||
            event.id == "image-context-reveal" ||
            event.id == "image-context-copy" ||
            event.id == "image-context-save" ||
+           event.id == "file-context-reveal" ||
+           event.id == "file-context-copy" ||
+           event.id == "file-context-save" ||
            event.action == "copy-message-context" ||
            event.action == "reveal-image-context" ||
            event.action == "copy-image-context" ||
            event.action == "save-image-context" ||
+           event.action == "reveal-file-context" ||
+           event.action == "copy-file-context" ||
+           event.action == "save-file-context" ||
            eventHasClass(event, "message-context-menu") ||
            eventHasClass(event, "message-context-item");
 }
@@ -738,6 +763,35 @@ std::string transferStateText(
         return transferStateText(part.GetTransferState().value());
     }
     return "等待传输";
+}
+
+std::optional<std::filesystem::path> resolveFileContextPath(
+    const relaydesk::storage::ChatMessagePart& part)
+{
+    if (part.GetType() != relaydesk::storage::MessagePartType::File ||
+        !part.GetLocalPath().has_value() || part.GetLocalPath()->empty()) {
+        return std::nullopt;
+    }
+
+    try {
+        const relaydesk::storage::AppPaths appPaths =
+            relaydesk::storage::createAppPaths();
+        std::error_code error;
+        std::filesystem::path filePath = std::filesystem::absolute(
+            resolveWorkRelativePath(appPaths, part.GetLocalPath().value()),
+            error);
+        if (error) {
+            return std::nullopt;
+        }
+        filePath = filePath.lexically_normal();
+        error.clear();
+        if (!std::filesystem::is_regular_file(filePath, error) || error) {
+            return std::nullopt;
+        }
+        return filePath;
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
 }
 
 int transferProgressPercent(const relaydesk::storage::ChatMessagePart& part)
@@ -845,6 +899,8 @@ std::string makeTransferMessageMarkup(
         part.GetFileSize().has_value() ? formatFileSize(part.GetFileSize().value())
                                        : "文件夹";
     const std::string stateText = transferStateText(part);
+    const std::optional<std::filesystem::path> fileContextPath =
+        resolveFileContextPath(part);
 
     std::string html;
     html.reserve(760);
@@ -853,7 +909,14 @@ std::string makeTransferMessageMarkup(
     if (warning) {
         html += " warning";
     }
-    html += R"(">)";
+    html += '"';
+    if (fileContextPath.has_value()) {
+        html += R"( data-action="file-context:)";
+        html += escapeHtml(filesystemPathToGenericUtf8(
+            fileContextPath.value()));
+        html += '"';
+    }
+    html += '>';
     html += R"(<div class="file-icon doc-icon doc-icon-zip"><div class="doc-fold"></div></div>)";
     html += R"(<div class="transfer-content"><selectable class="file-name">)";
     html += escapeHtml(title);
@@ -1440,6 +1503,7 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
     runtime.setElementEventCallback([&runtime, &relayRuntime, &binding](
                                         const skui::ElementEvent& event) {
         constexpr std::string_view imageContextPrefix = "image-context:";
+        constexpr std::string_view fileContextPrefix = "file-context:";
         if (event.type == skui::ElementEventType::MouseUp &&
             event.button == skui::MouseButton::Right &&
             event.action.starts_with(imageContextPrefix)) {
@@ -1456,6 +1520,26 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
                 }
             } else {
                 gImageContextPath.clear();
+            }
+            return;
+        }
+
+        if (event.type == skui::ElementEventType::MouseUp &&
+            event.button == skui::MouseButton::Right &&
+            event.action.starts_with(fileContextPrefix)) {
+            gFileContextPath.clear();
+            hideMessageContextMenu(runtime);
+            const std::optional<std::filesystem::path> filePath =
+                tryFilesystemPathFromUtf8(
+                    std::string_view(event.action).substr(
+                        fileContextPrefix.size()));
+            if (filePath.has_value()) {
+                std::error_code error;
+                if (std::filesystem::is_regular_file(filePath.value(), error) &&
+                    !error) {
+                    gFileContextPath = filePath.value();
+                    showFileMessageContextMenu(runtime, event.x, event.y);
+                }
             }
             return;
         }
@@ -1524,9 +1608,30 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
             hideMessageContextMenu(runtime);
         } else if (action == "save-image-context") {
             hideMessageContextMenu(runtime);
-            if (saveImageFileAs(gImageContextPath) == SaveImageResult::Failed) {
+            if (saveFileAs(gImageContextPath) == SaveFileResult::Failed) {
                 MessageBoxW(binding.window,
                             L"无法保存图片，请检查目标位置是否可写。",
+                            L"RelayDesk",
+                            MB_OK | MB_ICONERROR);
+            }
+        } else if (action == "reveal-file-context") {
+            (void)relaydesk::platform::revealPathInFileManager(
+                gFileContextPath);
+            hideMessageContextMenu(runtime);
+        } else if (action == "copy-file-context") {
+            if (!relaydesk::platform::copyAttachmentPathToClipboard(
+                    gFileContextPath)) {
+                MessageBoxW(binding.window,
+                            L"无法复制文件，请稍后重试。",
+                            L"RelayDesk",
+                            MB_OK | MB_ICONERROR);
+            }
+            hideMessageContextMenu(runtime);
+        } else if (action == "save-file-context") {
+            hideMessageContextMenu(runtime);
+            if (saveFileAs(gFileContextPath) == SaveFileResult::Failed) {
+                MessageBoxW(binding.window,
+                            L"无法保存文件，请检查目标位置是否可写。",
                             L"RelayDesk",
                             MB_OK | MB_ICONERROR);
             }
@@ -1811,7 +1916,8 @@ std::vector<relaydesk::storage::ChatMessageRecord> makeCaptureChatMessages(
     return messages;
 }
 
-std::vector<relaydesk::storage::ChatMessageRecord> makeCaptureFileCardMessages()
+std::vector<relaydesk::storage::ChatMessageRecord> makeCaptureFileCardMessages(
+    const std::string& existingFilePath)
 {
     std::vector<relaydesk::storage::ChatMessageRecord> messages;
     messages.push_back(makeCaptureMessage(
@@ -1835,7 +1941,7 @@ std::vector<relaydesk::storage::ChatMessageRecord> makeCaptureFileCardMessages()
                              11200,
                              11200,
                              relaydesk::storage::TransferState::Completed,
-                             "capture")}));
+                             existingFilePath)}));
     messages.push_back(makeCaptureMessage(
         "capture-file-long",
         relaydesk::storage::MessageDirection::Outgoing,
@@ -1895,9 +2001,10 @@ public:
         selectedPeerMessages_ = {std::move(messages.at(2))};
     }
 
-    void showFileCardConversation()
+    void showFileCardConversation(const std::string& existingFilePath)
     {
-        selectedPeerMessages_ = makeCaptureFileCardMessages();
+        selectedPeerMessages_ =
+            makeCaptureFileCardMessages(existingFilePath);
     }
 
 protected:
@@ -2157,27 +2264,34 @@ int captureSkiaUiPng(const CaptureOptions& options)
         relayRuntime.showImageConversation();
     }
     if (options.testFileCard) {
-        relayRuntime.showFileCardConversation();
-        if (makeChatContentMarkup(relayRuntime).find(
-                R"(class="transfer-meta cleaned">已清理)") ==
-            std::string::npos) {
-            return 24;
-        }
         const relaydesk::storage::AppPaths appPaths =
             relaydesk::storage::createAppPaths();
         const std::string executablePath =
             filesystemPathToGenericUtf8(appPaths.GetExecutablePath());
-        const relaydesk::storage::ChatMessagePart existingPart =
-            makeCaptureFilePart(
-                "existing-file",
-                relaydesk::storage::MessagePartType::File,
-                "relaydesk_skiaui.exe",
-                1,
-                1,
-                relaydesk::storage::TransferState::Completed,
-                executablePath);
-        if (transferStateText(existingPart) != "已完成") {
+        relayRuntime.showFileCardConversation(executablePath);
+        const std::string fileCardMarkup =
+            makeChatContentMarkup(relayRuntime);
+        if (fileCardMarkup.find(
+                R"(class="transfer-meta cleaned">已清理)") ==
+            std::string::npos) {
+            return 24;
+        }
+        if (fileCardMarkup.find(
+                R"(class="transfer-meta">已完成)") ==
+            std::string::npos) {
             return 25;
+        }
+        if (fileCardMarkup.find(R"(data-action="file-context:)") ==
+            std::string::npos) {
+            return 27;
+        }
+        if (html.find(R"(data-action="reveal-file-context")") ==
+                std::string::npos ||
+            html.find(R"(data-action="copy-file-context")") ==
+                std::string::npos ||
+            html.find(R"(data-action="save-file-context")") ==
+                std::string::npos) {
+            return 28;
         }
         const relaydesk::storage::ChatMessagePart cancelledPart =
             makeCaptureFilePart(
@@ -2218,6 +2332,24 @@ int captureSkiaUiPng(const CaptureOptions& options)
         runtime.resize(options.width, options.height, options.dpiScale);
         applyRelayDeskDevicePanel(runtime, relayRuntime, false);
     }
+    if (options.testFileCard) {
+        skui::Event mouseDown;
+        mouseDown.type = skui::EventType::MouseDown;
+        mouseDown.x =
+            static_cast<float>(options.width - 50) * options.dpiScale;
+        mouseDown.y = 350.0f * options.dpiScale;
+        mouseDown.button = skui::MouseButton::Right;
+        (void)runtime.handleEvent(mouseDown);
+        skui::Event mouseUp = mouseDown;
+        mouseUp.type = skui::EventType::MouseUp;
+        (void)runtime.handleEvent(mouseUp);
+        if (!gMessageContextMenuVisible || gFileContextPath.empty() ||
+            !gFileContextPath.is_absolute() ||
+            gFileContextPath.filename() != L"relaydesk_skiaui.exe") {
+            return 29;
+        }
+        hideMessageContextMenu(runtime);
+    }
     if (options.testImageMessage) {
         if (html.find(R"(data-action="save-image-context")") ==
             std::string::npos) {
@@ -2246,7 +2378,7 @@ int captureSkiaUiPng(const CaptureOptions& options)
             outputPath.parent_path() / "relaydesk_skiaui_saved_image.png";
         std::error_code error;
         std::filesystem::remove(savedImagePath, error);
-        const bool copied = copyImageFileToPath(
+        const bool copied = copyFileToPath(
             gImageContextPath, savedImagePath);
         error.clear();
         const std::uintmax_t sourceSize =
@@ -2262,11 +2394,11 @@ int captureSkiaUiPng(const CaptureOptions& options)
             sourceSize != savedSize) {
             return 16;
         }
-        if (!copyImageFileToPath(gImageContextPath, gImageContextPath)) {
+        if (!copyFileToPath(gImageContextPath, gImageContextPath)) {
             return 17;
         }
-        if (copyImageFileToPath(gImageContextPath,
-                                gImageContextPath / "invalid-target.png")) {
+        if (copyFileToPath(gImageContextPath,
+                           gImageContextPath / "invalid-target.png")) {
             return 18;
         }
         hideMessageContextMenu(runtime);

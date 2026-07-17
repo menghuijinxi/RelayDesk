@@ -416,18 +416,22 @@
     .message-context-item:hover {
       background-color: #eef6f8;
     }
-    .image-context-menu {
+    .image-context-menu,
+    .file-context-menu {
       width: 160px;
       height: 114px;
     }
-    .image-context-item {
+    .image-context-item,
+    .file-context-item {
       width: 160px;
       height: 38px;
     }
-    .image-context-copy {
+    .image-context-copy,
+    .file-context-copy {
       top: 38px;
     }
-    .image-context-save {
+    .image-context-save,
+    .file-context-save {
       top: 76px;
     }
     .image-preview-overlay {
@@ -890,6 +894,11 @@
           <div id="image-context-reveal" class="message-context-item image-context-item" data-action="reveal-image-context">打开所在位置</div>
           <div id="image-context-copy" class="message-context-item image-context-item image-context-copy" data-action="copy-image-context">复制图片</div>
           <div id="image-context-save" class="message-context-item image-context-item image-context-save" data-action="save-image-context">另存为</div>
+      </div>
+      <div id="file-context-menu" class="message-context-menu file-context-menu">
+          <div id="file-context-reveal" class="message-context-item file-context-item" data-action="reveal-file-context">定位文件</div>
+          <div id="file-context-copy" class="message-context-item file-context-item file-context-copy" data-action="copy-file-context">复制文件</div>
+          <div id="file-context-save" class="message-context-item file-context-item file-context-save" data-action="save-file-context">另存为文件</div>
       </div>
       <div id="image-preview-overlay" class="image-preview-overlay">
           <img id="image-preview-image" class="image-preview-image" src="">

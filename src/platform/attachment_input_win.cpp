@@ -26,6 +26,7 @@
 #include <windows.h>
 #include <wincodec.h>
 #include <wrl/client.h>
+#include <shlobj_core.h>
 #include <shobjidl.h>
 #include <shellapi.h>
 
@@ -50,13 +51,6 @@ struct ThumbnailEncoderFormat {
     GUID containerFormat;
     WICPixelFormatGUID pixelFormat;
     bool jpeg = false;
-};
-
-struct ClipboardDropFilesHeader {
-    DWORD pFiles = 0;
-    POINT pt{};
-    BOOL fNC = FALSE;
-    BOOL fWide = FALSE;
 };
 
 class ClipboardScope {
@@ -200,7 +194,7 @@ HGLOBAL createDroppedFilesHandle(const std::filesystem::path& sourcePath)
     }
 
     const SIZE_T bytes =
-        sizeof(ClipboardDropFilesHeader)
+        sizeof(DROPFILES)
         + (pathText.size() + 2u) * sizeof(wchar_t);
     HGLOBAL handle = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes);
     if (handle == nullptr) {
@@ -213,16 +207,34 @@ HGLOBAL createDroppedFilesHandle(const std::filesystem::path& sourcePath)
         return nullptr;
     }
 
-    auto* dropFiles = static_cast<ClipboardDropFilesHeader*>(rawMemory);
-    dropFiles->pFiles = sizeof(ClipboardDropFilesHeader);
+    auto* dropFiles = static_cast<DROPFILES*>(rawMemory);
+    dropFiles->pFiles = sizeof(DROPFILES);
     dropFiles->fWide = TRUE;
 
     auto* target = reinterpret_cast<wchar_t*>(
         static_cast<unsigned char*>(rawMemory)
-        + sizeof(ClipboardDropFilesHeader));
+        + sizeof(DROPFILES));
     std::copy(pathText.begin(), pathText.end(), target);
     target[pathText.size()] = L'\0';
     target[pathText.size() + 1u] = L'\0';
+    GlobalUnlock(handle);
+    return handle;
+}
+
+HGLOBAL createPreferredCopyEffectHandle()
+{
+    HGLOBAL handle = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, sizeof(DWORD));
+    if (handle == nullptr) {
+        return nullptr;
+    }
+
+    void* rawMemory = GlobalLock(handle);
+    if (rawMemory == nullptr) {
+        GlobalFree(handle);
+        return nullptr;
+    }
+
+    *static_cast<DWORD*>(rawMemory) = DROPEFFECT_COPY;
     GlobalUnlock(handle);
     return handle;
 }
@@ -706,18 +718,36 @@ bool copyAttachmentPathToClipboard(const std::filesystem::path& sourcePath)
     if (dropHandle == nullptr) {
         return false;
     }
+    HGLOBAL dropEffectHandle = createPreferredCopyEffectHandle();
+    const UINT dropEffectFormat =
+        RegisterClipboardFormatW(CFSTR_PREFERREDDROPEFFECT);
+    if (dropEffectHandle == nullptr || dropEffectFormat == 0) {
+        GlobalFree(dropHandle);
+        if (dropEffectHandle != nullptr) {
+            GlobalFree(dropEffectHandle);
+        }
+        return false;
+    }
 
     ClipboardScope clipboard;
     if (!clipboard.GetOpened()) {
         GlobalFree(dropHandle);
+        GlobalFree(dropEffectHandle);
         return false;
     }
     if (EmptyClipboard() == FALSE) {
         GlobalFree(dropHandle);
+        GlobalFree(dropEffectHandle);
         return false;
     }
     if (SetClipboardData(CF_HDROP, dropHandle) == nullptr) {
         GlobalFree(dropHandle);
+        GlobalFree(dropEffectHandle);
+        return false;
+    }
+    if (SetClipboardData(dropEffectFormat, dropEffectHandle) == nullptr) {
+        GlobalFree(dropEffectHandle);
+        (void)EmptyClipboard();
         return false;
     }
     return true;
