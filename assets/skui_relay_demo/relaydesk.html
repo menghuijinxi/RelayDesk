@@ -667,15 +667,140 @@
       border-style: solid;
       border-radius: 9px;
     }
-    .composer {
+    .composer-wrap-expanded {
+      height: 300px;
+    }
+    .composer-document {
       position: absolute;
-      left: 16px;
-      top: 12px;
-      right: 236px;
-      height: 44px;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 8px;
+      box-sizing: border-box;
+      color: #1f2937;
+      background-color: rgba(255,255,255,0);
+      cursor: text;
+    }
+    .composer-document-paragraph,
+    .composer-document p {
+      position: relative;
+      flex-shrink: 0;
+      width: 100%;
+      min-height: 24px;
+      margin: 0;
+      padding: 3px 8px;
+      box-sizing: border-box;
       color: #1f2937;
       background-color: rgba(255,255,255,0);
       font-size: 14px;
+    }
+    .composer-placeholder {
+      position: absolute;
+      display: flex;
+      align-items: center;
+      left: 24px;
+      top: 21px;
+      right: 244px;
+      height: 20px;
+      overflow: hidden;
+      color: #8a96a6;
+      background-color: rgba(255,255,255,0);
+      font-size: 14px;
+      pointer-events: none;
+    }
+    .composer-attachment-card {
+      position: relative;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      flex-shrink: 0;
+      width: 100%;
+      height: 68px;
+      padding: 7px;
+      box-sizing: border-box;
+      border-width: 1px;
+      border-style: solid;
+      border-color: #d7e0e9;
+      border-radius: 7px;
+      background-color: #f8fafc;
+    }
+    .composer-attachment-preview,
+    .composer-attachment-icon {
+      position: relative;
+      flex-shrink: 0;
+      width: 52px;
+      height: 52px;
+      border-radius: 6px;
+    }
+    .composer-attachment-preview {
+      object-fit: cover;
+      background-color: #e8eef4;
+    }
+    .composer-attachment-icon {
+      box-sizing: border-box;
+      padding: 12px;
+      color: #34756f;
+      background-color: #e4f4f2;
+    }
+    .composer-attachment-icon.folder {
+      color: #9a6700;
+      background-color: #fff3d6;
+    }
+    .composer-attachment-copy {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      flex-grow: 1;
+      flex-shrink: 1;
+      width: auto;
+      min-width: 0px;
+      height: 52px;
+      margin-left: 9px;
+      margin-right: 5px;
+    }
+    .composer-attachment-name {
+      position: relative;
+      width: auto;
+      max-width: 520px;
+      height: 20px;
+      overflow: hidden;
+      color: #1f2937;
+      font-size: 13px;
+      font-weight: bold;
+    }
+    .composer-attachment-detail {
+      position: relative;
+      width: auto;
+      max-width: 520px;
+      height: 18px;
+      margin-top: 3px;
+      overflow: hidden;
+      color: #68778a;
+      font-size: 11px;
+    }
+    .composer-attachment-detail.pending {
+      color: #a16207;
+    }
+    .composer-attachment-remove {
+      position: absolute;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      right: 5px;
+      top: 5px;
+      width: 22px;
+      height: 22px;
+      border-radius: 11px;
+      color: #556274;
+      background-color: #e8edf3;
+      font-size: 17px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    .composer-attachment-remove:hover {
+      color: #ffffff;
+      background-color: #dc2626;
     }
     .compose-icon {
       position: absolute;
@@ -683,6 +808,9 @@
       width: 32px;
       height: 32px;
       color: #050913;
+    }
+    .compose-icon:hover {
+      color: #0aa39e;
     }
     .emoji-icon {
       right: 192px;
@@ -806,15 +934,14 @@
         left: 18px;
         right: 18px;
       }
-      .composer {
-        right: 128px;
-      }
-      .emoji-icon,
-      .attach-icon {
+      .emoji-icon {
         display: none;
       }
+      .attach-icon {
+        right: 150px;
+      }
       .folder-icon {
-        right: 100px;
+        right: 108px;
       }
     }
     @media (max-height: 820px) {
@@ -880,12 +1007,13 @@
       <div class="message-row message-row-right"><div class="time-label">09:25</div><selectable class="bubble bubble-right">是的，这是最新版本。</selectable></div>
         </div>
       </div>
-      <div class="composer-wrap">
-        <textarea id="composer" class="composer" placeholder="选择设备后发送消息"></textarea>
-        <svg class="compose-icon emoji-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M8 14s1.5 2 4 2 4-2 4-2"></path><path d="M9 9h.01"></path><path d="M15 9h.01"></path></svg>
-        <svg class="compose-icon attach-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.1-8.9 8.9a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"></path></svg>
-        <svg class="compose-icon folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"></path></svg>
-        <div class="send-button" data-action="send-message">发送</div>
+      <div id="composer-wrap" class="composer-wrap">
+        <div id="composer-document" class="composer-document" contenteditable="true"><p id="composer-text-initial" class="composer-document-paragraph"><br></p></div>
+        <div id="composer-placeholder" class="composer-placeholder">选择设备后发送消息</div>
+        <svg id="composer-emoji" class="compose-icon emoji-icon" title="表情" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M8 14s1.5 2 4 2 4-2 4-2"></path><path d="M9 9h.01"></path><path d="M15 9h.01"></path></svg>
+        <svg id="composer-attach" class="compose-icon attach-icon" title="添加文件" data-action="select-attachment-files" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.1-8.9 8.9a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"></path></svg>
+        <svg id="composer-folder" class="compose-icon folder-icon" title="添加文件夹" data-action="select-attachment-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"></path></svg>
+        <div id="composer-send" class="send-button" data-action="send-message">发送</div>
       </div>
       <div id="message-context-menu" class="message-context-menu">
           <div id="message-context-copy" class="message-context-item" data-action="copy-message-context">复制文本</div>

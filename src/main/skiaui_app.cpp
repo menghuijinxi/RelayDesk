@@ -8,6 +8,8 @@
 #include <cstdio>
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cwchar>
@@ -15,9 +17,11 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -34,7 +38,9 @@
 #include "skui_win32_app.h"
 
 #include "core/platform/async.h"
+#include "core/uuid.h"
 #include "main/app_runtime.h"
+#include "main/image_attachment_store.h"
 #include "platform/attachment_input.h"
 #include "platform/text_encoding.h"
 #include "storage/app_paths.h"
@@ -70,8 +76,38 @@ constexpr int kFileContextMenuHeight = 114;
 constexpr float kMessageImageMaxWidth = 420.0f;
 constexpr float kMessageImageMaxHeight = 300.0f;
 constexpr float kChatScrollBottomTolerance = 0.5f;
+constexpr std::size_t kMaxComposerAttachmentCount = 8u;
+constexpr std::string_view kComposerDocumentId = "composer-document";
+constexpr std::string_view kComposerInitialParagraphId =
+    "composer-text-initial";
+constexpr std::string_view kComposerAttachmentElementPrefix =
+    "composer-attachment:";
 constexpr UINT kSkiaUiRequestRedrawMessage = WM_APP + 0x531;
-constexpr UINT kRelayDeskSkiaUiRefreshMs = 500;
+constexpr UINT kRelayDeskSkiaUiRefreshMs = 100;
+
+enum class ComposerAttachmentKind {
+    Image,
+    File,
+    Folder,
+};
+
+struct ComposerAttachment {
+    ComposerAttachmentKind kind = ComposerAttachmentKind::File;
+    std::string attachmentId;
+    std::string displayName;
+    std::string localPath;
+    std::string sha256;
+    std::filesystem::path sourcePath;
+    std::filesystem::path previewPath;
+    std::uintmax_t fileSize = 0;
+    bool fileSizePending = false;
+};
+
+struct PendingFolderSizeResult {
+    std::string attachmentId;
+    std::filesystem::path sourcePath;
+    std::uintmax_t fileSize = 0;
+};
 
 struct CaptureOptions {
     std::filesystem::path outputPath;
@@ -83,6 +119,7 @@ struct CaptureOptions {
     bool testPeerSwitch = false;
     bool testImageMessage = false;
     bool testFileCard = false;
+    bool testComposerAttachments = false;
 };
 
 struct SkiaUiRuntimeBinding {
@@ -94,6 +131,8 @@ struct SkiaUiRuntimeBinding {
     bool documentLoaded = false;
     bool chatInitialized = false;
     bool scrollChatToLatestPending = false;
+    std::vector<ComposerAttachment> composerAttachments;
+    skui::Selection composerSelection;
     std::string lastDeviceSignature;
 };
 
@@ -103,6 +142,7 @@ std::filesystem::path gImageContextPath;
 std::filesystem::path gFileContextPath;
 bool gMessageContextMenuVisible = false;
 bool gImagePreviewVisible = false;
+std::vector<PendingFolderSizeResult> gPendingFolderSizeResults;
 
 COLORREF colorRefFromSkColor(SkColor color)
 {
@@ -498,6 +538,559 @@ std::filesystem::path resolveWorkRelativePath(
     return filePath.lexically_normal();
 }
 
+bool isParentTraversalPath(const std::filesystem::path& filePath)
+{
+    const auto begin = filePath.begin();
+    return begin != filePath.end() && *begin == "..";
+}
+
+std::string makeAttachmentLocalPath(
+    const relaydesk::storage::AppPaths& appPaths,
+    const std::filesystem::path& filePath)
+{
+    std::error_code error;
+    const std::filesystem::path relativePath =
+        std::filesystem::relative(filePath, appPaths.GetWorkDirectory(), error);
+    if (!error && !relativePath.empty() && !relativePath.is_absolute() &&
+        !isParentTraversalPath(relativePath)) {
+        return filesystemPathToGenericUtf8(relativePath);
+    }
+    return filesystemPathToGenericUtf8(filePath);
+}
+
+std::string lowerAscii(std::string value)
+{
+    std::transform(value.begin(),
+                   value.end(),
+                   value.begin(),
+                   [](unsigned char character) {
+                       return static_cast<char>(std::tolower(character));
+                   });
+    return value;
+}
+
+bool isImageAttachmentPath(const std::filesystem::path& filePath)
+{
+    const std::string extension = lowerAscii(filePath.extension().string());
+    return extension == ".png" || extension == ".jpg" ||
+        extension == ".jpeg" || extension == ".gif" ||
+        extension == ".webp" || extension == ".bmp";
+}
+
+std::filesystem::path makeAbsolutePath(
+    const std::filesystem::path& filePath)
+{
+    std::error_code error;
+    std::filesystem::path absolutePath =
+        std::filesystem::absolute(filePath, error);
+    if (error) {
+        return filePath.lexically_normal();
+    }
+    return absolutePath.lexically_normal();
+}
+
+std::uintmax_t fileSizeOrZero(const std::filesystem::path& filePath)
+{
+    std::error_code error;
+    const std::uintmax_t fileSize =
+        std::filesystem::file_size(filePath, error);
+    return error ? 0u : fileSize;
+}
+
+std::uintmax_t directoryContentSizeOrZero(
+    const std::filesystem::path& directory,
+    const core::async::CancelToken& cancelToken)
+{
+    std::uintmax_t totalSize = 0;
+    std::error_code error;
+    std::filesystem::recursive_directory_iterator iterator(
+        directory,
+        std::filesystem::directory_options::skip_permission_denied,
+        error);
+    const std::filesystem::recursive_directory_iterator end;
+    while (!error && iterator != end && !cancelToken.canceled()) {
+        std::error_code entryError;
+        if (iterator->is_regular_file(entryError) && !entryError) {
+            const std::uintmax_t fileSize =
+                std::filesystem::file_size(iterator->path(), entryError);
+            if (!entryError &&
+                fileSize <= std::numeric_limits<std::uintmax_t>::max() -
+                    totalSize) {
+                totalSize += fileSize;
+            }
+        }
+        iterator.increment(error);
+    }
+    return totalSize;
+}
+
+std::string formatFileSize(std::uintmax_t fileSize);
+
+std::string composerFolderSizeTaskKey(std::string_view attachmentId)
+{
+    return "composer-folder-size:" + std::string(attachmentId);
+}
+
+std::vector<PendingFolderSizeResult> consumePendingFolderSizeResults()
+{
+    std::vector<PendingFolderSizeResult> results;
+    results.swap(gPendingFolderSizeResults);
+    return results;
+}
+
+void startPendingFolderSizeProbe(const ComposerAttachment& attachment)
+{
+    if (attachment.kind != ComposerAttachmentKind::Folder ||
+        attachment.attachmentId.empty()) {
+        return;
+    }
+
+    const std::string attachmentId = attachment.attachmentId;
+    const std::filesystem::path sourcePath = attachment.sourcePath;
+    (void)core::async::runOnce(
+        composerFolderSizeTaskKey(attachmentId),
+        [attachmentId, sourcePath](
+            const core::async::CancelToken& cancelToken) {
+            PendingFolderSizeResult result;
+            result.attachmentId = attachmentId;
+            result.sourcePath = sourcePath;
+            result.fileSize = directoryContentSizeOrZero(
+                sourcePath, cancelToken);
+            return result;
+        },
+        [](const core::async::Result<PendingFolderSizeResult>& result) {
+            if (result.ok) {
+                gPendingFolderSizeResults.push_back(result.value);
+            }
+        });
+}
+
+std::size_t composerAttachmentCount(const SkiaUiRuntimeBinding& binding)
+{
+    return binding.composerAttachments.size();
+}
+
+ComposerAttachment* findComposerAttachment(
+    SkiaUiRuntimeBinding& binding,
+    std::string_view attachmentId)
+{
+    const auto attachment = std::find_if(
+        binding.composerAttachments.begin(),
+        binding.composerAttachments.end(),
+        [attachmentId](const ComposerAttachment& item) {
+            return item.attachmentId == attachmentId;
+        });
+    return attachment == binding.composerAttachments.end()
+        ? nullptr
+        : &*attachment;
+}
+
+const ComposerAttachment* findComposerAttachment(
+    const SkiaUiRuntimeBinding& binding,
+    std::string_view attachmentId)
+{
+    const auto attachment = std::find_if(
+        binding.composerAttachments.begin(),
+        binding.composerAttachments.end(),
+        [attachmentId](const ComposerAttachment& item) {
+            return item.attachmentId == attachmentId;
+        });
+    return attachment == binding.composerAttachments.end()
+        ? nullptr
+        : &*attachment;
+}
+
+std::string composerAttachmentElementId(std::string_view attachmentId)
+{
+    return std::string(kComposerAttachmentElementPrefix) +
+        std::string(attachmentId);
+}
+
+std::optional<std::string_view> composerAttachmentIdFromElementId(
+    std::string_view elementId)
+{
+    if (!elementId.starts_with(kComposerAttachmentElementPrefix)) {
+        return std::nullopt;
+    }
+    return elementId.substr(kComposerAttachmentElementPrefix.size());
+}
+
+std::vector<std::string> pollPendingFolderSizeResults(
+    SkiaUiRuntimeBinding& binding)
+{
+    std::vector<std::string> changedAttachmentIds;
+    for (const PendingFolderSizeResult& result :
+         consumePendingFolderSizeResults()) {
+        ComposerAttachment* attachment =
+            findComposerAttachment(binding, result.attachmentId);
+        if (attachment == nullptr ||
+            attachment->kind != ComposerAttachmentKind::Folder ||
+            attachment->sourcePath != result.sourcePath) {
+            continue;
+        }
+        attachment->fileSize = result.fileSize;
+        attachment->fileSizePending = false;
+        changedAttachmentIds.push_back(attachment->attachmentId);
+    }
+    return changedAttachmentIds;
+}
+
+std::optional<ComposerAttachment> makeComposerAttachmentFromPath(
+    const std::filesystem::path& filePath)
+{
+    std::error_code error;
+    const bool regularFile = std::filesystem::is_regular_file(filePath, error);
+    if (error) {
+        return std::nullopt;
+    }
+    error.clear();
+    const bool directory = std::filesystem::is_directory(filePath, error);
+    if (error || (!regularFile && !directory)) {
+        return std::nullopt;
+    }
+
+    const std::filesystem::path absolutePath = makeAbsolutePath(filePath);
+    const bool image = regularFile && isImageAttachmentPath(absolutePath);
+    const relaydesk::storage::AppPaths appPaths =
+        relaydesk::storage::createAppPaths();
+
+    ComposerAttachment attachment;
+    attachment.attachmentId = relaydesk::core::createUuidV4();
+    attachment.kind = directory ? ComposerAttachmentKind::Folder
+                                : (image ? ComposerAttachmentKind::Image
+                                         : ComposerAttachmentKind::File);
+    attachment.displayName =
+        filesystemPathToGenericUtf8(absolutePath.filename());
+    attachment.sourcePath = absolutePath;
+    attachment.previewPath = absolutePath;
+    attachment.localPath = makeAttachmentLocalPath(appPaths, absolutePath);
+    attachment.fileSizePending = directory;
+    if (!directory) {
+        attachment.fileSize = fileSizeOrZero(absolutePath);
+    }
+
+    if (image) {
+        try {
+            relaydesk::storage::ensureAppDirectories(appPaths);
+            const std::optional<relaydesk::runtime::StoredImageAttachment>
+                storedImage =
+                    relaydesk::runtime::storePreviewableImageAttachment(
+                        appPaths,
+                        absolutePath,
+                        attachment.displayName,
+                        false);
+            if (storedImage.has_value()) {
+                attachment.sourcePath = storedImage->GetImagePath();
+                attachment.previewPath =
+                    storedImage->GetThumbnailPath().value_or(
+                        attachment.sourcePath);
+                attachment.localPath = makeAttachmentLocalPath(
+                    appPaths, attachment.sourcePath);
+                attachment.sha256 = storedImage->GetSha256();
+                attachment.fileSize = fileSizeOrZero(attachment.sourcePath);
+            }
+        } catch (const std::exception&) {
+        }
+    }
+    return attachment;
+}
+
+std::string composerAttachmentDetailText(
+    const ComposerAttachment& attachment)
+{
+    if (attachment.fileSizePending) {
+        return "正在计算容量...";
+    }
+    if (attachment.kind == ComposerAttachmentKind::Folder) {
+        return "文件夹 · " + formatFileSize(attachment.fileSize);
+    }
+    if (attachment.kind == ComposerAttachmentKind::Image) {
+        return "图片 · " + formatFileSize(attachment.fileSize);
+    }
+    return formatFileSize(attachment.fileSize);
+}
+
+std::string makeComposerAttachmentMarkup(
+    const ComposerAttachment& attachment)
+{
+    std::string html = R"(<div id=")";
+    html += escapeHtml(
+        composerAttachmentElementId(attachment.attachmentId));
+    html += R"(" class="composer-attachment-card" contenteditable="false" data-node-type="attachment" data-attachment-id=")";
+    html += escapeHtml(attachment.attachmentId);
+    html += R"(">)";
+    if (attachment.kind == ComposerAttachmentKind::Image) {
+        html += R"(<img class="composer-attachment-preview" src=")";
+        html += escapeHtml(
+            filesystemPathToGenericUtf8(attachment.previewPath));
+        html += R"(" alt="">)";
+    } else {
+        html += attachment.kind == ComposerAttachmentKind::Folder
+            ? R"(<svg class="composer-attachment-icon folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"></path></svg>)"
+            : R"(<svg class="composer-attachment-icon file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h8l4 4v16H6Z"></path><path d="M14 2v5h5"></path></svg>)";
+    }
+    html += R"(<div class="composer-attachment-copy"><div class="composer-attachment-name" title=")";
+    html += escapeHtml(attachment.displayName);
+    html += R"(">)";
+    html += escapeHtml(truncateUtf8Bytes(attachment.displayName, 44u));
+    html += R"(</div><div class="composer-attachment-detail)";
+    if (attachment.fileSizePending) {
+        html += " pending";
+    }
+    html += R"(">)";
+    html += escapeHtml(composerAttachmentDetailText(attachment));
+    html += R"(</div></div><div class="composer-attachment-remove" title="移除附件" data-action="remove-attachment:)";
+    html += escapeHtml(attachment.attachmentId);
+    html += R"(">×</div></div>)";
+    return html;
+}
+
+std::string makeComposerAttachmentMarkup(
+    const std::vector<ComposerAttachment>& attachments)
+{
+    std::string html;
+    for (const ComposerAttachment& attachment : attachments) {
+        html += makeComposerAttachmentMarkup(attachment);
+    }
+    return html;
+}
+
+void rememberComposerSelection(skui::Runtime& runtime,
+                               SkiaUiRuntimeBinding& binding)
+{
+    const skui::Selection selection = runtime.selection();
+    if (selection.rangeCount == 0) {
+        return;
+    }
+    const std::vector<std::string> children =
+        runtime.childElementIdsById(kComposerDocumentId);
+    if (std::find(children.begin(), children.end(), selection.focusNodeId) !=
+        children.end()) {
+        binding.composerSelection = selection;
+    }
+}
+
+bool restoreComposerSelection(skui::Runtime& runtime,
+                              const SkiaUiRuntimeBinding& binding)
+{
+    const skui::Selection& selection = binding.composerSelection;
+    if (selection.rangeCount > 0 &&
+        selection.anchorNodeId == selection.focusNodeId &&
+        runtime.setSelectionBaseAndExtent(selection.anchorNodeId,
+                                          selection.anchorOffset,
+                                          selection.focusNodeId,
+                                          selection.focusOffset)) {
+        return true;
+    }
+
+    const std::vector<std::string> children =
+        runtime.childElementIdsById(kComposerDocumentId);
+    for (auto child = children.rbegin(); child != children.rend(); ++child) {
+        if (composerAttachmentIdFromElementId(*child).has_value()) {
+            continue;
+        }
+        const std::optional<std::string> text =
+            runtime.textContentById(*child);
+        if (text.has_value() &&
+            runtime.collapseSelection(*child, text->size())) {
+            return true;
+        }
+    }
+    return runtime.collapseSelection(kComposerInitialParagraphId, 0u);
+}
+
+void discardComposerAttachmentsMissingFromDocument(
+    skui::Runtime& runtime,
+    SkiaUiRuntimeBinding& binding)
+{
+    const std::vector<std::string> children =
+        runtime.childElementIdsById(kComposerDocumentId);
+    for (const ComposerAttachment& attachment :
+         binding.composerAttachments) {
+        const std::string elementId =
+            composerAttachmentElementId(attachment.attachmentId);
+        if (std::find(children.begin(), children.end(), elementId) ==
+            children.end()) {
+            (void)core::async::cancel(
+                composerFolderSizeTaskKey(attachment.attachmentId));
+        }
+    }
+    binding.composerAttachments.erase(
+        std::remove_if(
+            binding.composerAttachments.begin(),
+            binding.composerAttachments.end(),
+            [&children](const ComposerAttachment& attachment) {
+                const std::string elementId =
+                    composerAttachmentElementId(attachment.attachmentId);
+                return std::find(children.begin(), children.end(), elementId) ==
+                    children.end();
+            }),
+        binding.composerAttachments.end());
+}
+
+bool addComposerAttachmentPaths(
+    skui::Runtime& runtime,
+    SkiaUiRuntimeBinding& binding,
+    const std::vector<std::filesystem::path>& filePaths)
+{
+    std::vector<ComposerAttachment> attachments;
+    const std::size_t available = kMaxComposerAttachmentCount -
+        std::min(kMaxComposerAttachmentCount, composerAttachmentCount(binding));
+    attachments.reserve(std::min(available, filePaths.size()));
+    for (const std::filesystem::path& filePath : filePaths) {
+        if (attachments.size() >= available) {
+            break;
+        }
+        try {
+            std::optional<ComposerAttachment> attachment =
+                makeComposerAttachmentFromPath(filePath);
+            if (attachment.has_value()) {
+                attachments.push_back(std::move(attachment.value()));
+            }
+        } catch (const std::exception&) {
+        }
+    }
+    if (attachments.empty() || !restoreComposerSelection(runtime, binding)) {
+        return false;
+    }
+
+    std::string markup;
+    for (const ComposerAttachment& attachment : attachments) {
+        markup += makeComposerAttachmentMarkup(attachment);
+    }
+    if (!runtime.insertHtmlAtSelection(kComposerDocumentId, markup)) {
+        return false;
+    }
+
+    for (ComposerAttachment& attachment : attachments) {
+        binding.composerAttachments.push_back(std::move(attachment));
+        const ComposerAttachment& added = binding.composerAttachments.back();
+        if (added.fileSizePending) {
+            startPendingFolderSizeProbe(added);
+        }
+    }
+    rememberComposerSelection(runtime, binding);
+    return true;
+}
+
+bool removeComposerAttachment(skui::Runtime& runtime,
+                              SkiaUiRuntimeBinding& binding,
+                              std::string_view attachmentId)
+{
+    ComposerAttachment* attachment =
+        findComposerAttachment(binding, attachmentId);
+    if (attachment == nullptr ||
+        !runtime.removeElementById(
+            composerAttachmentElementId(attachmentId))) {
+        return false;
+    }
+    (void)core::async::cancel(composerFolderSizeTaskKey(attachmentId));
+    binding.composerAttachments.erase(
+        std::remove_if(
+            binding.composerAttachments.begin(),
+            binding.composerAttachments.end(),
+            [attachmentId](const ComposerAttachment& item) {
+                return item.attachmentId == attachmentId;
+            }),
+        binding.composerAttachments.end());
+    return true;
+}
+
+void refreshComposerAttachmentCards(
+    skui::Runtime& runtime,
+    const SkiaUiRuntimeBinding& binding,
+    const std::vector<std::string>& attachmentIds)
+{
+    for (const std::string& attachmentId : attachmentIds) {
+        const ComposerAttachment* attachment =
+            findComposerAttachment(binding, attachmentId);
+        if (attachment == nullptr) {
+            continue;
+        }
+        (void)runtime.replaceHtmlById(
+            composerAttachmentElementId(attachmentId),
+            makeComposerAttachmentMarkup(*attachment));
+    }
+}
+
+std::optional<relaydesk::storage::ChatMessagePart> makeComposerAttachmentPart(
+    const ComposerAttachment& attachment)
+{
+    std::string localPath = attachment.localPath;
+    std::uintmax_t fileSize = attachment.fileSize;
+    try {
+        if (localPath.empty()) {
+            localPath = makeAttachmentLocalPath(
+                relaydesk::storage::createAppPaths(), attachment.sourcePath);
+        }
+        if (attachment.kind != ComposerAttachmentKind::Folder) {
+            fileSize = fileSizeOrZero(attachment.sourcePath);
+        }
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+
+    relaydesk::storage::ChatMessagePart part;
+    switch (attachment.kind) {
+    case ComposerAttachmentKind::Image:
+        part.SetType(relaydesk::storage::MessagePartType::Image);
+        break;
+    case ComposerAttachmentKind::File:
+        part.SetType(relaydesk::storage::MessagePartType::File);
+        break;
+    case ComposerAttachmentKind::Folder:
+        part.SetType(relaydesk::storage::MessagePartType::Folder);
+        break;
+    }
+    part.SetTransferId(relaydesk::core::createUuidV4());
+    part.SetTransferState(relaydesk::storage::TransferState::Pending);
+    part.SetFileName(attachment.displayName);
+    part.SetFileSize(fileSize);
+    part.SetTransferredSize(0u);
+    if (!attachment.sha256.empty()) {
+        part.SetSha256(attachment.sha256);
+    }
+    part.SetLocalPath(localPath);
+    return part;
+}
+
+std::vector<relaydesk::storage::ChatMessagePart> makeComposerMessageParts(
+    const skui::Runtime& runtime,
+    const SkiaUiRuntimeBinding& binding)
+{
+    std::vector<relaydesk::storage::ChatMessagePart> parts;
+    for (const std::string& elementId :
+         runtime.childElementIdsById(kComposerDocumentId)) {
+        const std::optional<std::string_view> attachmentId =
+            composerAttachmentIdFromElementId(elementId);
+        if (!attachmentId.has_value()) {
+            const std::optional<std::string> text =
+                runtime.textContentById(elementId);
+            if (!text.has_value() ||
+                trimMessageWhitespace(text.value()).empty()) {
+                continue;
+            }
+            relaydesk::storage::ChatMessagePart textPart;
+            textPart.SetType(relaydesk::storage::MessagePartType::Text);
+            textPart.SetText(text.value());
+            parts.push_back(std::move(textPart));
+            continue;
+        }
+
+        const ComposerAttachment* attachment =
+            findComposerAttachment(binding, attachmentId.value());
+        if (attachment == nullptr) {
+            continue;
+        }
+        std::optional<relaydesk::storage::ChatMessagePart> part =
+            makeComposerAttachmentPart(*attachment);
+        if (part.has_value()) {
+            parts.push_back(std::move(part.value()));
+        }
+    }
+    return parts;
+}
+
 bool writeClipboardText(std::string_view text)
 {
     std::wstring wide;
@@ -693,18 +1286,22 @@ std::string shortMessageTime(const relaydesk::storage::ChatMessageRecord& messag
 
 std::string formatFileSize(std::uintmax_t size)
 {
-    char buffer[32]{};
-    if (size >= 1024ull * 1024ull) {
-        const double value = static_cast<double>(size) / (1024.0 * 1024.0);
-        std::snprintf(buffer, sizeof(buffer), "%.1f MB", value);
-        return buffer;
+    constexpr std::array<const char*, 5> units{"B", "KB", "MB", "GB", "TB"};
+    double value = static_cast<double>(size);
+    std::size_t unitIndex = 0;
+    while (value >= 1024.0 && unitIndex + 1u < units.size()) {
+        value /= 1024.0;
+        ++unitIndex;
     }
-    if (size >= 1024ull) {
-        const double value = static_cast<double>(size) / 1024.0;
-        std::snprintf(buffer, sizeof(buffer), "%.1f KB", value);
-        return buffer;
+
+    std::ostringstream output;
+    if (unitIndex == 0u || value >= 100.0) {
+        output << static_cast<std::uintmax_t>(std::round(value));
+    } else {
+        output << std::fixed << std::setprecision(1) << value;
     }
-    return std::to_string(size) + " B";
+    output << ' ' << units[unitIndex];
+    return output.str();
 }
 
 std::string transferStateText(relaydesk::storage::TransferState state)
@@ -1254,12 +1851,25 @@ std::string makeChatSignature(
 }
 
 std::string makeRelayDeskUiSignature(
-    const relaydesk::runtime::RelayDeskRuntime& relayRuntime)
+    const relaydesk::runtime::RelayDeskRuntime& relayRuntime,
+    const SkiaUiRuntimeBinding& binding)
 {
     std::string signature = "--devices--\n";
     signature += makeDeviceListSignature(relayRuntime);
     signature += "\n--chat--\n";
     signature += makeChatSignature(relayRuntime);
+    signature += "\n--composer-document--\n";
+    for (const ComposerAttachment& attachment :
+         binding.composerAttachments) {
+        signature += attachment.attachmentId;
+        signature += '|';
+        signature += attachment.displayName;
+        signature += '|';
+        signature += std::to_string(attachment.fileSize);
+        signature += '|';
+        signature += attachment.fileSizePending ? '1' : '0';
+        signature += '\n';
+    }
     return signature;
 }
 
@@ -1325,9 +1935,126 @@ bool isChatScrolledToLatest(const skui::Runtime& runtime)
              kChatScrollBottomTolerance);
 }
 
-void applyRelayDeskDevicePanel(skui::Runtime& skiaRuntime,
-                               relaydesk::runtime::RelayDeskRuntime& relayRuntime,
-                               bool forceChatToLatest)
+std::string composerPlaceholder(
+    const relaydesk::runtime::RelayDeskRuntime& relayRuntime)
+{
+    const std::optional<relaydesk::runtime::PeerListItem> selectedPeer =
+        relayRuntime.GetSelectedPeer();
+    return selectedPeer.has_value()
+        ? "给 " + peerDisplayName(selectedPeer.value()) + " 发送消息"
+        : "选择设备后发送消息";
+}
+
+std::string makeEmptyComposerDocumentMarkup()
+{
+    return R"(<div id="composer-document" class="composer-document" contenteditable="true"><p id="composer-text-initial" class="composer-document-paragraph"><br></p></div>)";
+}
+
+bool composerDocumentHasContent(const skui::Runtime& runtime)
+{
+    for (const std::string& elementId :
+         runtime.childElementIdsById(kComposerDocumentId)) {
+        if (composerAttachmentIdFromElementId(elementId).has_value()) {
+            return true;
+        }
+        const std::optional<std::string> text =
+            runtime.textContentById(elementId);
+        if (text.has_value() &&
+            !trimMessageWhitespace(text.value()).empty()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void applyComposerPlaceholder(
+    skui::Runtime& runtime,
+    const relaydesk::runtime::RelayDeskRuntime& relayRuntime)
+{
+    (void)runtime.setTextById(
+        "composer-placeholder", composerPlaceholder(relayRuntime));
+    (void)runtime.setVisibleById(
+        "composer-placeholder", !composerDocumentHasContent(runtime));
+}
+
+void applyComposerDocumentPanel(
+    skui::Runtime& skiaRuntime,
+    relaydesk::runtime::RelayDeskRuntime& relayRuntime,
+    SkiaUiRuntimeBinding& binding)
+{
+    const bool expanded = composerAttachmentCount(binding) > 0u;
+    const bool narrow = runtimeLogicalWidth(skiaRuntime) <= 900;
+
+    skiaRuntime.setAttributeById(
+        "composer-wrap",
+        "class",
+        expanded ? "composer-wrap composer-wrap-expanded" : "composer-wrap");
+    if (narrow) {
+        skiaRuntime.setStyleById(
+            "composer-wrap", expanded ? "height: 320px;" : "height: 112px;");
+        skiaRuntime.setStyleById(
+            "chat-scroll", expanded ? "bottom: 344px;" : "bottom: 136px;");
+        skiaRuntime.setStyleById(
+            "composer-document",
+            expanded
+                ? "left: 12px; top: 10px; right: 12px; bottom: 68px; overflow-y: auto;"
+                : "left: 16px; top: 10px; right: 16px; height: 40px; overflow-y: hidden;");
+        skiaRuntime.setStyleById(
+            "composer-placeholder",
+            expanded
+                ? "left: 20px; top: 16px; right: 20px;"
+                : "left: 24px; top: 20px; right: 24px;");
+        skiaRuntime.setStyleById("composer-emoji", "display: none;");
+        skiaRuntime.setStyleById(
+            "composer-attach",
+            expanded ? "left: 16px; right: auto; top: 270px;"
+                     : "left: 16px; right: auto; top: 64px;");
+        skiaRuntime.setStyleById(
+            "composer-folder",
+            expanded ? "left: 58px; right: auto; top: 270px;"
+                     : "left: 58px; right: auto; top: 64px;");
+        skiaRuntime.setStyleById(
+            "composer-send",
+            expanded ? "top: 265px;" : "top: 59px;");
+    } else {
+        skiaRuntime.setStyleById(
+            "composer-wrap", expanded ? "height: 300px;" : "height: 68px;");
+        skiaRuntime.setStyleById(
+            "chat-scroll", expanded ? "bottom: 324px;" : "bottom: 96px;");
+        skiaRuntime.setStyleById(
+            "composer-document",
+            expanded
+                ? "left: 12px; top: 10px; right: 12px; bottom: 64px; overflow-y: auto;"
+                : "left: 16px; top: 12px; right: 236px; height: 44px; overflow-y: hidden;");
+        skiaRuntime.setStyleById(
+            "composer-placeholder",
+            expanded
+                ? "left: 20px; top: 16px; right: 20px;"
+                : "left: 24px; top: 22px; right: 244px;");
+        skiaRuntime.setStyleById(
+            "composer-emoji",
+            expanded ? "display: block; top: 248px;"
+                     : "display: block; top: 18px;");
+        skiaRuntime.setStyleById(
+            "composer-attach",
+            expanded ? "left: auto; right: 150px; top: 248px;"
+                     : "left: auto; right: 150px; top: 18px;");
+        skiaRuntime.setStyleById(
+            "composer-folder",
+            expanded ? "left: auto; right: 108px; top: 248px;"
+                     : "left: auto; right: 108px; top: 18px;");
+        skiaRuntime.setStyleById(
+            "composer-send",
+            expanded ? "top: 243px;" : "top: 13px;");
+    }
+    applyComposerPlaceholder(skiaRuntime, relayRuntime);
+}
+
+void applyRelayDeskDevicePanel(
+    skui::Runtime& skiaRuntime,
+    relaydesk::runtime::RelayDeskRuntime& relayRuntime,
+    SkiaUiRuntimeBinding& binding,
+    bool forceChatToLatest)
 {
     const std::optional<skui::ScrollState> previousChatScroll =
         skiaRuntime.scrollStateById("chat-scroll");
@@ -1358,15 +2085,10 @@ void applyRelayDeskDevicePanel(skui::Runtime& skiaRuntime,
                        selectedPeer->GetOnline()
                            ? "background-color: #26bd31;"
                            : "background-color: #a8b3c0;");
-        addAttributeUpdate(updates,
-                           "composer",
-                           "placeholder",
-                           "给 " + peerDisplayName(*selectedPeer) + " 发送消息");
     } else {
         addTextUpdate(updates, "header-title", "未选择设备");
         addTextUpdate(updates, "header-ip", "等待发现设备");
         addStyleUpdate(updates, "header-status-dot", "background-color: #a8b3c0;");
-        addAttributeUpdate(updates, "composer", "placeholder", "选择设备后发送消息");
     }
 
     std::vector<const relaydesk::runtime::PeerListItem*> onlinePeers;
@@ -1456,6 +2178,7 @@ void applyRelayDeskDevicePanel(skui::Runtime& skiaRuntime,
                    "height: " + std::to_string(contentHeight) + "px;");
     skiaRuntime.applyUpdates(updates);
     skiaRuntime.replaceHtmlById("chat-content", chatContentHtml);
+    applyComposerDocumentPanel(skiaRuntime, relayRuntime, binding);
 
     const std::optional<skui::ScrollState> updatedChatScroll =
         skiaRuntime.scrollStateById("chat-scroll");
@@ -1504,6 +2227,21 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
                                         const skui::ElementEvent& event) {
         constexpr std::string_view imageContextPrefix = "image-context:";
         constexpr std::string_view fileContextPrefix = "file-context:";
+        constexpr std::string_view removeAttachmentPrefix =
+            "remove-attachment:";
+        if (event.type == skui::ElementEventType::Input &&
+            event.id == kComposerDocumentId) {
+            rememberComposerSelection(runtime, binding);
+            discardComposerAttachmentsMissingFromDocument(runtime, binding);
+            applyComposerDocumentPanel(runtime, relayRuntime, binding);
+            return;
+        }
+        if ((event.type == skui::ElementEventType::MouseDown ||
+             event.type == skui::ElementEventType::MouseUp) &&
+            event.button == skui::MouseButton::Left) {
+            rememberComposerSelection(runtime, binding);
+        }
+
         if (event.type == skui::ElementEventType::MouseUp &&
             event.button == skui::MouseButton::Right &&
             event.action.starts_with(imageContextPrefix)) {
@@ -1587,7 +2325,7 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
             hideImagePreview(runtime);
             relayRuntime.selectPeer(std::string(action.substr(devicePrefix.size())));
             scheduleChatScrollToLatest(binding);
-            applyRelayDeskDevicePanel(runtime, relayRuntime, true);
+            applyRelayDeskDevicePanel(runtime, relayRuntime, binding, true);
         } else if (action.starts_with(tabPrefix)) {
             hideMessageContextMenu(runtime);
             selectTab(runtime, action.substr(tabPrefix.size()));
@@ -1637,13 +2375,51 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
             }
         } else if (action == "close-image-preview") {
             hideImagePreview(runtime);
+        } else if (action.starts_with(removeAttachmentPrefix)) {
+            const std::string_view attachmentId =
+                action.substr(removeAttachmentPrefix.size());
+            if (removeComposerAttachment(runtime, binding, attachmentId)) {
+                applyComposerDocumentPanel(runtime, relayRuntime, binding);
+            }
+        } else if (action == "select-attachment-files") {
+            hideMessageContextMenu(runtime);
+            if (addComposerAttachmentPaths(
+                    runtime,
+                    binding,
+                    relaydesk::platform::selectFilesFromDialog())) {
+                applyComposerDocumentPanel(runtime, relayRuntime, binding);
+            }
+        } else if (action == "select-attachment-folder") {
+            hideMessageContextMenu(runtime);
+            const std::optional<std::filesystem::path> folderPath =
+                relaydesk::platform::selectFolderFromDialog();
+            if (folderPath.has_value() &&
+                addComposerAttachmentPaths(
+                    runtime, binding, {folderPath.value()})) {
+                applyComposerDocumentPanel(runtime, relayRuntime, binding);
+            }
         } else if (action == "send-message") {
             hideMessageContextMenu(runtime);
-            runtime.setAttributeById("composer", "value", "");
-            runtime.setAttributeById(
-                "composer",
-                "placeholder",
-                "消息已发送，可以继续输入...");
+            if (!relayRuntime.GetSelectedPeer().has_value()) {
+                return;
+            }
+            std::vector<relaydesk::storage::ChatMessagePart> parts =
+                makeComposerMessageParts(runtime, binding);
+            if (parts.empty()) {
+                return;
+            }
+            relayRuntime.sendMessagePartsToSelectedPeer(std::move(parts));
+            for (const ComposerAttachment& attachment :
+                 binding.composerAttachments) {
+                (void)core::async::cancel(
+                    composerFolderSizeTaskKey(attachment.attachmentId));
+            }
+            binding.composerAttachments.clear();
+            binding.composerSelection = {};
+            (void)runtime.replaceHtmlById(
+                kComposerDocumentId, makeEmptyComposerDocumentMarkup());
+            scheduleChatScrollToLatest(binding);
+            applyRelayDeskDevicePanel(runtime, relayRuntime, binding, true);
         } else if (action == "finish-transfer") {
             hideMessageContextMenu(runtime);
             runtime.setAttributeById("upload-progress", "value", "100");
@@ -1722,9 +2498,19 @@ bool refreshRelayDeskDevicePanelIfChanged(SkiaUiRuntimeBinding& binding,
     }
 
     core::async::dispatchReady();
+    relaydesk::platform::initializeAttachmentDropTarget();
+    (void)addComposerAttachmentPaths(
+        *binding.skiaRuntime,
+        binding,
+        relaydesk::platform::consumeDroppedAttachmentPaths());
+    const std::vector<std::string> changedAttachmentIds =
+        pollPendingFolderSizeResults(binding);
+    refreshComposerAttachmentCards(*binding.skiaRuntime,
+                                   binding,
+                                   changedAttachmentIds);
     binding.relayRuntime->refreshPeersIfNeeded();
     const std::string nextSignature =
-        makeRelayDeskUiSignature(*binding.relayRuntime);
+        makeRelayDeskUiSignature(*binding.relayRuntime, binding);
     const bool scrollChatToLatest =
         !binding.chatInitialized || binding.scrollChatToLatestPending;
     if (!force && !scrollChatToLatest &&
@@ -1735,6 +2521,7 @@ bool refreshRelayDeskDevicePanelIfChanged(SkiaUiRuntimeBinding& binding,
     binding.lastDeviceSignature = nextSignature;
     applyRelayDeskDevicePanel(*binding.skiaRuntime,
                               *binding.relayRuntime,
+                              binding,
                               scrollChatToLatest);
     binding.chatInitialized = true;
     binding.scrollChatToLatestPending = false;
@@ -2089,6 +2876,8 @@ std::optional<CaptureOptions> parseCaptureOptions()
             options.testImageMessage = true;
         } else if (argument == L"--capture-test-file-card") {
             options.testFileCard = true;
+        } else if (argument == L"--capture-test-composer-attachments") {
+            options.testComposerAttachments = true;
         }
     }
 
@@ -2151,6 +2940,23 @@ bool writeCaptureImageFixture(const std::filesystem::path& outputPath)
                         kHeight,
                         static_cast<std::size_t>(kWidth) *
                             sizeof(std::uint32_t));
+}
+
+bool writeCaptureFileFixture(const std::filesystem::path& outputPath,
+                             std::size_t size)
+{
+    std::error_code error;
+    std::filesystem::create_directories(outputPath.parent_path(), error);
+    if (error) {
+        return false;
+    }
+    std::ofstream output(outputPath, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        return false;
+    }
+    const std::string content(size, 'x');
+    output.write(content.data(), static_cast<std::streamsize>(content.size()));
+    return output.good();
 }
 
 struct CapturePixelBounds {
@@ -2247,7 +3053,7 @@ int captureSkiaUiPng(const CaptureOptions& options)
     runtimeOptions.clearColor = kDemoClearColor;
 
     std::filesystem::path captureImagePath;
-    if (options.testImageMessage) {
+    if (options.testImageMessage || options.testComposerAttachments) {
         captureImagePath = outputPath.parent_path() /
             "relaydesk_skiaui_capture_message.png";
         if (!writeCaptureImageFixture(captureImagePath)) {
@@ -2262,6 +3068,9 @@ int captureSkiaUiPng(const CaptureOptions& options)
                           captureImagePathText.end()));
     if (options.testImageMessage) {
         relayRuntime.showImageConversation();
+    }
+    if (options.testComposerAttachments) {
+        relayRuntime.showShortConversation();
     }
     if (options.testFileCard) {
         const relaydesk::storage::AppPaths appPaths =
@@ -2318,6 +3127,111 @@ int captureSkiaUiPng(const CaptureOptions& options)
     SkiaUiRuntimeBinding binding;
     binding.relayRuntime = &relayRuntime;
     binding.skiaRuntime = &runtime;
+    if (options.testComposerAttachments) {
+        if (html.find(R"(data-action="select-attachment-files")") ==
+                std::string::npos ||
+            html.find(R"(data-action="select-attachment-folder")") ==
+                std::string::npos ||
+            html.find(R"(id="composer-document" class="composer-document" contenteditable="true")") ==
+                std::string::npos ||
+            html.find(R"(<p id="composer-text-initial")") ==
+                std::string::npos ||
+            html.find("<textarea") != std::string::npos) {
+            return 30;
+        }
+
+        ComposerAttachment imageAttachment;
+        imageAttachment.kind = ComposerAttachmentKind::Image;
+        imageAttachment.attachmentId = "capture-image-attachment";
+        imageAttachment.displayName = "产品界面参考图.png";
+        imageAttachment.localPath =
+            filesystemPathToGenericUtf8(captureImagePath);
+        imageAttachment.sourcePath = captureImagePath;
+        imageAttachment.previewPath = captureImagePath;
+        imageAttachment.fileSize = fileSizeOrZero(captureImagePath);
+        binding.composerAttachments.push_back(std::move(imageAttachment));
+
+        const std::filesystem::path fixtureDirectory =
+            outputPath.parent_path() / "composer_attachment_fixture";
+        const std::filesystem::path documentPath =
+            fixtureDirectory / L"项目需求说明.txt";
+        const std::filesystem::path nestedFilePath =
+            fixtureDirectory / "assets" / "reference.bin";
+        if (!writeCaptureFileFixture(documentPath, 1536u) ||
+            !writeCaptureFileFixture(nestedFilePath, 2048u)) {
+            return 31;
+        }
+
+        const std::optional<ComposerAttachment> documentAttachment =
+            makeComposerAttachmentFromPath(documentPath);
+        const std::optional<ComposerAttachment> folderAttachment =
+            makeComposerAttachmentFromPath(fixtureDirectory);
+        if (!documentAttachment.has_value() ||
+            !folderAttachment.has_value()) {
+            return 32;
+        }
+        binding.composerAttachments.push_back(documentAttachment.value());
+        binding.composerAttachments.push_back(folderAttachment.value());
+        startPendingFolderSizeProbe(binding.composerAttachments.back());
+        const std::string pendingMarkup =
+            makeComposerAttachmentMarkup(binding.composerAttachments);
+        if (pendingMarkup.find("正在计算容量...") == std::string::npos) {
+            return 33;
+        }
+
+        bool folderSizeCompleted = false;
+        constexpr int kMaximumFolderSizePollAttempts = 100;
+        for (int attempt = 0;
+             attempt < kMaximumFolderSizePollAttempts && !folderSizeCompleted;
+             ++attempt) {
+            (void)core::async::dispatchReady();
+            (void)pollPendingFolderSizeResults(binding);
+            folderSizeCompleted = std::any_of(
+                binding.composerAttachments.begin(),
+                binding.composerAttachments.end(),
+                [](const ComposerAttachment& attachment) {
+                    return attachment.kind == ComposerAttachmentKind::Folder &&
+                        !attachment.fileSizePending &&
+                        attachment.fileSize == 3584u;
+                });
+            if (!folderSizeCompleted) {
+                Sleep(10);
+            }
+        }
+        if (!folderSizeCompleted) {
+            return 34;
+        }
+        const auto completedFolder = std::find_if(
+            binding.composerAttachments.begin(),
+            binding.composerAttachments.end(),
+            [](const ComposerAttachment& attachment) {
+                return attachment.kind == ComposerAttachmentKind::Folder &&
+                    !attachment.fileSizePending;
+            });
+        if (completedFolder != binding.composerAttachments.end()) {
+            completedFolder->displayName = "产品设计素材";
+        }
+
+        ComposerAttachment pendingFolder;
+        pendingFolder.kind = ComposerAttachmentKind::Folder;
+        pendingFolder.attachmentId = "capture-pending-folder";
+        pendingFolder.displayName = "正在统计的设计素材";
+        pendingFolder.localPath =
+            filesystemPathToGenericUtf8(fixtureDirectory);
+        pendingFolder.sourcePath = fixtureDirectory;
+        pendingFolder.previewPath = fixtureDirectory;
+        pendingFolder.fileSizePending = true;
+        binding.composerAttachments.push_back(std::move(pendingFolder));
+
+        const std::string attachmentMarkup =
+            makeComposerAttachmentMarkup(binding.composerAttachments);
+        if (attachmentMarkup.find("3.5 KB") == std::string::npos ||
+            attachmentMarkup.find("正在计算容量...") == std::string::npos ||
+            attachmentMarkup.find("data-action=\"remove-attachment:") ==
+                std::string::npos) {
+            return 35;
+        }
+    }
     installRelayDeskInteractions(runtime, relayRuntime, binding);
     const int initialWidth =
         options.initialWidth > 0 ? options.initialWidth : options.width;
@@ -2327,10 +3241,34 @@ int captureSkiaUiPng(const CaptureOptions& options)
     if (!runtime.loadDocumentFromString(html)) {
         return 4;
     }
-    applyRelayDeskDevicePanel(runtime, relayRuntime, true);
+    if (options.testComposerAttachments) {
+        constexpr std::string_view kCaptureComposerText =
+            "请查收这些附件";
+        if (!runtime.setTextById(kComposerInitialParagraphId,
+                                 kCaptureComposerText) ||
+            !runtime.collapseSelection(kComposerInitialParagraphId,
+                                       kCaptureComposerText.size()) ||
+            !runtime.insertHtmlAtSelection(
+                kComposerDocumentId,
+                makeComposerAttachmentMarkup(
+                    binding.composerAttachments))) {
+            return 36;
+        }
+        const std::vector<relaydesk::storage::ChatMessagePart> parts =
+            makeComposerMessageParts(runtime, binding);
+        if (parts.size() != 5u ||
+            parts[0].GetType() != relaydesk::storage::MessagePartType::Text ||
+            parts[1].GetType() != relaydesk::storage::MessagePartType::Image ||
+            parts[2].GetType() != relaydesk::storage::MessagePartType::File ||
+            parts[3].GetType() != relaydesk::storage::MessagePartType::Folder ||
+            parts[3].GetFileSize().value_or(0u) != 3584u) {
+            return 37;
+        }
+    }
+    applyRelayDeskDevicePanel(runtime, relayRuntime, binding, true);
     if (initialWidth != options.width || initialHeight != options.height) {
         runtime.resize(options.width, options.height, options.dpiScale);
-        applyRelayDeskDevicePanel(runtime, relayRuntime, false);
+        applyRelayDeskDevicePanel(runtime, relayRuntime, binding, false);
     }
     if (options.testFileCard) {
         skui::Event mouseDown;
@@ -2416,7 +3354,8 @@ int captureSkiaUiPng(const CaptureOptions& options)
     if (options.testPeerSwitch) {
         binding.documentLoaded = true;
         binding.chatInitialized = true;
-        binding.lastDeviceSignature = makeRelayDeskUiSignature(relayRuntime);
+        binding.lastDeviceSignature =
+            makeRelayDeskUiSignature(relayRuntime, binding);
 
         relayRuntime.showFullConversation();
         skui::Event mouseDown;
@@ -2445,7 +3384,9 @@ int captureSkiaUiPng(const CaptureOptions& options)
     std::vector<std::uint32_t> pixels(
         static_cast<std::size_t>(options.width) *
         static_cast<std::size_t>(options.height));
-    bool imageRendered = !options.testImageMessage;
+    const bool requiresImageRender =
+        options.testImageMessage || options.testComposerAttachments;
+    bool imageRendered = !requiresImageRender;
     constexpr int kMaximumImageRenderAttempts = 50;
     for (int attempt = 0;
          attempt < kMaximumImageRenderAttempts && !imageRendered;
@@ -2470,7 +3411,7 @@ int captureSkiaUiPng(const CaptureOptions& options)
             Sleep(10);
         }
     }
-    if (!options.testImageMessage) {
+    if (!requiresImageRender) {
         if (!runtime.renderToBgraPixels(pixels.data(),
                                         options.width,
                                         options.height,

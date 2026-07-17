@@ -385,6 +385,15 @@ if(RELAYDESK_BUILD_SKIAUI)
             --capture-dpi-scale 1.0
             --capture-test-file-card
     )
+    add_test(NAME relaydesk_skiaui_composer_attachments_capture
+        COMMAND relaydesk_skiaui
+            --capture-skiaui
+            "${CMAKE_BINARY_DIR}/tmp/relaydesk_skiaui_composer_attachments.png"
+            --capture-width 1600
+            --capture-height 900
+            --capture-dpi-scale 1.0
+            --capture-test-composer-attachments
+    )
 endif()
 
 add_test(NAME relaydesk_patch_eui_neo_app_shortcuts_tests

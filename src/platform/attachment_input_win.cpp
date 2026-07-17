@@ -1078,6 +1078,65 @@ std::optional<std::filesystem::path> selectFolderFromDialog()
     return shellItemFilesystemPath(item.Get());
 }
 
+std::vector<std::filesystem::path> selectFilesFromDialog()
+{
+    std::vector<std::filesystem::path> selectedPaths;
+    ComApartment apartment;
+    if (!apartment.GetAvailable()) {
+        return selectedPaths;
+    }
+
+    using Microsoft::WRL::ComPtr;
+    ComPtr<IFileOpenDialog> dialog;
+    HRESULT result = CoCreateInstance(CLSID_FileOpenDialog,
+                                      nullptr,
+                                      CLSCTX_INPROC_SERVER,
+                                      IID_PPV_ARGS(&dialog));
+    if (FAILED(result)) {
+        return selectedPaths;
+    }
+
+    DWORD options = 0;
+    result = dialog->GetOptions(&options);
+    if (SUCCEEDED(result)) {
+        (void)dialog->SetOptions(
+            options | FOS_ALLOWMULTISELECT | FOS_FORCEFILESYSTEM |
+            FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST);
+    }
+    (void)dialog->SetTitle(L"选择文件");
+
+    result = dialog->Show(findRelayDeskMainWindow());
+    if (FAILED(result)) {
+        return selectedPaths;
+    }
+
+    ComPtr<IShellItemArray> items;
+    result = dialog->GetResults(&items);
+    if (FAILED(result)) {
+        return selectedPaths;
+    }
+
+    DWORD itemCount = 0;
+    result = items->GetCount(&itemCount);
+    if (FAILED(result)) {
+        return selectedPaths;
+    }
+
+    selectedPaths.reserve(itemCount);
+    for (DWORD index = 0; index < itemCount; ++index) {
+        ComPtr<IShellItem> item;
+        if (FAILED(items->GetItemAt(index, &item))) {
+            continue;
+        }
+        std::optional<std::filesystem::path> selectedPath =
+            shellItemFilesystemPath(item.Get());
+        if (selectedPath.has_value()) {
+            selectedPaths.push_back(std::move(selectedPath.value()));
+        }
+    }
+    return selectedPaths;
+}
+
 bool consumeBackspacePressed()
 {
     const bool down = (GetKeyState(VK_BACK) & 0x8000) != 0;
