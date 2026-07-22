@@ -490,6 +490,126 @@
       justify-content: flex-end;
       padding-right: 36px;
     }
+    .message-row-document {
+      align-items: center;
+    }
+    .message-document {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 10px;
+      flex-shrink: 1;
+      width: auto;
+      min-width: 280px;
+      max-width: 72%;
+      height: auto;
+      padding: 14px 16px;
+      box-sizing: border-box;
+      border-radius: 8px;
+      border-width: 1px;
+      border-style: solid;
+    }
+    .message-document-left {
+      background-color: #ffffff;
+      border-color: #d6dee8;
+    }
+    .message-document-right {
+      background-color: #dff8f6;
+      border-color: #98dfdc;
+    }
+    .message-document-text {
+      position: relative;
+      display: block;
+      flex-shrink: 1;
+      width: auto;
+      max-width: 100%;
+      height: auto;
+      color: #1f2937;
+      font-size: 15px;
+      font-weight: bold;
+    }
+    .message-document-file {
+      position: relative;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      flex-shrink: 1;
+      width: 420px;
+      max-width: 100%;
+      min-height: 58px;
+      box-sizing: border-box;
+    }
+    .message-document-file.warning {
+      color: #b45309;
+    }
+    .message-document-file-icon {
+      position: relative;
+      flex-shrink: 0;
+      width: 38px;
+      height: 44px;
+    }
+    .message-document-file-content {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      flex-grow: 1;
+      flex-shrink: 1;
+      width: auto;
+      min-width: 0px;
+      margin-left: 14px;
+    }
+    .message-document-file-name {
+      position: relative;
+      display: block;
+      flex-shrink: 1;
+      width: auto;
+      max-width: 100%;
+      height: auto;
+      color: #1f2937;
+      font-size: 15px;
+      font-weight: bold;
+    }
+    .message-document-file-summary {
+      position: relative;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      height: 20px;
+      margin-top: 4px;
+    }
+    .message-document-file-state {
+      position: relative;
+      flex-shrink: 1;
+      width: auto;
+      height: 20px;
+      color: #5d6b7c;
+      font-size: 13px;
+    }
+    .message-document-file-percent {
+      position: relative;
+      flex-shrink: 0;
+      width: 42px;
+      height: 20px;
+      text-align: right;
+      color: #5d6b7c;
+      font-size: 13px;
+      font-weight: bold;
+    }
+    .message-document-progress {
+      position: relative;
+      width: 100%;
+      height: 5px;
+      margin-top: 3px;
+      border-radius: 3px;
+      background-color: #cbd5df;
+      color: #0aa39e;
+    }
+    .message-document-progress.warning {
+      color: #ec8d00;
+    }
     .message-image-card {
       position: relative;
       flex-shrink: 0;
@@ -660,7 +780,7 @@
       left: 28px;
       bottom: 20px;
       right: 28px;
-      height: 68px;
+      height: 250px;
       background-color: #ffffff;
       border-color: #d6dee8;
       border-width: 1px;
@@ -668,14 +788,14 @@
       border-radius: 9px;
     }
     .composer-wrap-expanded {
-      height: 300px;
+      height: 250px;
     }
     .composer-document {
       position: absolute;
       display: flex;
       flex-direction: column;
       align-items: stretch;
-      gap: 8px;
+      gap: 4px;
       box-sizing: border-box;
       color: #1f2937;
       background-color: rgba(255,255,255,0);
@@ -684,11 +804,12 @@
     .composer-document-paragraph,
     .composer-document p {
       position: relative;
-      flex-shrink: 0;
-      width: 100%;
-      min-height: 24px;
+      flex-shrink: 1;
+      width: auto;
+      max-width: 100%;
+      min-height: 22px;
       margin: 0;
-      padding: 3px 8px;
+      padding: 2px 8px;
       box-sizing: border-box;
       color: #1f2937;
       background-color: rgba(255,255,255,0);
@@ -696,12 +817,12 @@
     }
     .composer-placeholder {
       position: absolute;
-      display: flex;
-      align-items: center;
-      left: 27px;
-      top: 21px;
-      right: 244px;
-      height: 20px;
+      box-sizing: border-box;
+      left: 12px;
+      top: 10px;
+      right: 12px;
+      height: 24px;
+      padding: 3px 8px;
       overflow: hidden;
       color: #8a96a6;
       background-color: rgba(255,255,255,0);
@@ -714,7 +835,8 @@
       flex-direction: row;
       align-items: center;
       flex-shrink: 0;
-      width: 100%;
+      width: 420px;
+      max-width: 100%;
       height: 68px;
       padding: 7px;
       box-sizing: border-box;
@@ -724,7 +846,6 @@
       border-radius: 7px;
       background-color: #f8fafc;
     }
-    .composer-attachment-preview,
     .composer-attachment-icon {
       position: relative;
       flex-shrink: 0;
@@ -732,8 +853,27 @@
       height: 52px;
       border-radius: 6px;
     }
+    .composer-attachment-image {
+      position: relative;
+      flex-shrink: 0;
+      max-width: 100%;
+      max-height: 140px;
+      padding: 5px;
+      border-width: 1px;
+      border-style: solid;
+      border-color: #d7e0e9;
+      border-radius: 7px;
+      background-color: #f8fafc;
+      cursor: pointer;
+    }
     .composer-attachment-preview {
-      object-fit: cover;
+      position: relative;
+      display: block;
+      flex-shrink: 0;
+      max-width: 260px;
+      max-height: 140px;
+      object-fit: contain;
+      border-radius: 6px;
       background-color: #e8eef4;
     }
     .composer-attachment-icon {
@@ -753,16 +893,17 @@
       justify-content: center;
       flex-grow: 1;
       flex-shrink: 1;
-      width: auto;
+      width: 0px;
       min-width: 0px;
       height: 52px;
       margin-left: 9px;
-      margin-right: 5px;
+      margin-right: 26px;
+      overflow: hidden;
     }
     .composer-attachment-name {
       position: relative;
-      width: auto;
-      max-width: 520px;
+      width: 100%;
+      max-width: 100%;
       height: 20px;
       overflow: hidden;
       color: #1f2937;
@@ -771,8 +912,8 @@
     }
     .composer-attachment-detail {
       position: relative;
-      width: auto;
-      max-width: 520px;
+      width: 100%;
+      max-width: 100%;
       height: 18px;
       margin-top: 3px;
       overflow: hidden;
@@ -1008,7 +1149,7 @@
         </div>
       </div>
       <div id="composer-wrap" class="composer-wrap">
-        <div id="composer-document" class="composer-document" contenteditable="true"><p id="composer-text-initial" class="composer-document-paragraph"><br></p></div>
+        <div id="composer-document" class="composer-document" contenteditable="true" contenteditable-flow="inline"><p id="composer-text-initial" class="composer-document-paragraph"><br></p></div>
         <div id="composer-placeholder" class="composer-placeholder">选择设备后发送消息</div>
         <svg id="composer-emoji" class="compose-icon emoji-icon" title="表情" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M8 14s1.5 2 4 2 4-2 4-2"></path><path d="M9 9h.01"></path><path d="M15 9h.01"></path></svg>
         <svg id="composer-attach" class="compose-icon attach-icon" title="添加文件" data-action="select-attachment-files" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.1-8.9 8.9a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"></path></svg>
