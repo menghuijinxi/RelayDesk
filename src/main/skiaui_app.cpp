@@ -837,6 +837,24 @@ std::string composerAttachmentDetailText(
     return formatFileSize(attachment.fileSize);
 }
 
+std::string makeClipboardAttachmentAttributes(
+    ComposerAttachmentKind kind,
+    const std::filesystem::path& sourcePath,
+    std::string_view displayName)
+{
+    if (sourcePath.empty()) {
+        return {};
+    }
+    std::string attributes = R"( data-clipboard-kind=")";
+    attributes += kind == ComposerAttachmentKind::Image ? "image" : "file";
+    attributes += R"(" data-clipboard-path=")";
+    attributes += escapeHtml(filesystemPathToGenericUtf8(sourcePath));
+    attributes += R"(" data-clipboard-name=")";
+    attributes += escapeHtml(displayName);
+    attributes += '"';
+    return attributes;
+}
+
 relaydesk::platform::ImageSize composerImageDisplaySize(
     const std::filesystem::path& imagePath)
 {
@@ -880,7 +898,10 @@ std::string makeComposerAttachmentMarkup(
         html += escapeHtml(elementId);
         html += R"(" class="composer-attachment-image" contenteditable="false" data-node-type="attachment" data-attachment-id=")";
         html += escapeHtml(attachment.attachmentId);
-        html += R"(" data-action="image-context:)";
+        html += '"';
+        html += makeClipboardAttachmentAttributes(
+            attachment.kind, attachment.sourcePath, attachment.displayName);
+        html += R"( data-action="image-context:)";
         html += escapeHtml(imagePathText);
         html += R"(" style="width: )";
         html += std::to_string(displaySize.width);
@@ -902,7 +923,10 @@ std::string makeComposerAttachmentMarkup(
     html += escapeHtml(elementId);
     html += R"(" class="composer-attachment-card" contenteditable="false" data-node-type="attachment" data-attachment-id=")";
     html += escapeHtml(attachment.attachmentId);
-    html += R"(">)";
+    html += '"';
+    html += makeClipboardAttachmentAttributes(
+        attachment.kind, attachment.sourcePath, attachment.displayName);
+    html += '>';
     html += attachment.kind == ComposerAttachmentKind::Folder
         ? R"(<svg class="composer-attachment-icon folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"></path></svg>)"
         : R"(<svg class="composer-attachment-icon file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h8l4 4v16H6Z"></path><path d="M14 2v5h5"></path></svg>)";
@@ -1037,6 +1061,170 @@ bool addComposerAttachmentPaths(
         markup += makeComposerAttachmentMarkup(attachment);
     }
     if (!runtime.insertHtmlAtSelection(kComposerDocumentId, markup)) {
+        return false;
+    }
+
+    for (ComposerAttachment& attachment : attachments) {
+        binding.composerAttachments.push_back(std::move(attachment));
+        const ComposerAttachment& added = binding.composerAttachments.back();
+        if (added.fileSizePending) {
+            startPendingFolderSizeProbe(added);
+        }
+    }
+    rememberComposerSelection(runtime, binding);
+    return true;
+}
+
+int clipboardHexDigit(char character)
+{
+    if (character >= '0' && character <= '9') {
+        return character - '0';
+    }
+    if (character >= 'a' && character <= 'f') {
+        return character - 'a' + 10;
+    }
+    if (character >= 'A' && character <= 'F') {
+        return character - 'A' + 10;
+    }
+    return -1;
+}
+
+std::optional<std::filesystem::path> clipboardSourcePath(
+    std::string_view source)
+{
+    std::string pathText(source);
+    if (pathText.starts_with("file:///")) {
+        pathText.erase(0, 8u);
+    } else if (pathText.starts_with("file://")) {
+        pathText = "//" + pathText.substr(7u);
+    } else if (pathText.find("://") != std::string::npos ||
+               pathText.starts_with("data:")) {
+        return std::nullopt;
+    }
+
+    std::string decoded;
+    decoded.reserve(pathText.size());
+    for (std::size_t index = 0; index < pathText.size(); ++index) {
+        if (pathText[index] != '%' || index + 2u >= pathText.size()) {
+            decoded.push_back(pathText[index]);
+            continue;
+        }
+        const int high = clipboardHexDigit(pathText[index + 1u]);
+        const int low = clipboardHexDigit(pathText[index + 2u]);
+        if (high < 0 || low < 0) {
+            decoded.push_back(pathText[index]);
+            continue;
+        }
+        decoded.push_back(static_cast<char>((high << 4) | low));
+        index += 2u;
+    }
+    return tryFilesystemPathFromUtf8(decoded);
+}
+
+std::string makeComposerClipboardTextMarkup(std::string_view text)
+{
+    std::string markup;
+    std::size_t lineStart = 0u;
+    do {
+        const std::size_t lineEnd = text.find('\n', lineStart);
+        std::string_view line = text.substr(
+            lineStart,
+            lineEnd == std::string_view::npos
+                ? std::string_view::npos
+                : lineEnd - lineStart);
+        if (!line.empty() && line.back() == '\r') {
+            line.remove_suffix(1u);
+        }
+        markup += R"(<p id="composer-clipboard-text-)";
+        markup += relaydesk::core::createUuidV4();
+        markup += R"(" class="composer-document-paragraph">)";
+        markup += line.empty() ? "<br>" : escapeHtml(line);
+        markup += "</p>";
+        if (lineEnd == std::string_view::npos) {
+            break;
+        }
+        lineStart = lineEnd + 1u;
+    } while (lineStart <= text.size());
+    return markup;
+}
+
+bool pasteComposerClipboardContent(
+    skui::Runtime& runtime,
+    SkiaUiRuntimeBinding& binding,
+    const skui::ClipboardContent& content)
+{
+    if (content.items.empty() ||
+        !restoreComposerSelection(runtime, binding)) {
+        return false;
+    }
+
+    std::string markup;
+    std::vector<ComposerAttachment> attachments;
+    std::size_t fallbackPathIndex = 0u;
+    bool previousMarkupWasAttachment = false;
+    const std::size_t available = kMaxComposerAttachmentCount -
+        std::min(kMaxComposerAttachmentCount, composerAttachmentCount(binding));
+    for (std::size_t itemIndex = 0u;
+         itemIndex < content.items.size();
+         ++itemIndex) {
+        const skui::ClipboardItem& item = content.items[itemIndex];
+        if (item.type == skui::ClipboardItemType::Text) {
+            std::string_view text = item.text;
+            if (previousMarkupWasAttachment && text.starts_with("\r\n")) {
+                text.remove_prefix(2u);
+            } else if (previousMarkupWasAttachment && !text.empty() &&
+                       (text.front() == '\r' || text.front() == '\n')) {
+                text.remove_prefix(1u);
+            }
+            const bool nextItemIsAttachment =
+                itemIndex + 1u < content.items.size() &&
+                content.items[itemIndex + 1u].type !=
+                    skui::ClipboardItemType::Text;
+            if (nextItemIsAttachment && text.ends_with("\r\n")) {
+                text.remove_suffix(2u);
+            } else if (nextItemIsAttachment && !text.empty() &&
+                       (text.back() == '\r' || text.back() == '\n')) {
+                text.remove_suffix(1u);
+            }
+            if (!text.empty()) {
+                markup += makeComposerClipboardTextMarkup(text);
+                previousMarkupWasAttachment = false;
+            }
+            continue;
+        }
+        if (attachments.size() >= available) {
+            continue;
+        }
+
+        std::optional<std::filesystem::path> sourcePath =
+            clipboardSourcePath(item.source);
+        if (!sourcePath.has_value() &&
+            fallbackPathIndex < content.filePaths.size()) {
+            sourcePath = tryFilesystemPathFromUtf8(
+                content.filePaths[fallbackPathIndex++]);
+        }
+        if (!sourcePath.has_value()) {
+            if (!item.text.empty()) {
+                markup += makeComposerClipboardTextMarkup(item.text);
+                previousMarkupWasAttachment = false;
+            }
+            continue;
+        }
+
+        try {
+            std::optional<ComposerAttachment> attachment =
+                makeComposerAttachmentFromPath(sourcePath.value());
+            if (!attachment.has_value()) {
+                continue;
+            }
+            markup += makeComposerAttachmentMarkup(attachment.value());
+            attachments.push_back(std::move(attachment.value()));
+            previousMarkupWasAttachment = true;
+        } catch (const std::exception&) {
+        }
+    }
+    if (markup.empty() ||
+        !runtime.insertHtmlAtSelection(kComposerDocumentId, markup)) {
         return false;
     }
 
@@ -1197,6 +1385,70 @@ std::vector<relaydesk::storage::ChatMessagePart> makeComposerMessageParts(
     }
     appendComposerTextPart(parts, textParagraphs);
     return parts;
+}
+
+bool verifyOrderedComposerClipboardPaste(
+    const std::filesystem::path& imagePath,
+    const std::filesystem::path& filePath)
+{
+    std::string clipboardHtml = "<p>before</p><img src=\"file:///";
+    clipboardHtml += escapeHtml(filesystemPathToGenericUtf8(imagePath));
+    clipboardHtml += "\" alt=\"reference\"><p>middle</p>";
+    clipboardHtml += "<a href=\"file:///";
+    clipboardHtml += escapeHtml(filesystemPathToGenericUtf8(filePath));
+    clipboardHtml += "\" download=\"specification.txt\">specification.txt</a>";
+    clipboardHtml += "<p>after</p>";
+
+    skui::RuntimeOptions options;
+    options.readClipboardContent = [clipboardHtml] {
+        skui::ClipboardContent content;
+        content.html = clipboardHtml;
+        return content;
+    };
+    skui::Runtime runtime(options);
+    runtime.resize(600, 300, 1.0f);
+    constexpr std::string_view kComposerTestHtml = R"html(
+<html><body>
+  <div id="composer-document" contenteditable="true">
+    <p id="composer-text-initial">seed</p>
+  </div>
+</body></html>
+)html";
+    if (!runtime.loadDocumentFromString(kComposerTestHtml) ||
+        !runtime.setSelectionBaseAndExtent(
+            kComposerInitialParagraphId,
+            0u,
+            kComposerInitialParagraphId,
+            4u)) {
+        return false;
+    }
+    SkiaUiRuntimeBinding binding;
+    rememberComposerSelection(runtime, binding);
+
+    const skui::ClipboardContent content = runtime.readClipboardContent();
+    if (content.items.size() != 5u ||
+        content.items[0].type != skui::ClipboardItemType::Text ||
+        content.items[1].type != skui::ClipboardItemType::Image ||
+        content.items[2].type != skui::ClipboardItemType::Text ||
+        content.items[3].type != skui::ClipboardItemType::File ||
+        content.items[4].type != skui::ClipboardItemType::Text) {
+        return false;
+    }
+
+    if (!pasteComposerClipboardContent(runtime, binding, content)) {
+        return false;
+    }
+    const std::vector<relaydesk::storage::ChatMessagePart> parts =
+        makeComposerMessageParts(runtime, binding);
+    return parts.size() == 5u &&
+        parts[0].GetType() == relaydesk::storage::MessagePartType::Text &&
+        parts[0].GetText().value_or("") == "before" &&
+        parts[1].GetType() == relaydesk::storage::MessagePartType::Image &&
+        parts[2].GetType() == relaydesk::storage::MessagePartType::Text &&
+        parts[2].GetText().value_or("") == "middle" &&
+        parts[3].GetType() == relaydesk::storage::MessagePartType::File &&
+        parts[4].GetType() == relaydesk::storage::MessagePartType::Text &&
+        parts[4].GetText().value_or("") == "after";
 }
 
 bool writeClipboardText(std::string_view text)
@@ -1615,13 +1867,19 @@ std::string makeTransferMessageMarkup(
 
     std::string html;
     html.reserve(760);
-    html += R"(<div class="message-row message-row-transfer">)";
+    html += R"(<div class="message-row message-row-transfer" contenteditable="true" aria-readonly="true">)";
     html += R"(<div class="transfer-card)";
     if (warning) {
         html += " warning";
     }
-    html += '"';
+    html += R"(" contenteditable="false")";
     if (fileContextPath.has_value()) {
+        html += makeClipboardAttachmentAttributes(
+            part.GetType() == relaydesk::storage::MessagePartType::Folder
+                ? ComposerAttachmentKind::Folder
+                : ComposerAttachmentKind::File,
+            fileContextPath.value(),
+            title);
         html += R"( data-action="file-context:)";
         html += escapeHtml(filesystemPathToGenericUtf8(
             fileContextPath.value()));
@@ -1736,7 +1994,10 @@ std::optional<std::string> makeMessageImageCardMarkup(
 
     std::string html;
     html.reserve(560);
-    html += R"(<div class="message-image-card" data-action="image-context:)";
+    html += R"(<div class="message-image-card" contenteditable="false")";
+    html += makeClipboardAttachmentAttributes(
+        ComposerAttachmentKind::Image, asset->sourcePath, partDisplayText(part));
+    html += R"( data-action="image-context:)";
     html += escapeHtml(sourcePath);
     html += R"(" style="width: )";
     html += std::to_string(imageWidth + 12);
@@ -1778,7 +2039,9 @@ std::string makeImageMessageMarkup(
         html += escapeHtml(timeText);
         html += R"(</div>)";
     }
+    html += R"(<div class="message-selection-document" contenteditable="true" aria-readonly="true">)";
     html += imageCardMarkup.value();
+    html += R"(</div>)";
     if (!outgoing && !timeText.empty()) {
         html += R"(<div class="time-label">)";
         html += escapeHtml(timeText);
@@ -1821,8 +2084,14 @@ std::string makeDocumentTransferPartMarkup(
     if (warning) {
         html += " warning";
     }
-    html += '"';
+    html += R"(" contenteditable="false")";
     if (fileContextPath.has_value()) {
+        html += makeClipboardAttachmentAttributes(
+            part.GetType() == relaydesk::storage::MessagePartType::Folder
+                ? ComposerAttachmentKind::Folder
+                : ComposerAttachmentKind::File,
+            fileContextPath.value(),
+            title);
         html += R"( data-action="file-context:)";
         html += escapeHtml(filesystemPathToGenericUtf8(
             fileContextPath.value()));
@@ -1891,7 +2160,7 @@ std::string makeCompoundMessageMarkup(
     }
     html += R"(<div class="message-document )";
     html += outgoing ? "message-document-right" : "message-document-left";
-    html += R"(">)";
+    html += R"(" contenteditable="true" aria-readonly="true">)";
     html += documentMarkup;
     html += R"(</div>)";
     if (!outgoing && !timeText.empty()) {
@@ -2509,11 +2778,28 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
             }
             if (event.ctrlKey && event.key == kPasteKey) {
                 rememberComposerSelection(runtime, binding);
-                std::vector<std::filesystem::path> paths =
-                    binding.readClipboardAttachmentPaths
-                    ? binding.readClipboardAttachmentPaths()
-                    : relaydesk::platform::collectClipboardAttachmentPaths();
-                if (!addComposerAttachmentPaths(runtime, binding, paths)) {
+                if (binding.readClipboardAttachmentPaths) {
+                    if (addComposerAttachmentPaths(
+                            runtime,
+                            binding,
+                            binding.readClipboardAttachmentPaths())) {
+                        hideMessageContextMenu(runtime);
+                        applyComposerDocumentPanel(runtime, relayRuntime);
+                        return true;
+                    }
+                }
+                if (pasteComposerClipboardContent(
+                        runtime,
+                        binding,
+                        runtime.readClipboardContent())) {
+                    hideMessageContextMenu(runtime);
+                    applyComposerDocumentPanel(runtime, relayRuntime);
+                    return true;
+                }
+                if (!addComposerAttachmentPaths(
+                        runtime,
+                        binding,
+                        relaydesk::platform::collectClipboardAttachmentPaths())) {
                     return false;
                 }
                 hideMessageContextMenu(runtime);
@@ -3459,6 +3745,11 @@ int captureSkiaUiPng(const CaptureOptions& options)
                 std::string::npos ||
             compoundMessageMarkup.find("message-document") ==
                 std::string::npos ||
+            compoundMessageMarkup.find(
+                R"(contenteditable="true" aria-readonly="true")") ==
+                std::string::npos ||
+            compoundMessageMarkup.find(R"(contenteditable="false")") ==
+                std::string::npos ||
             firstMessageRow == std::string::npos ||
             compoundMessageMarkup.find(
                 "class=\"message-row ", firstMessageRow + 1u) !=
@@ -3498,15 +3789,28 @@ int captureSkiaUiPng(const CaptureOptions& options)
         binding.composerAttachments.push_back(std::move(imageAttachment));
         const std::string imageAttachmentMarkup =
             makeComposerAttachmentMarkup(binding.composerAttachments.front());
+        const std::size_t imageNamePosition = imageAttachmentMarkup.find(
+            binding.composerAttachments.front().displayName);
         if (imageAttachmentMarkup.find("composer-attachment-image") ==
+                std::string::npos ||
+            imageAttachmentMarkup.find(R"(contenteditable="false")") ==
+                std::string::npos ||
+            imageAttachmentMarkup.find(
+                R"(data-clipboard-kind="image")") ==
+                std::string::npos ||
+            imageAttachmentMarkup.find(
+                R"(data-clipboard-path=")") ==
                 std::string::npos ||
             imageAttachmentMarkup.find(R"(data-action="image-context:)") ==
                 std::string::npos ||
             imageAttachmentMarkup.find(
                 R"(style="width: 249px; height: 140px;")") ==
                 std::string::npos ||
+            imageNamePosition == std::string::npos ||
             imageAttachmentMarkup.find(
-                binding.composerAttachments.front().displayName) !=
+                binding.composerAttachments.front().displayName,
+                imageNamePosition +
+                    binding.composerAttachments.front().displayName.size()) !=
                 std::string::npos) {
             return 48;
         }
@@ -3538,10 +3842,20 @@ int captureSkiaUiPng(const CaptureOptions& options)
             makeComposerAttachmentMarkup(binding.composerAttachments.back());
         const std::size_t fullNamePosition =
             fileAttachmentMarkup.find(kLongCaptureFileName);
+        const std::size_t secondFullNamePosition =
+            fullNamePosition == std::string::npos
+            ? std::string::npos
+            : fileAttachmentMarkup.find(
+                  kLongCaptureFileName,
+                  fullNamePosition + kLongCaptureFileName.size());
         if (fullNamePosition == std::string::npos ||
             fileAttachmentMarkup.find(
+                R"(data-clipboard-kind="file")") ==
+                std::string::npos ||
+            secondFullNamePosition == std::string::npos ||
+            fileAttachmentMarkup.find(
                 kLongCaptureFileName,
-                fullNamePosition + kLongCaptureFileName.size()) !=
+                secondFullNamePosition + kLongCaptureFileName.size()) !=
                 std::string::npos) {
             return 49;
         }
@@ -3633,6 +3947,10 @@ int captureSkiaUiPng(const CaptureOptions& options)
             L"项目需求说明.txt";
         const std::filesystem::path pastedFolderPath =
             outputPath.parent_path() / "composer_attachment_fixture";
+        if (!verifyOrderedComposerClipboardPaste(
+                captureImagePath, pastedDocumentPath)) {
+            return 53;
+        }
         binding.readClipboardAttachmentPaths = [captureImagePath,
                                                 pastedDocumentPath,
                                                 pastedFolderPath] {
@@ -3935,6 +4253,47 @@ int captureSkiaUiPng(const CaptureOptions& options)
             return 11;
         }
         hideImagePreview(runtime);
+
+        const std::size_t selectionPixelIndex =
+            static_cast<std::size_t>(imageY) *
+                static_cast<std::size_t>(options.width) +
+            static_cast<std::size_t>(imageX);
+        const std::uint32_t imagePixelBeforeSelection =
+            interactionPixels[selectionPixelIndex];
+        skui::Event selectionMouseDown;
+        selectionMouseDown.type = skui::EventType::MouseDown;
+        selectionMouseDown.x = static_cast<float>(imageBounds->left + 10);
+        selectionMouseDown.y = static_cast<float>(imageBounds->top - 25);
+        selectionMouseDown.button = skui::MouseButton::Left;
+        (void)runtime.handleEvent(selectionMouseDown);
+        skui::Event selectionMouseMove = selectionMouseDown;
+        selectionMouseMove.type = skui::EventType::MouseMove;
+        selectionMouseMove.x = static_cast<float>(imageBounds->right + 50);
+        selectionMouseMove.y = static_cast<float>(imageBounds->bottom + 45);
+        (void)runtime.handleEvent(selectionMouseMove);
+        skui::Event selectionMouseUp = selectionMouseMove;
+        selectionMouseUp.type = skui::EventType::MouseUp;
+        (void)runtime.handleEvent(selectionMouseUp);
+        if (!runtime.renderToBgraPixels(interactionPixels.data(),
+                                        options.width,
+                                        options.height,
+                                        interactionRowBytes,
+                                        options.dpiScale)) {
+            return 16;
+        }
+        if (interactionPixels[selectionPixelIndex] ==
+            imagePixelBeforeSelection) {
+            return 16;
+        }
+        skui::Event clearSelectionMouseDown;
+        clearSelectionMouseDown.type = skui::EventType::MouseDown;
+        clearSelectionMouseDown.x = 800.0f;
+        clearSelectionMouseDown.y = 400.0f;
+        clearSelectionMouseDown.button = skui::MouseButton::Left;
+        (void)runtime.handleEvent(clearSelectionMouseDown);
+        skui::Event clearSelectionMouseUp = clearSelectionMouseDown;
+        clearSelectionMouseUp.type = skui::EventType::MouseUp;
+        (void)runtime.handleEvent(clearSelectionMouseUp);
     }
     if (options.testPeerSwitch) {
         binding.documentLoaded = true;
