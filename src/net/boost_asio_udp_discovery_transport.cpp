@@ -51,37 +51,43 @@ udp::endpoint makeUdpEndpoint(const std::string& address, std::uint16_t port)
 }
 
 #if defined(_WIN32)
-std::optional<std::string> makeDirectedBroadcastAddress(
+struct LocalIpv4Address {
+    std::uint32_t hostOrderAddress = 0;
+    std::uint8_t prefixLength = 0;
+    ULONG routeMetric = 0;
+    std::string text;
+};
+
+std::optional<LocalIpv4Address> makeLocalIpv4Address(
+    const IP_ADAPTER_ADDRESSES& adapter,
     const IP_ADAPTER_UNICAST_ADDRESS& unicastAddress)
 {
     if (unicastAddress.Address.lpSockaddr == nullptr
-        || unicastAddress.Address.lpSockaddr->sa_family != AF_INET
-        || unicastAddress.OnLinkPrefixLength >= 32) {
+        || unicastAddress.Address.lpSockaddr->sa_family != AF_INET) {
         return std::nullopt;
     }
 
     const auto* socketAddress =
         reinterpret_cast<const SOCKADDR_IN*>(unicastAddress.Address.lpSockaddr);
-    const std::uint32_t localAddress =
+    const std::uint32_t hostOrderAddress =
         ntohl(socketAddress->sin_addr.S_un.S_addr);
-    const std::uint32_t networkMask =
-        unicastAddress.OnLinkPrefixLength == 0
-            ? 0
-            : 0xFFFFFFFFu << (32 - unicastAddress.OnLinkPrefixLength);
-    IN_ADDR broadcastAddress{};
-    broadcastAddress.S_un.S_addr = htonl(localAddress | ~networkMask);
 
     char addressText[INET_ADDRSTRLEN]{};
     if (InetNtopA(AF_INET,
-                  &broadcastAddress,
+                  &socketAddress->sin_addr,
                   addressText,
                   static_cast<DWORD>(std::size(addressText))) == nullptr) {
         return std::nullopt;
     }
-    return std::string(addressText);
+    return LocalIpv4Address{
+        hostOrderAddress,
+        unicastAddress.OnLinkPrefixLength,
+        adapter.Ipv4Metric,
+        addressText,
+    };
 }
 
-std::vector<std::string> findDirectedBroadcastAddresses()
+std::vector<LocalIpv4Address> findActiveLocalIpv4Addresses()
 {
     ULONG bufferSize = 15 * 1024;
     std::vector<unsigned char> buffer(bufferSize);
@@ -108,7 +114,7 @@ std::vector<std::string> findDirectedBroadcastAddresses()
         return {};
     }
 
-    std::vector<std::string> addresses;
+    std::vector<LocalIpv4Address> addresses;
     for (auto* adapter = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
          adapter != nullptr;
          adapter = adapter->Next) {
@@ -120,16 +126,64 @@ std::vector<std::string> findDirectedBroadcastAddresses()
         for (auto* unicast = adapter->FirstUnicastAddress;
              unicast != nullptr;
              unicast = unicast->Next) {
-            const auto broadcastAddress = makeDirectedBroadcastAddress(*unicast);
-            if (broadcastAddress.has_value()
-                && std::find(addresses.begin(),
-                             addresses.end(),
-                             broadcastAddress.value()) == addresses.end()) {
-                addresses.push_back(broadcastAddress.value());
+            const auto address = makeLocalIpv4Address(*adapter, *unicast);
+            if (address.has_value()
+                && std::none_of(
+                    addresses.begin(),
+                    addresses.end(),
+                    [&address](const LocalIpv4Address& existing) {
+                        return existing.text == address->text;
+                    })) {
+                addresses.push_back(address.value());
             }
         }
     }
 
+    std::stable_sort(
+        addresses.begin(),
+        addresses.end(),
+        [](const LocalIpv4Address& left, const LocalIpv4Address& right) {
+            return left.routeMetric < right.routeMetric;
+        });
+
+    return addresses;
+}
+
+std::optional<std::string> makeDirectedBroadcastAddress(
+    const LocalIpv4Address& localAddress)
+{
+    if (localAddress.prefixLength >= 32) {
+        return std::nullopt;
+    }
+    const std::uint32_t networkMask = localAddress.prefixLength == 0
+        ? 0
+        : 0xFFFFFFFFu << (32 - localAddress.prefixLength);
+    IN_ADDR broadcastAddress{};
+    broadcastAddress.S_un.S_addr =
+        htonl(localAddress.hostOrderAddress | ~networkMask);
+
+    char addressText[INET_ADDRSTRLEN]{};
+    if (InetNtopA(AF_INET,
+                  &broadcastAddress,
+                  addressText,
+                  static_cast<DWORD>(std::size(addressText))) == nullptr) {
+        return std::nullopt;
+    }
+    return std::string(addressText);
+}
+
+std::vector<std::string> findDirectedBroadcastAddresses()
+{
+    std::vector<std::string> addresses;
+    for (const auto& localAddress : findActiveLocalIpv4Addresses()) {
+        const auto broadcastAddress = makeDirectedBroadcastAddress(localAddress);
+        if (broadcastAddress.has_value()
+            && std::find(addresses.begin(),
+                         addresses.end(),
+                         broadcastAddress.value()) == addresses.end()) {
+            addresses.push_back(broadcastAddress.value());
+        }
+    }
     return addresses;
 }
 #endif
@@ -161,6 +215,18 @@ std::string joinAddresses(const std::vector<std::string>& addresses)
 }
 
 } // namespace
+
+std::optional<std::string> findPreferredLocalIpv4Address()
+{
+#if defined(_WIN32)
+    const std::vector<LocalIpv4Address> addresses =
+        findActiveLocalIpv4Addresses();
+    if (!addresses.empty()) {
+        return addresses.front().text;
+    }
+#endif
+    return std::nullopt;
+}
 
 UdpDiscoveryPacket::UdpDiscoveryPacket(std::string payload,
                                        std::string observedAddress,

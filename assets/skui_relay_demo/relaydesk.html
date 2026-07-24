@@ -1277,6 +1277,638 @@
     .send-button:hover {
       background-color: #0bb1ac;
     }
+    .settings-active {
+      color: #009696;
+    }
+    .settings-page {
+      position: absolute;
+      display: none;
+      left: 0px;
+      top: 0px;
+      right: 0px;
+      bottom: 0px;
+      z-index: 80;
+      background-color: #f8fafc;
+    }
+    .settings-rail {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      bottom: 0px;
+      width: 238px;
+      background-color: #fefeff;
+      border-color: #d4d9de;
+      border-width: 0px 1px 0px 0px;
+      border-style: solid;
+    }
+    .settings-rail-title {
+      position: absolute;
+      left: 24px;
+      top: 24px;
+      right: 24px;
+      height: 30px;
+      color: #14181d;
+      font-size: 22px;
+      font-weight: bold;
+    }
+    .settings-rail-detail {
+      position: absolute;
+      left: 24px;
+      top: 58px;
+      right: 24px;
+      height: 22px;
+      color: #5c636e;
+      font-size: 13px;
+    }
+    .settings-category {
+      position: absolute;
+      left: 14px;
+      right: 14px;
+      height: 58px;
+      border-radius: 7px;
+      color: #5c636e;
+    }
+    .settings-category:hover {
+      background-color: #f4f8f8;
+    }
+    .settings-category-active {
+      background-color: #dbf6f5;
+      color: #14181d;
+    }
+    .settings-category-mark {
+      position: absolute;
+      display: none;
+      left: 0px;
+      top: 10px;
+      width: 3px;
+      height: 38px;
+      border-radius: 2px;
+      background-color: #009696;
+    }
+    .settings-category-active .settings-category-mark {
+      display: block;
+    }
+    .settings-category-0 { top: 108px; }
+    .settings-category-1 { top: 174px; }
+    .settings-category-2 { top: 240px; }
+    .settings-category-3 { top: 306px; }
+    .settings-category-4 { top: 372px; }
+    .settings-category-5 { top: 438px; }
+    .settings-category-icon {
+      position: absolute;
+      display: flex;
+      left: 12px;
+      top: 13px;
+      width: 32px;
+      height: 32px;
+      align-items: center;
+      justify-content: center;
+      color: #5c636e;
+      font-size: 17px;
+      font-weight: bold;
+    }
+    .settings-category-active .settings-category-icon {
+      color: #009696;
+    }
+    .settings-category-title {
+      position: absolute;
+      left: 52px;
+      top: 9px;
+      right: 16px;
+      height: 22px;
+      font-size: 14px;
+      font-weight: bold;
+    }
+    .settings-category-subtitle {
+      position: absolute;
+      left: 52px;
+      top: 32px;
+      right: 16px;
+      height: 20px;
+      color: #8f969e;
+      font-size: 12px;
+    }
+    .settings-content-panel {
+      position: absolute;
+      left: 239px;
+      top: 0px;
+      right: 0px;
+      bottom: 0px;
+      background-color: #f8fafc;
+    }
+    .settings-header-title {
+      position: absolute;
+      left: 34px;
+      top: 20px;
+      right: 96px;
+      height: 28px;
+      color: #14181d;
+      font-size: 20px;
+      font-weight: bold;
+    }
+    .settings-header-detail {
+      position: absolute;
+      left: 34px;
+      top: 50px;
+      right: 96px;
+      height: 22px;
+      color: #5c636e;
+      font-size: 13px;
+    }
+    .settings-close {
+      position: absolute;
+      display: flex;
+      right: 16px;
+      top: 16px;
+      width: 42px;
+      height: 42px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 21px;
+      color: #14181d;
+      font-size: 27px;
+    }
+    .settings-close:hover {
+      background-color: #edf5f5;
+    }
+    .settings-content-line {
+      position: absolute;
+      left: 0px;
+      top: 78px;
+      right: 0px;
+      height: 1px;
+      background-color: #d4d9de;
+    }
+    .settings-content {
+      position: absolute;
+      display: none;
+      left: 34px;
+      top: 100px;
+      right: 34px;
+      bottom: 20px;
+      color: #14181d;
+    }
+    .settings-page-title {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      right: 0px;
+      height: 28px;
+      font-size: 19px;
+      font-weight: bold;
+    }
+    .settings-page-detail {
+      position: absolute;
+      left: 0px;
+      top: 32px;
+      right: 0px;
+      height: 22px;
+      color: #5c636e;
+      font-size: 13px;
+    }
+    .settings-row-label {
+      position: absolute;
+      left: 0px;
+      width: 180px;
+      height: 24px;
+      color: #14181d;
+      font-size: 14px;
+      font-weight: bold;
+    }
+    .settings-row-detail {
+      position: absolute;
+      left: 0px;
+      width: 180px;
+      height: 22px;
+      color: #5c636e;
+      font-size: 12px;
+      font-weight: normal;
+    }
+    .settings-field {
+      position: absolute;
+      left: 206px;
+      width: 300px;
+      height: 40px;
+      box-sizing: border-box;
+      padding-left: 12px;
+      padding-right: 12px;
+      border-color: #d4d9de;
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 7px;
+      background-color: #ffffff;
+      color: #14181d;
+      font-family: "Microsoft YaHei UI";
+      font-size: 14px;
+    }
+    .settings-field:focus {
+      border-color: #009696;
+      background-color: #fbfffe;
+    }
+    .settings-button {
+      position: absolute;
+      display: flex;
+      height: 38px;
+      align-items: center;
+      justify-content: center;
+      box-sizing: border-box;
+      border-color: #d4d9de;
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 7px;
+      background-color: #ffffff;
+      color: #14181d;
+      font-size: 14px;
+      font-weight: bold;
+    }
+    .settings-button:hover {
+      background-color: #fbfffe;
+    }
+    .settings-button-primary {
+      border-color: #009696;
+      background-color: #009696;
+      color: #ffffff;
+    }
+    .settings-button-primary:hover {
+      border-color: #00abaa;
+      background-color: #00abaa;
+    }
+    .settings-profile-save {
+      left: 518px;
+      top: 87px;
+      width: 76px;
+    }
+    .settings-profile-status {
+      position: absolute;
+      display: none;
+      left: 206px;
+      top: 136px;
+      right: 0px;
+      height: 22px;
+      color: #5c636e;
+      font-size: 12px;
+    }
+    .settings-profile-separator {
+      position: absolute;
+      left: 0px;
+      top: 164px;
+      right: 0px;
+      height: 1px;
+      background-color: #d4d9de;
+    }
+    .settings-profile-avatar {
+      position: absolute;
+      display: flex;
+      left: 206px;
+      top: 188px;
+      width: 58px;
+      height: 58px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 10px;
+      background-color: #0aa39e;
+      color: #ffffff;
+      font-size: 20px;
+      font-weight: bold;
+    }
+    .settings-profile-avatar-button {
+      left: 282px;
+      top: 198px;
+      width: 116px;
+      height: 36px;
+    }
+    .settings-toggle {
+      position: absolute;
+      display: flex;
+      left: 206px;
+      width: 240px;
+      height: 34px;
+      align-items: center;
+      color: #14181d;
+      font-size: 14px;
+    }
+    .settings-toggle-track {
+      position: absolute;
+      left: 0px;
+      top: 5px;
+      width: 48px;
+      height: 24px;
+      border-radius: 12px;
+      background-color: #d1d9de;
+    }
+    .settings-toggle-knob {
+      position: absolute;
+      left: 3px;
+      top: 3px;
+      width: 18px;
+      height: 18px;
+      border-radius: 9px;
+      background-color: #ffffff;
+    }
+    .settings-toggle-label {
+      position: absolute;
+      left: 62px;
+      top: 6px;
+      right: 0px;
+      height: 22px;
+    }
+    .settings-toggle-checked .settings-toggle-track {
+      background-color: #009696;
+    }
+    .settings-toggle-checked .settings-toggle-knob {
+      left: 27px;
+    }
+    .settings-font-button {
+      top: 162px;
+      width: 38px;
+      height: 36px;
+    }
+    .settings-font-minus { left: 206px; }
+    .settings-font-plus { left: 348px; }
+    .settings-font-value {
+      position: absolute;
+      left: 254px;
+      top: 166px;
+      width: 84px;
+      height: 28px;
+      text-align: center;
+      color: #14181d;
+      font-size: 15px;
+      font-weight: bold;
+    }
+    .settings-font-track {
+      position: absolute;
+      left: 206px;
+      top: 224px;
+      width: 300px;
+      height: 5px;
+      border-radius: 3px;
+      background-color: #d9e2e4;
+    }
+    .settings-font-fill {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      width: 20%;
+      height: 5px;
+      border-radius: 3px;
+      background-color: #009696;
+    }
+    .settings-font-thumb {
+      position: absolute;
+      left: 20%;
+      top: -5px;
+      width: 15px;
+      height: 15px;
+      margin-left: -6px;
+      border-radius: 8px;
+      background-color: #009696;
+    }
+    .settings-font-preview {
+      position: absolute;
+      left: 0px;
+      top: 268px;
+      right: 0px;
+      height: 92px;
+      border-color: #d4d9de;
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 7px;
+      background-color: #ffffff;
+    }
+    .settings-font-preview-title {
+      position: absolute;
+      left: 18px;
+      top: 14px;
+      right: 18px;
+      height: 24px;
+      color: #5c636e;
+      font-size: 13px;
+    }
+    .settings-font-preview-text {
+      position: absolute;
+      left: 18px;
+      top: 44px;
+      right: 18px;
+      height: 30px;
+      color: #14181d;
+      font-size: 14px;
+      font-weight: bold;
+    }
+    .settings-dropdown {
+      position: absolute;
+      left: 206px;
+      top: 86px;
+      width: 260px;
+      height: 40px;
+      z-index: 90;
+    }
+    .settings-dropdown-field {
+      position: absolute;
+      display: flex;
+      left: 0px;
+      top: 0px;
+      width: 260px;
+      height: 40px;
+      align-items: center;
+      box-sizing: border-box;
+      padding-left: 12px;
+      padding-right: 36px;
+      border-color: #d4d9de;
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 7px;
+      background-color: #ffffff;
+      color: #14181d;
+      font-size: 14px;
+    }
+    .settings-dropdown-arrow {
+      position: absolute;
+      display: flex;
+      right: 10px;
+      top: 7px;
+      width: 24px;
+      height: 24px;
+      align-items: center;
+      justify-content: center;
+      color: #5c636e;
+    }
+    .settings-dropdown-options {
+      position: absolute;
+      display: none;
+      left: 0px;
+      top: 44px;
+      width: 260px;
+      height: 68px;
+      box-sizing: border-box;
+      border-color: #d4d9de;
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 7px;
+      background-color: #ffffff;
+    }
+    .settings-dropdown-option {
+      position: absolute;
+      display: flex;
+      left: 0px;
+      width: 258px;
+      height: 34px;
+      align-items: center;
+      box-sizing: border-box;
+      padding-left: 12px;
+      color: #14181d;
+      font-size: 14px;
+    }
+    .settings-dropdown-option:hover,
+    .settings-dropdown-option-selected {
+      background-color: #dbf6f5;
+    }
+    .settings-send-note,
+    .settings-shortcut-note,
+    .settings-update-version,
+    .settings-update-status,
+    .settings-startup-status {
+      position: absolute;
+      left: 206px;
+      right: 0px;
+      height: 22px;
+      color: #5c636e;
+      font-size: 12px;
+    }
+    .settings-startup-status {
+      display: none;
+      color: #d1301f;
+    }
+    .screen.dark {
+      background-color: #0e1114;
+      color: #e8edf1;
+    }
+    .screen.dark .sidebar,
+    .screen.dark .main,
+    .screen.dark .chat-scroll,
+    .screen.dark .chat-content,
+    .screen.dark .settings-rail {
+      background-color: #13171a;
+      border-color: #2e373c;
+    }
+    .screen.dark .profile-name,
+    .screen.dark .section-title,
+    .screen.dark .device-section-title,
+    .screen.dark .device-name,
+    .screen.dark .header-title,
+    .screen.dark .toolbar-icon,
+    .screen.dark .compose-icon,
+    .screen.dark .settings-rail-title,
+    .screen.dark .settings-header-title,
+    .screen.dark .settings-close,
+    .screen.dark .settings-content,
+    .screen.dark .settings-page-title,
+    .screen.dark .settings-row-label,
+    .screen.dark .settings-font-value,
+    .screen.dark .settings-font-preview-text,
+    .screen.dark .settings-toggle,
+    .screen.dark .settings-dropdown-field,
+    .screen.dark .settings-dropdown-option {
+      color: #e8edf1;
+    }
+    .screen.dark .search-icon,
+    .screen.dark .device-icon,
+    .screen.dark .header-icon,
+    .screen.dark .settings {
+      color: #e8edf1;
+    }
+    .screen.dark .settings-active,
+    .screen.dark .settings-category-active .settings-category-icon {
+      color: #14b3b0;
+    }
+    .screen.dark .settings-category {
+      color: #adb8c1;
+    }
+    .screen.dark .settings-category-active {
+      color: #e8edf1;
+    }
+    .screen.dark .profile-sub,
+    .screen.dark .device-ip,
+    .screen.dark .header-ip,
+    .screen.dark .settings-rail-detail,
+    .screen.dark .settings-header-detail,
+    .screen.dark .settings-page-detail,
+    .screen.dark .settings-row-detail,
+    .screen.dark .settings-font-preview-title,
+    .screen.dark .settings-send-note,
+    .screen.dark .settings-shortcut-note,
+    .screen.dark .settings-update-version,
+    .screen.dark .settings-update-status,
+    .screen.dark .tab {
+      color: #adb8c1;
+    }
+    .screen.dark .search-box,
+    .screen.dark .tabbar,
+    .screen.dark .composer-wrap,
+    .screen.dark .settings-field,
+    .screen.dark .settings-button,
+    .screen.dark .settings-font-preview,
+    .screen.dark .settings-dropdown-field,
+    .screen.dark .settings-dropdown-options,
+    .screen.dark .message-context-menu,
+    .screen.dark .app-update-panel {
+      border-color: #2e373c;
+      background-color: #181d21;
+      color: #e8edf1;
+    }
+    .screen.dark .settings-page,
+    .screen.dark .settings-content-panel {
+      background-color: #0e1114;
+    }
+    .screen.dark .device:hover,
+    .screen.dark .settings-category:hover,
+    .screen.dark .tab:hover {
+      background-color: #1b2528;
+      border-color: #285257;
+    }
+    .screen.dark .device-selected,
+    .screen.dark .settings-category-active,
+    .screen.dark .settings-dropdown-option-selected {
+      background-color: #0f3e40;
+      border-color: #207176;
+    }
+    .screen.dark .timeline-line,
+    .screen.dark .settings-content-line,
+    .screen.dark .settings-profile-separator {
+      background-color: #2e373c;
+    }
+    .screen.dark .bubble-left,
+    .screen.dark .message-document-left,
+    .screen.dark .transfer-card,
+    .screen.dark .composer-attachment-card {
+      border-color: #2e373c;
+      background-color: #181d21;
+      color: #e8edf1;
+    }
+    .screen.dark .bubble-right,
+    .screen.dark .message-document-right {
+      border-color: #285d60;
+      background-color: #0f3e40;
+      color: #e8edf1;
+    }
+    .screen.dark .file-name,
+    .screen.dark .message-document-text,
+    .screen.dark .composer-attachment-name,
+    .screen.dark .app-update-title,
+    .screen.dark .app-update-file-name,
+    .screen.dark .app-update-version {
+      color: #e8edf1;
+    }
+    .screen.dark .settings-button-primary {
+      border-color: #14b3b0;
+      background-color: #14b3b0;
+      color: #ffffff;
+    }
+    .screen.dark .tab-active,
+    .screen.dark .tab-active:hover {
+      background-color: #0aa39e;
+      color: #ffffff;
+    }
     @media (max-width: 1599px) {
       .main {
         right: 0px;
@@ -1395,12 +2027,12 @@
   </style>
 </head>
 <body>
-  <div class="screen">
+  <div id="screen" class="screen">
     <div class="sidebar"></div>
-    <div class="profile-avatar">林</div>
+    <div id="profile-avatar" class="profile-avatar">林</div>
     <div id="profile-name" class="profile-name">RelayDesk</div>
     <div id="profile-sub" class="profile-sub">本机</div>
-    <svg class="settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <svg id="settings-button" class="settings" data-action="open-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
       <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.2a2 2 0 0 1-1 1.7l-.4.2a2 2 0 0 1-2 0l-.2-.1a2 2 0 0 0-2.7.7l-.2.4a2 2 0 0 0 .7 2.7l.2.1a2 2 0 0 1 1 1.7v.6a2 2 0 0 1-1 1.7l-.2.1a2 2 0 0 0-.7 2.7l.2.4a2 2 0 0 0 2.7.7l.2-.1a2 2 0 0 1 2 0l.4.2a2 2 0 0 1 1 1.7v.2a2 2 0 0 0 2 2h.4a2 2 0 0 0 2-2v-.2a2 2 0 0 1 1-1.7l.4-.2a2 2 0 0 1 2 0l.2.1a2 2 0 0 0 2.7-.7l.2-.4a2 2 0 0 0-.7-2.7l-.2-.1a2 2 0 0 1-1-1.7v-.6a2 2 0 0 1 1-1.7l.2-.1a2 2 0 0 0 .7-2.7l-.2-.4a2 2 0 0 0-2.7-.7l-.2.1a2 2 0 0 1-2 0l-.4-.2a2 2 0 0 1-1-1.7V4a2 2 0 0 0-2-2Z"></path>
       <circle cx="12" cy="12" r="3"></circle>
     </svg>
@@ -1465,6 +2097,132 @@
           <div id="file-context-reveal" class="message-context-item file-context-item" data-action="reveal-file-context">定位文件</div>
           <div id="file-context-copy" class="message-context-item file-context-item file-context-copy" data-action="copy-file-context">复制文件</div>
           <div id="file-context-save" class="message-context-item file-context-item file-context-save" data-action="save-file-context">另存为文件</div>
+      </div>
+      <div id="settings-page" class="settings-page">
+        <div id="settings-rail" class="settings-rail">
+          <div class="settings-rail-title">设置</div>
+          <div class="settings-rail-detail">界面占位</div>
+          <div id="settings-category-0" class="settings-category settings-category-active settings-category-0" data-action="settings-category:0">
+            <div class="settings-category-mark"></div><svg class="settings-category-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="3"></circle><path d="M5.5 20c.8-4 3-6 6.5-6s5.7 2 6.5 6"></path></svg>
+            <div class="settings-category-title">个人资料</div><div class="settings-category-subtitle">用户名与头像</div>
+          </div>
+          <div id="settings-category-1" class="settings-category settings-category-1" data-action="settings-category:1">
+            <div class="settings-category-mark"></div><svg class="settings-category-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"></path></svg>
+            <div class="settings-category-title">外观</div><div class="settings-category-subtitle">字体大小</div>
+          </div>
+          <div id="settings-category-2" class="settings-category settings-category-2" data-action="settings-category:2">
+            <div class="settings-category-mark"></div><svg class="settings-category-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m4 4 17 8-17 8 3-8-3-8Z"></path><path d="M7 12h14"></path></svg>
+            <div class="settings-category-title">发送</div><div class="settings-category-subtitle">回车发送方式</div>
+          </div>
+          <div id="settings-category-3" class="settings-category settings-category-3" data-action="settings-category:3">
+            <div class="settings-category-mark"></div><svg class="settings-category-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 3H4a1 1 0 0 0-1 1v4M16 3h4a1 1 0 0 1 1 1v4M8 21H4a1 1 0 0 1-1-1v-4M16 21h4a1 1 0 0 0 1-1v-4"></path><rect x="7" y="8" width="10" height="8" rx="1"></rect></svg>
+            <div class="settings-category-title">截图</div><div class="settings-category-subtitle">自定义快捷键</div>
+          </div>
+          <div id="settings-category-4" class="settings-category settings-category-4" data-action="settings-category:4">
+            <div class="settings-category-mark"></div><svg class="settings-category-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"></path><path d="M10 21h4"></path></svg>
+            <div class="settings-category-title">通知</div><div class="settings-category-subtitle">提示音与自启</div>
+          </div>
+          <div id="settings-category-5" class="settings-category settings-category-5" data-action="settings-category:5">
+            <div class="settings-category-mark"></div><svg class="settings-category-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12"></path><path d="m7 8 5-5 5 5"></path><path d="M5 15v5h14v-5"></path></svg>
+            <div class="settings-category-title">更新</div><div class="settings-category-subtitle">检查新版本</div>
+          </div>
+        </div>
+        <div id="settings-content-panel" class="settings-content-panel">
+          <div id="settings-header-title" class="settings-header-title">个人资料</div>
+          <div class="settings-header-detail">设置项会按当前页面的接入状态保存</div>
+          <div class="settings-close" data-action="close-settings">×</div>
+          <div class="settings-content-line"></div>
+
+          <div id="settings-content-0" class="settings-content" style="display: block;">
+            <div class="settings-page-title">个人资料</div>
+            <div class="settings-page-detail">用户名会保存到本机身份，并用于局域网心跳广播。</div>
+            <div class="settings-row-label" style="top: 86px;">用户名</div>
+            <div class="settings-row-detail" style="top: 111px;">保存后立即更新本机显示名。</div>
+            <input id="settings-profile-name-input" class="settings-field" style="top: 86px;" placeholder="输入用户名">
+            <div class="settings-button settings-button-primary settings-profile-save" data-action="settings-profile-save">保存</div>
+            <div id="settings-profile-status" class="settings-profile-status"></div>
+            <div class="settings-profile-separator"></div>
+            <div class="settings-row-label" style="top: 190px;">头像</div>
+            <div class="settings-row-detail" style="top: 215px;">头像修改暂未接入。</div>
+            <div id="settings-profile-avatar" class="settings-profile-avatar">林</div>
+            <div class="settings-button settings-profile-avatar-button" data-action="settings-avatar-change">更换头像</div>
+          </div>
+
+          <div id="settings-content-1" class="settings-content">
+            <div class="settings-page-title">外观</div>
+            <div class="settings-page-detail">暗色模式会立即应用并保存到本机配置。</div>
+            <div class="settings-row-label" style="top: 86px;">暗色模式</div>
+            <div class="settings-row-detail" style="top: 111px;">使用深色背景与低对比边框。</div>
+            <div id="settings-dark-toggle" class="settings-toggle" style="top: 89px;" data-action="settings-dark-toggle">
+              <div class="settings-toggle-track"><div class="settings-toggle-knob"></div></div>
+              <div id="settings-dark-label" class="settings-toggle-label">已关闭</div>
+            </div>
+            <div class="settings-row-label" style="top: 162px;">字体大小</div>
+            <div class="settings-row-detail" style="top: 187px;">范围先固定在 12 到 22。</div>
+            <div class="settings-button settings-font-button settings-font-minus" data-action="settings-font-minus">−</div>
+            <div id="settings-font-value" class="settings-font-value">14 px</div>
+            <div class="settings-button settings-font-button settings-font-plus" data-action="settings-font-plus">+</div>
+            <div class="settings-font-track"><div id="settings-font-fill" class="settings-font-fill"></div><div id="settings-font-thumb" class="settings-font-thumb"></div></div>
+            <div class="settings-font-preview">
+              <div class="settings-font-preview-title">预览文本</div>
+              <div id="settings-font-preview-text" class="settings-font-preview-text">RelayDesk 消息字体大小预览</div>
+            </div>
+          </div>
+
+          <div id="settings-content-2" class="settings-content">
+            <div class="settings-page-title">发送消息</div>
+            <div class="settings-page-detail">发送快捷键只提供 Enter 和 Ctrl + Enter 两种选择。</div>
+            <div class="settings-row-label" style="top: 86px;">发送方式</div>
+            <div class="settings-row-detail" style="top: 111px;">不可完全自定义。</div>
+            <div class="settings-dropdown">
+              <div class="settings-dropdown-field" data-action="settings-send-mode-toggle">
+                <div id="settings-send-mode-value">Enter</div><div class="settings-dropdown-arrow">⌄</div>
+              </div>
+              <div id="settings-send-options" class="settings-dropdown-options">
+                <div id="settings-send-option-enter" class="settings-dropdown-option" style="top: 0px;" data-action="settings-send-mode-enter">Enter</div>
+                <div id="settings-send-option-ctrl-enter" class="settings-dropdown-option" style="top: 34px;" data-action="settings-send-mode-ctrl-enter">Ctrl + Enter</div>
+              </div>
+            </div>
+            <div id="settings-send-mode-note" class="settings-send-note" style="top: 140px;">当前占位选择：Enter 发送</div>
+          </div>
+
+          <div id="settings-content-3" class="settings-content">
+            <div class="settings-page-title">截图</div>
+            <div class="settings-page-detail">截图快捷键保留完全自定义入口，包括组合键。</div>
+            <div class="settings-row-label" style="top: 86px;">快捷键</div>
+            <div class="settings-row-detail" style="top: 111px;">这里先用文本框占位。</div>
+            <input id="settings-shortcut-input" class="settings-field" style="top: 86px; width: 320px;" placeholder="例如 Ctrl + Shift + A">
+            <div class="settings-shortcut-note" style="top: 140px;">后续需要接入真实按键录入和冲突检测。</div>
+          </div>
+
+          <div id="settings-content-4" class="settings-content">
+            <div class="settings-page-title">通知</div>
+            <div class="settings-page-detail">管理提示音和系统启动行为。</div>
+            <div class="settings-row-label" style="top: 86px;">消息通知音</div>
+            <div class="settings-row-detail" style="top: 111px;">收到消息时播放提示音。</div>
+            <div id="settings-sound-toggle" class="settings-toggle settings-toggle-checked" style="top: 91px;" data-action="settings-sound-toggle">
+              <div class="settings-toggle-track"><div class="settings-toggle-knob"></div></div>
+              <div id="settings-sound-label" class="settings-toggle-label">已启用</div>
+            </div>
+            <div class="settings-row-label" style="top: 160px;">开机自启</div>
+            <div class="settings-row-detail" style="top: 185px;">登录 Windows 后自动启动 RelayDesk。</div>
+            <div id="settings-startup-toggle" class="settings-toggle settings-toggle-checked" style="top: 165px;" data-action="settings-startup-toggle">
+              <div class="settings-toggle-track"><div class="settings-toggle-knob"></div></div>
+              <div id="settings-startup-label" class="settings-toggle-label">已启用</div>
+            </div>
+            <div id="settings-startup-status" class="settings-startup-status" style="top: 202px;"></div>
+          </div>
+
+          <div id="settings-content-5" class="settings-content">
+            <div class="settings-page-title">检查更新</div>
+            <div class="settings-page-detail">先预留更新入口，不发起网络请求。</div>
+            <div class="settings-row-label" style="top: 86px;">软件更新</div>
+            <div class="settings-row-detail" style="top: 111px;">后续接入版本检查。</div>
+            <div class="settings-button settings-button-primary" style="left: 206px; top: 86px; width: 116px;" data-action="settings-check-update">检查更新</div>
+            <div id="settings-update-version" class="settings-update-version" style="top: 138px;">当前版本号：0</div>
+            <div id="settings-update-status" class="settings-update-status" style="top: 162px;">尚未检查更新</div>
+          </div>
+        </div>
       </div>
       <div id="image-preview-overlay" class="image-preview-overlay">
           <img id="image-preview-image" class="image-preview-image" src="">

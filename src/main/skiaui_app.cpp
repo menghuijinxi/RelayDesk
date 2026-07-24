@@ -47,8 +47,10 @@
 #include "main/image_attachment_store.h"
 #include "main/skiaui_background.h"
 #include "platform/attachment_input.h"
+#include "platform/startup_launch.h"
 #include "platform/text_encoding.h"
 #include "storage/app_paths.h"
+#include "storage/ui_preferences.h"
 
 namespace {
 
@@ -163,6 +165,9 @@ struct CaptureOptions {
     bool testAppUpdateAvailable = false;
     bool testAppUpdateDownloading = false;
     bool testAppUpdateFailed = false;
+    bool testSettings = false;
+    bool testSettingsDark = false;
+    bool testDarkChatTabs = false;
 };
 
 struct SkiaUiRuntimeBinding {
@@ -176,6 +181,22 @@ struct SkiaUiRuntimeBinding {
     bool chatInitialized = false;
     bool chatHistoryPrependPending = false;
     bool suppressChatHistoryPagination = false;
+    bool settingsInitialized = false;
+    bool settingsOpen = false;
+    bool settingsProfileStatusError = false;
+    bool darkModeEnabled = false;
+    bool notificationSoundEnabled = true;
+    bool launchAtStartupEnabled = true;
+    bool sendModeDropdownOpen = false;
+    int settingsCategory = 0;
+    int settingsFontSize = 14;
+    int sendMode = 0;
+    std::string settingsProfileName;
+    std::string settingsSavedProfileName;
+    std::string settingsProfileStatus;
+    std::string screenshotShortcut = "Ctrl + Shift + A";
+    std::string startupStatus;
+    std::string updateStatus = "尚未检查更新";
     std::function<void()> loadMoreSelectedPeerMessages;
     std::function<std::vector<std::filesystem::path>()>
         readClipboardAttachmentPaths;
@@ -404,6 +425,79 @@ std::string peerAddressText(const relaydesk::runtime::PeerListItem& peer)
         return peer.GetAddress();
     }
     return "未知地址";
+}
+
+bool loadStoredDarkModeEnabled()
+{
+    try {
+        const auto paths = relaydesk::storage::createAppPaths();
+        return relaydesk::storage::loadDarkModeEnabled(paths);
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+bool saveStoredDarkModeEnabled(bool enabled)
+{
+    try {
+        const auto paths = relaydesk::storage::createAppPaths();
+        relaydesk::storage::saveDarkModeEnabled(paths, enabled);
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+bool loadStoredLaunchAtStartupEnabled()
+{
+    try {
+        const auto paths = relaydesk::storage::createAppPaths();
+        return relaydesk::storage::loadLaunchAtStartupEnabled(paths);
+    } catch (const std::exception&) {
+        return true;
+    }
+}
+
+bool saveStoredLaunchAtStartupEnabled(bool enabled)
+{
+    try {
+        const auto paths = relaydesk::storage::createAppPaths();
+        relaydesk::storage::saveLaunchAtStartupEnabled(paths, enabled);
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+bool applyLaunchAtStartupEnabled(bool enabled)
+{
+    try {
+        const auto paths = relaydesk::storage::createAppPaths();
+        relaydesk::platform::setStartupLaunchEnabled(
+            paths.GetExecutablePath(),
+            enabled);
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+std::string firstUtf8Character(std::string_view text)
+{
+    if (text.empty()) {
+        return "R";
+    }
+
+    const unsigned char first = static_cast<unsigned char>(text.front());
+    std::size_t length = 1;
+    if ((first & 0xF8u) == 0xF0u) {
+        length = 4;
+    } else if ((first & 0xF0u) == 0xE0u) {
+        length = 3;
+    } else if ((first & 0xE0u) == 0xC0u) {
+        length = 2;
+    }
+    return std::string(text.substr(0, std::min(length, text.size())));
 }
 
 std::string escapeHtml(std::string_view text)
@@ -2864,6 +2958,212 @@ void addAttributeUpdate(skui::RuntimeUpdates& updates,
         {std::move(id), std::move(name), std::move(value)});
 }
 
+constexpr std::array<std::string_view, 6> kSettingsCategoryTitles{
+    "个人资料",
+    "外观",
+    "发送",
+    "截图",
+    "通知",
+    "更新",
+};
+
+void applySettingsProfileStatus(skui::Runtime& runtime,
+                                const SkiaUiRuntimeBinding& binding)
+{
+    (void)runtime.setTextById("settings-profile-status",
+                              binding.settingsProfileStatus);
+    if (binding.settingsProfileStatus.empty()) {
+        (void)runtime.setStyleById("settings-profile-status", "display: none;");
+        return;
+    }
+
+    std::string color = "#5c636e";
+    if (binding.settingsProfileStatusError) {
+        color = "#d1301f";
+    } else if (binding.settingsProfileStatus == "已保存") {
+        color = "#009696";
+    }
+    (void)runtime.setStyleById(
+        "settings-profile-status",
+        "display: block; color: " + color + ";");
+}
+
+void applySettingsToggle(skui::Runtime& runtime,
+                         std::string_view id,
+                         bool checked)
+{
+    (void)runtime.setAttributeById(
+        id,
+        "class",
+        checked ? "settings-toggle settings-toggle-checked" :
+                  "settings-toggle");
+}
+
+void applySettingsTheme(skui::Runtime& runtime,
+                        SkiaUiRuntimeBinding& binding)
+{
+    (void)runtime.setAttributeById(
+        "screen",
+        "class",
+        binding.darkModeEnabled ? "screen dark" : "screen");
+    if (binding.backgroundController != nullptr) {
+        binding.backgroundController->setDarkModeEnabled(
+            binding.darkModeEnabled);
+    }
+}
+
+void applySettingsLayout(skui::Runtime& runtime)
+{
+    const int settingsWidth = std::max(1, runtimeLogicalWidth(runtime) - 402);
+    const int railWidth = std::clamp(
+        static_cast<int>(std::round(static_cast<float>(settingsWidth) * 0.27f)),
+        184,
+        238);
+    (void)runtime.setStyleById(
+        "settings-rail",
+        "width: " + std::to_string(railWidth) + "px;");
+    (void)runtime.setStyleById(
+        "settings-content-panel",
+        "left: " + std::to_string(railWidth + 1) + "px;");
+}
+
+void applySettingsView(skui::Runtime& runtime,
+                       SkiaUiRuntimeBinding& binding)
+{
+    binding.settingsCategory =
+        std::clamp(binding.settingsCategory,
+                   0,
+                   static_cast<int>(kSettingsCategoryTitles.size()) - 1);
+    (void)runtime.setStyleById(
+        "settings-page",
+        binding.settingsOpen ? "display: block;" : "display: none;");
+    (void)runtime.setAttributeById(
+        "settings-button",
+        "class",
+        binding.settingsOpen ? "settings settings-active" : "settings");
+    (void)runtime.setTextById(
+        "settings-header-title",
+        kSettingsCategoryTitles[static_cast<std::size_t>(
+            binding.settingsCategory)]);
+
+    for (int index = 0;
+         index < static_cast<int>(kSettingsCategoryTitles.size());
+         ++index) {
+        const bool active = index == binding.settingsCategory;
+        const std::string categoryClass =
+            "settings-category settings-category-" + std::to_string(index) +
+            (active ? " settings-category-active" : "");
+        (void)runtime.setAttributeById(
+            indexedId("settings-category-", index),
+            "class",
+            categoryClass);
+        (void)runtime.setStyleById(
+            indexedId("settings-content-", index),
+            active ? "display: block;" : "display: none;");
+    }
+
+    (void)runtime.setTextById(
+        "settings-profile-avatar",
+        firstUtf8Character(binding.settingsProfileName));
+    applySettingsProfileStatus(runtime, binding);
+    applySettingsToggle(runtime,
+                        "settings-dark-toggle",
+                        binding.darkModeEnabled);
+    (void)runtime.setTextById(
+        "settings-dark-label",
+        binding.darkModeEnabled ? "已开启" : "已关闭");
+    (void)runtime.setTextById(
+        "settings-font-value",
+        std::to_string(binding.settingsFontSize) + " px");
+    const float fontProgress =
+        static_cast<float>(binding.settingsFontSize - 12) / 10.0f;
+    (void)runtime.setStyleById(
+        "settings-font-fill",
+        "width: " + std::to_string(fontProgress * 100.0f) + "%;");
+    (void)runtime.setStyleById(
+        "settings-font-thumb",
+        "left: " + std::to_string(fontProgress * 100.0f) + "%;");
+    (void)runtime.setStyleById(
+        "settings-font-preview-text",
+        "font-size: " + std::to_string(binding.settingsFontSize) + "px;");
+
+    (void)runtime.setTextById(
+        "settings-send-mode-value",
+        binding.sendMode == 0 ? "Enter" : "Ctrl + Enter");
+    (void)runtime.setTextById(
+        "settings-send-mode-note",
+        binding.sendMode == 0 ? "当前占位选择：Enter 发送" :
+                                "当前占位选择：Ctrl + Enter 发送");
+    (void)runtime.setStyleById(
+        "settings-send-options",
+        binding.sendModeDropdownOpen ? "display: block;" : "display: none;");
+    (void)runtime.setAttributeById(
+        "settings-send-option-enter",
+        "class",
+        binding.sendMode == 0 ?
+            "settings-dropdown-option settings-dropdown-option-selected" :
+            "settings-dropdown-option");
+    (void)runtime.setAttributeById(
+        "settings-send-option-ctrl-enter",
+        "class",
+        binding.sendMode == 1 ?
+            "settings-dropdown-option settings-dropdown-option-selected" :
+            "settings-dropdown-option");
+
+    applySettingsToggle(runtime,
+                        "settings-sound-toggle",
+                        binding.notificationSoundEnabled);
+    (void)runtime.setTextById(
+        "settings-sound-label",
+        binding.notificationSoundEnabled ? "已启用" : "已关闭");
+    applySettingsToggle(runtime,
+                        "settings-startup-toggle",
+                        binding.launchAtStartupEnabled);
+    (void)runtime.setTextById(
+        "settings-startup-label",
+        binding.launchAtStartupEnabled ? "已启用" : "已关闭");
+    (void)runtime.setTextById("settings-startup-status",
+                              binding.startupStatus);
+    (void)runtime.setStyleById(
+        "settings-startup-status",
+        binding.startupStatus.empty() ? "display: none;" : "display: block;");
+    (void)runtime.setTextById(
+        "settings-update-version",
+        "当前版本号：" + std::to_string(relaydesk::core::kAppVersion));
+    (void)runtime.setTextById("settings-update-status", binding.updateStatus);
+    applySettingsTheme(runtime, binding);
+    applySettingsLayout(runtime);
+}
+
+void initializeSettingsState(skui::Runtime& runtime,
+                             relaydesk::runtime::RelayDeskRuntime& relayRuntime,
+                             SkiaUiRuntimeBinding& binding)
+{
+    if (binding.settingsInitialized) {
+        return;
+    }
+
+    const relaydesk::runtime::LocalUserSummary& localUser =
+        relayRuntime.GetLocalUser();
+    binding.settingsProfileName = localUser.GetDisplayName().empty()
+        ? localUser.GetHostName()
+        : localUser.GetDisplayName();
+    binding.settingsSavedProfileName = binding.settingsProfileName;
+    if (binding.backgroundController != nullptr) {
+        binding.darkModeEnabled = loadStoredDarkModeEnabled();
+        binding.launchAtStartupEnabled =
+            loadStoredLaunchAtStartupEnabled();
+        binding.backgroundController->setNotificationSoundEnabled(
+            binding.notificationSoundEnabled);
+    }
+    binding.settingsInitialized = true;
+    (void)runtime.setValueById("settings-profile-name-input",
+                               binding.settingsProfileName);
+    (void)runtime.setValueById("settings-shortcut-input",
+                               binding.screenshotShortcut);
+    applySettingsView(runtime, binding);
+}
+
 std::string makeAppUpdatePromptSignature(
     const std::optional<relaydesk::runtime::AppUpdatePrompt>& prompt)
 {
@@ -2984,6 +3284,8 @@ std::string makeDeviceListSignature(
     signature += localUser.GetDisplayName();
     signature += '\n';
     signature += localUser.GetHostName();
+    signature += '\n';
+    signature += localUser.GetAddress();
     signature += '\n';
     signature += relayRuntime.GetSelectedPeerDeviceId();
 
@@ -3301,8 +3603,16 @@ void applyRelayDeskDevicePanel(
     const std::string localDisplayName =
         localUser.GetDisplayName().empty() ? localUser.GetHostName()
                                            : localUser.GetDisplayName();
+    addTextUpdate(updates,
+                  "profile-avatar",
+                  firstUtf8Character(localDisplayName));
     addTextUpdate(updates, "profile-name", localDisplayName);
-    addTextUpdate(updates, "profile-sub", "本机 · " + localUser.GetHostName());
+    const std::string localAddress = localUser.GetAddress().empty()
+        ? "本机"
+        : localUser.GetAddress();
+    addTextUpdate(updates,
+                  "profile-sub",
+                  localAddress + " · " + localUser.GetHostName());
 
     const std::optional<relaydesk::runtime::PeerListItem> selectedPeer =
         relayRuntime.GetSelectedPeer();
@@ -3572,6 +3882,28 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
             return;
         }
         if (event.type == skui::ElementEventType::Input &&
+            event.id == "settings-profile-name-input") {
+            binding.settingsProfileName = event.value;
+            if (binding.settingsProfileName !=
+                binding.settingsSavedProfileName) {
+                binding.settingsProfileStatus = "有未保存的修改";
+                binding.settingsProfileStatusError = false;
+            } else {
+                binding.settingsProfileStatus.clear();
+                binding.settingsProfileStatusError = false;
+            }
+            (void)runtime.setTextById(
+                "settings-profile-avatar",
+                firstUtf8Character(binding.settingsProfileName));
+            applySettingsProfileStatus(runtime, binding);
+            return;
+        }
+        if (event.type == skui::ElementEventType::Input &&
+            event.id == "settings-shortcut-input") {
+            binding.screenshotShortcut = event.value;
+            return;
+        }
+        if (event.type == skui::ElementEventType::Input &&
             event.id == kComposerDocumentId) {
             rememberComposerSelection(runtime, binding);
             discardComposerAttachmentsMissingFromDocument(runtime, binding);
@@ -3646,6 +3978,8 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
         }
 
         constexpr std::string_view devicePrefix = "select-device:";
+        constexpr std::string_view settingsCategoryPrefix =
+            "settings-category:";
         constexpr std::string_view tabPrefix = "tab:";
         constexpr std::string_view urlPrefix = "open-url:";
         if (event.type != skui::ElementEventType::Click ||
@@ -3672,11 +4006,23 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
         } else if (action.starts_with(devicePrefix)) {
             hideMessageContextMenu(runtime);
             hideImagePreview(runtime);
+            binding.settingsOpen = false;
             relayRuntime.selectPeer(std::string(action.substr(devicePrefix.size())));
             applyRelayDeskDevicePanel(runtime,
                                       relayRuntime,
                                       binding,
                                       ChatScrollUpdateMode::ScrollToLatest);
+            applySettingsView(runtime, binding);
+        } else if (action.starts_with(settingsCategoryPrefix)) {
+            const std::string categoryText(
+                action.substr(settingsCategoryPrefix.size()));
+            try {
+                binding.settingsCategory = std::stoi(categoryText);
+            } catch (const std::exception&) {
+                return;
+            }
+            binding.sendModeDropdownOpen = false;
+            applySettingsView(runtime, binding);
         } else if (action.starts_with(tabPrefix)) {
             hideMessageContextMenu(runtime);
             selectTab(runtime, action.substr(tabPrefix.size()));
@@ -3697,6 +4043,117 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
             applyAppUpdatePrompt(runtime, std::nullopt);
         } else if (action == "app-update-block") {
             return;
+        } else if (action == "open-settings") {
+            const relaydesk::runtime::LocalUserSummary& localUser =
+                relayRuntime.GetLocalUser();
+            const std::string currentName = localUser.GetDisplayName().empty()
+                ? localUser.GetHostName()
+                : localUser.GetDisplayName();
+            if (binding.settingsSavedProfileName != currentName) {
+                binding.settingsProfileName = currentName;
+                binding.settingsSavedProfileName = currentName;
+                binding.settingsProfileStatus.clear();
+                binding.settingsProfileStatusError = false;
+                (void)runtime.setValueById("settings-profile-name-input",
+                                           currentName);
+            }
+            binding.settingsOpen = true;
+            applySettingsView(runtime, binding);
+        } else if (action == "close-settings") {
+            binding.settingsOpen = false;
+            binding.sendModeDropdownOpen = false;
+            applySettingsView(runtime, binding);
+        } else if (action == "settings-profile-save") {
+            const std::string nextName =
+                trimMessageWhitespace(binding.settingsProfileName);
+            if (nextName.empty()) {
+                binding.settingsProfileStatus = "用户名不能为空";
+                binding.settingsProfileStatusError = true;
+                applySettingsProfileStatus(runtime, binding);
+                return;
+            }
+            try {
+                relayRuntime.updateLocalDisplayName(nextName);
+                const relaydesk::runtime::LocalUserSummary& localUser =
+                    relayRuntime.GetLocalUser();
+                binding.settingsProfileName =
+                    localUser.GetDisplayName().empty()
+                    ? localUser.GetHostName()
+                    : localUser.GetDisplayName();
+                binding.settingsSavedProfileName =
+                    binding.settingsProfileName;
+                binding.settingsProfileStatus = "已保存";
+                binding.settingsProfileStatusError = false;
+                (void)runtime.setValueById("settings-profile-name-input",
+                                           binding.settingsProfileName);
+                applyRelayDeskDevicePanel(
+                    runtime,
+                    relayRuntime,
+                    binding,
+                    ChatScrollUpdateMode::PreserveOffset);
+            } catch (const std::exception& error) {
+                binding.settingsProfileStatus =
+                    std::string("保存失败：") + error.what();
+                binding.settingsProfileStatusError = true;
+            }
+            applySettingsView(runtime, binding);
+        } else if (action == "settings-avatar-change") {
+            binding.settingsProfileStatus = "头像修改暂未接入";
+            binding.settingsProfileStatusError = false;
+            applySettingsProfileStatus(runtime, binding);
+        } else if (action == "settings-dark-toggle") {
+            binding.darkModeEnabled = !binding.darkModeEnabled;
+            if (binding.backgroundController != nullptr) {
+                (void)saveStoredDarkModeEnabled(binding.darkModeEnabled);
+            }
+            applySettingsView(runtime, binding);
+        } else if (action == "settings-font-minus") {
+            binding.settingsFontSize =
+                std::max(12, binding.settingsFontSize - 1);
+            applySettingsView(runtime, binding);
+        } else if (action == "settings-font-plus") {
+            binding.settingsFontSize =
+                std::min(22, binding.settingsFontSize + 1);
+            applySettingsView(runtime, binding);
+        } else if (action == "settings-send-mode-toggle") {
+            binding.sendModeDropdownOpen = !binding.sendModeDropdownOpen;
+            applySettingsView(runtime, binding);
+        } else if (action == "settings-send-mode-enter") {
+            binding.sendMode = 0;
+            binding.sendModeDropdownOpen = false;
+            applySettingsView(runtime, binding);
+        } else if (action == "settings-send-mode-ctrl-enter") {
+            binding.sendMode = 1;
+            binding.sendModeDropdownOpen = false;
+            applySettingsView(runtime, binding);
+        } else if (action == "settings-sound-toggle") {
+            binding.notificationSoundEnabled =
+                !binding.notificationSoundEnabled;
+            if (binding.backgroundController != nullptr) {
+                binding.backgroundController->setNotificationSoundEnabled(
+                    binding.notificationSoundEnabled);
+            }
+            applySettingsView(runtime, binding);
+        } else if (action == "settings-startup-toggle") {
+            binding.launchAtStartupEnabled =
+                !binding.launchAtStartupEnabled;
+            const bool saved = saveStoredLaunchAtStartupEnabled(
+                binding.launchAtStartupEnabled);
+            const bool applied = applyLaunchAtStartupEnabled(
+                binding.launchAtStartupEnabled);
+            if (saved && applied) {
+                binding.startupStatus.clear();
+            } else if (!saved && !applied) {
+                binding.startupStatus = "保存设置和写入系统启动项失败";
+            } else if (!saved) {
+                binding.startupStatus = "系统启动项已更新，但保存设置失败";
+            } else {
+                binding.startupStatus = "保存设置成功，但写入系统启动项失败";
+            }
+            applySettingsView(runtime, binding);
+        } else if (action == "settings-check-update") {
+            binding.updateStatus = "检查更新功能占位，等待接入更新服务";
+            applySettingsView(runtime, binding);
         } else if (action == "copy-message-context") {
             (void)writeClipboardText(gMessageContextText);
             hideMessageContextMenu(runtime);
@@ -3842,6 +4299,9 @@ bool refreshRelayDeskDevicePanelIfChanged(SkiaUiRuntimeBinding& binding,
         return false;
     }
 
+    initializeSettingsState(*binding.skiaRuntime,
+                            *binding.relayRuntime,
+                            binding);
     core::async::dispatchReady();
     relaydesk::platform::initializeAttachmentDropTarget();
     (void)addComposerAttachmentPaths(
@@ -3878,6 +4338,7 @@ bool refreshRelayDeskDevicePanelIfChanged(SkiaUiRuntimeBinding& binding,
                               binding,
                               scrollUpdateMode);
     applyAppUpdatePrompt(*binding.skiaRuntime, updatePrompt);
+    applySettingsView(*binding.skiaRuntime, binding);
     binding.chatInitialized = true;
     binding.chatHistoryPrependPending = false;
     return true;
@@ -4420,6 +4881,7 @@ public:
         localUser_.SetDisplayName("许靖");
         localUser_.SetHostName("MENG");
         localUser_.SetDeviceId("capture-local");
+        localUser_.SetAddress("192.168.1.8");
 
         relaydesk::runtime::PeerListItem peer;
         peer.SetDeviceId("capture-peer");
@@ -4629,6 +5091,12 @@ std::optional<CaptureOptions> parseCaptureOptions()
             options.testAppUpdateDownloading = true;
         } else if (argument == L"--capture-test-app-update-failed") {
             options.testAppUpdateFailed = true;
+        } else if (argument == L"--capture-test-settings") {
+            options.testSettings = true;
+        } else if (argument == L"--capture-test-settings-dark") {
+            options.testSettingsDark = true;
+        } else if (argument == L"--capture-test-dark-chat-tabs") {
+            options.testDarkChatTabs = true;
         }
     }
 
@@ -5142,6 +5610,55 @@ int captureSkiaUiPng(const CaptureOptions& options)
         }
         return 4;
     }
+    initializeSettingsState(runtime, relayRuntime, binding);
+    if (options.testDarkChatTabs) {
+        binding.darkModeEnabled = true;
+        applySettingsView(runtime, binding);
+    }
+    if (options.testSettings || options.testSettingsDark) {
+        if (html.find(R"(data-action="open-settings")") ==
+                std::string::npos ||
+            html.find(R"(data-action="settings-category:5")") ==
+                std::string::npos ||
+            html.find(R"(data-action="settings-profile-save")") ==
+                std::string::npos ||
+            html.find(R"(data-action="settings-startup-toggle")") ==
+                std::string::npos) {
+            return 75;
+        }
+        const auto clickSettingsPoint = [&runtime](float x, float y) {
+            skui::Event mouseDown;
+            mouseDown.type = skui::EventType::MouseDown;
+            mouseDown.x = x;
+            mouseDown.y = y;
+            mouseDown.button = skui::MouseButton::Left;
+            (void)runtime.handleEvent(mouseDown);
+            skui::Event mouseUp = mouseDown;
+            mouseUp.type = skui::EventType::MouseUp;
+            (void)runtime.handleEvent(mouseUp);
+        };
+        clickSettingsPoint(368.0f, 47.0f);
+        if (!binding.settingsOpen) {
+            return 77;
+        }
+        clickSettingsPoint(500.0f, 467.0f);
+        if (binding.settingsCategory != 5) {
+            return 78;
+        }
+        binding.settingsCategory = options.testSettingsDark ? 1 : 0;
+        binding.darkModeEnabled = options.testSettingsDark;
+        if (options.testSettingsDark) {
+            binding.settingsFontSize = 22;
+        }
+        applySettingsView(runtime, binding);
+        const std::optional<std::string> settingsTitle =
+            runtime.textContentById("settings-header-title");
+        const std::string expectedTitle =
+            options.testSettingsDark ? "外观" : "个人资料";
+        if (settingsTitle != std::optional<std::string>{expectedTitle}) {
+            return 76;
+        }
+    }
     if (options.testComposerAttachments) {
         constexpr std::string_view kCaptureComposerText =
             "请查收这些附件";
@@ -5200,6 +5717,10 @@ int captureSkiaUiPng(const CaptureOptions& options)
                               relayRuntime,
                               binding,
                               ChatScrollUpdateMode::ScrollToLatest);
+    if (runtime.textContentById("profile-sub") !=
+        std::optional<std::string>{"192.168.1.8 · MENG"}) {
+        return 80;
+    }
     if (testAppUpdate) {
         applyAppUpdatePrompt(runtime, relayRuntime.GetAppUpdatePrompt());
         const std::optional<std::string> title =
@@ -5777,6 +6298,19 @@ int captureSkiaUiPng(const CaptureOptions& options)
                              return pixel == kUnreadBadgeColor;
                          })) {
             return 67;
+        }
+    }
+
+    if (options.testDarkChatTabs) {
+        constexpr int kInactiveTabProbeX = 720;
+        constexpr int kInactiveTabProbeY = 140;
+        constexpr std::uint32_t kDarkTabBackground = 0xFF181D21u;
+        const std::size_t pixelIndex =
+            static_cast<std::size_t>(kInactiveTabProbeY) *
+                static_cast<std::size_t>(options.width) +
+            static_cast<std::size_t>(kInactiveTabProbeX);
+        if (pixels[pixelIndex] != kDarkTabBackground) {
+            return 79;
         }
     }
 

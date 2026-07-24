@@ -334,6 +334,7 @@ if(RELAYDESK_BUILD_SKIAUI)
             advapi32
             bcrypt
             comdlg32
+            dwmapi
             shell32
             winmm
         )
@@ -451,6 +452,33 @@ if(RELAYDESK_BUILD_SKIAUI)
             --capture-height 900
             --capture-dpi-scale 1.0
             --capture-test-app-update-failed
+    )
+    add_test(NAME relaydesk_skiaui_settings_capture
+        COMMAND relaydesk_skiaui
+            --capture-skiaui
+            "${CMAKE_BINARY_DIR}/tmp/relaydesk_skiaui_settings.png"
+            --capture-width 1600
+            --capture-height 900
+            --capture-dpi-scale 1.0
+            --capture-test-settings
+    )
+    add_test(NAME relaydesk_skiaui_settings_dark_capture
+        COMMAND relaydesk_skiaui
+            --capture-skiaui
+            "${CMAKE_BINARY_DIR}/tmp/relaydesk_skiaui_settings_dark.png"
+            --capture-width 1600
+            --capture-height 900
+            --capture-dpi-scale 1.0
+            --capture-test-settings-dark
+    )
+    add_test(NAME relaydesk_skiaui_dark_chat_tabs_capture
+        COMMAND relaydesk_skiaui
+            --capture-skiaui
+            "${CMAKE_BINARY_DIR}/tmp/relaydesk_skiaui_dark_chat_tabs.png"
+            --capture-width 1600
+            --capture-height 900
+            --capture-dpi-scale 1.0
+            --capture-test-dark-chat-tabs
     )
 endif()
 

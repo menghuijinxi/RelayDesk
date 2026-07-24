@@ -16,6 +16,7 @@
 
 #if defined(RELAYDESK_HAS_BOOST_ASIO)
 #include "net/boost_asio_tcp_peer_transport.h"
+#include "net/boost_asio_udp_discovery_transport.h"
 #include "net/discovery_message.h"
 #include "net/discovery_service.h"
 #include "net/discovery_worker.h"
@@ -2501,6 +2502,11 @@ void LocalUserSummary::SetDeviceId(std::string deviceId)
     deviceId_ = std::move(deviceId);
 }
 
+void LocalUserSummary::SetAddress(std::string address)
+{
+    address_ = std::move(address);
+}
+
 void PeerListItem::SetDeviceId(std::string deviceId)
 {
     deviceId_ = std::move(deviceId);
@@ -3943,6 +3949,8 @@ void RelayDeskRuntime::initialize()
 
 #if defined(RELAYDESK_HAS_BOOST_ASIO)
         if (runtimeOptions_.GetNetworkEnabled()) {
+            localUser_.SetAddress(
+                relaydesk::net::findPreferredLocalIpv4Address().value_or(""));
             auto tcpTransport =
                 std::make_unique<relaydesk::net::BoostAsioTcpPeerTransport>(
                     runtimeOptions_.GetTcpListenPort());

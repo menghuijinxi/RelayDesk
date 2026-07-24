@@ -50,6 +50,8 @@ public:
                                  WPARAM wParam,
                                  LPARAM lParam);
     void processRuntimeState();
+    void setDarkModeEnabled(bool enabled);
+    void setNotificationSoundEnabled(bool enabled);
 
 private:
     class Impl;

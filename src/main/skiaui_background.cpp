@@ -6,11 +6,13 @@
 #include "storage/ui_preferences.h"
 
 #include <array>
+#include <atomic>
 #include <exception>
 #include <memory>
 #include <mutex>
 #include <string>
 
+#include <dwmapi.h>
 #include <mmsystem.h>
 #include <shellapi.h>
 
@@ -27,6 +29,7 @@ constexpr UINT kTrayShowCommand = 1000;
 constexpr UINT kTrayExitCommand = 1002;
 constexpr int kApplicationIconResourceId = 1;
 constexpr int kNotificationSoundResourceId = 2;
+constexpr DWORD kDwmWindowAttributeUseImmersiveDarkMode = 20;
 
 struct ExistingInstanceActivationContext {
     bool activated = false;
@@ -224,7 +227,8 @@ class BackgroundController::Impl {
 public:
     explicit Impl(HINSTANCE instance)
         : instance_(instance),
-          notificationBridge_(std::make_shared<NotificationBridge>())
+          notificationBridge_(std::make_shared<NotificationBridge>()),
+          notificationSoundEnabled_(std::make_shared<std::atomic_bool>(true))
     {
     }
 
@@ -242,11 +246,15 @@ public:
         detachRuntime();
         runtime_ = &runtime;
         const std::shared_ptr<NotificationBridge> bridge = notificationBridge_;
-        runtime_->SetUserNotificationHandler([bridge] {
-            (void)PlaySoundW(MAKEINTRESOURCEW(kNotificationSoundResourceId),
-                             GetModuleHandleW(nullptr),
-                             SND_RESOURCE | SND_ASYNC | SND_NODEFAULT
-                                 | SND_SYSTEM);
+        const std::shared_ptr<std::atomic_bool> soundEnabled =
+            notificationSoundEnabled_;
+        runtime_->SetUserNotificationHandler([bridge, soundEnabled] {
+            if (soundEnabled->load(std::memory_order_relaxed)) {
+                (void)PlaySoundW(
+                    MAKEINTRESOURCEW(kNotificationSoundResourceId),
+                    GetModuleHandleW(nullptr),
+                    SND_RESOURCE | SND_ASYNC | SND_NODEFAULT | SND_SYSTEM);
+            }
             bridge->postIncomingNotification();
         });
     }
@@ -269,6 +277,7 @@ public:
         switch (message) {
         case WM_CREATE:
             mainWindow_ = window;
+            applyTitleBarTheme();
             applyMainWindowIcons();
             (void)initializeTray();
             return false;
@@ -309,7 +318,31 @@ public:
         (void)runtime_->ConsumePendingUserNotificationCount();
     }
 
+    void setDarkModeEnabled(bool enabled)
+    {
+        darkModeEnabled_ = enabled;
+        applyTitleBarTheme();
+    }
+
+    void setNotificationSoundEnabled(bool enabled)
+    {
+        notificationSoundEnabled_->store(enabled,
+                                         std::memory_order_relaxed);
+    }
+
 private:
+    void applyTitleBarTheme()
+    {
+        if (mainWindow_ == nullptr) {
+            return;
+        }
+        const BOOL enabled = darkModeEnabled_ ? TRUE : FALSE;
+        (void)DwmSetWindowAttribute(mainWindow_,
+                                    kDwmWindowAttributeUseImmersiveDarkMode,
+                                    &enabled,
+                                    sizeof(enabled));
+    }
+
     static LRESULT CALLBACK trayWindowProc(HWND window,
                                            UINT message,
                                            WPARAM wParam,
@@ -607,6 +640,7 @@ private:
     HINSTANCE instance_ = nullptr;
     relaydesk::runtime::RelayDeskRuntime* runtime_ = nullptr;
     std::shared_ptr<NotificationBridge> notificationBridge_;
+    std::shared_ptr<std::atomic_bool> notificationSoundEnabled_;
     HWND mainWindow_ = nullptr;
     HWND trayWindow_ = nullptr;
     HICON trayIcon_ = nullptr;
@@ -620,6 +654,7 @@ private:
     bool exitRequested_ = false;
     bool trayAttentionEnabled_ = false;
     bool transparentIconVisible_ = false;
+    bool darkModeEnabled_ = false;
 };
 
 BackgroundController::BackgroundController(HINSTANCE instance)
@@ -655,6 +690,16 @@ bool BackgroundController::handleMainWindowMessage(HWND window,
 void BackgroundController::processRuntimeState()
 {
     impl_->processRuntimeState();
+}
+
+void BackgroundController::setDarkModeEnabled(bool enabled)
+{
+    impl_->setDarkModeEnabled(enabled);
+}
+
+void BackgroundController::setNotificationSoundEnabled(bool enabled)
+{
+    impl_->setNotificationSoundEnabled(enabled);
 }
 
 }  // namespace relaydesk::skiaui

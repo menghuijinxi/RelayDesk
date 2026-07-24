@@ -12,6 +12,8 @@ namespace relaydesk::net {
 
 using UdpDiscoveryLogCallback = std::function<void(std::string)>;
 
+std::optional<std::string> findPreferredLocalIpv4Address();
+
 class UdpDiscoveryPacket {
 public:
     UdpDiscoveryPacket(std::string payload,

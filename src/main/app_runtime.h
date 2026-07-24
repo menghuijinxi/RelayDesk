@@ -98,15 +98,18 @@ public:
     const std::string& GetDisplayName() const { return displayName_; }
     const std::string& GetHostName() const { return hostName_; }
     const std::string& GetDeviceId() const { return deviceId_; }
+    const std::string& GetAddress() const { return address_; }
 
     void SetDisplayName(std::string displayName);
     void SetHostName(std::string hostName);
     void SetDeviceId(std::string deviceId);
+    void SetAddress(std::string address);
 
 protected:
     std::string displayName_ = "RelayDesk";
     std::string hostName_ = "Local";
     std::string deviceId_;
+    std::string address_;
 };
 
 class PeerListItem {
