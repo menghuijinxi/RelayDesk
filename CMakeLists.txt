@@ -272,6 +272,7 @@ if(RELAYDESK_BUILD_SKIAUI)
     set(RELAYDESK_COMMON_RUNTIME_SOURCES
         src/main/app_runtime.cpp
         src/main/image_attachment_store.cpp
+        src/main/skiaui_background.cpp
         src/core/app_version.cpp
         src/core/diagnostic_log.cpp
         src/core/platform/async.cpp
@@ -279,6 +280,7 @@ if(RELAYDESK_BUILD_SKIAUI)
         src/core/uuid.cpp
         src/platform/attachment_input_win.cpp
         src/platform/computer_name_win.cpp
+        src/platform/startup_launch_win.cpp
         src/platform/text_encoding_win.cpp
         src/platform/windows_install_id_win.cpp
         src/net/discovery_local_announcement.cpp
@@ -291,6 +293,7 @@ if(RELAYDESK_BUILD_SKIAUI)
         src/storage/history_store.cpp
         src/storage/local_identity.cpp
         src/storage/peer_profile.cpp
+        src/storage/ui_preferences.cpp
         src/storage/app_paths_win.cpp
     )
 
@@ -332,6 +335,7 @@ if(RELAYDESK_BUILD_SKIAUI)
             bcrypt
             comdlg32
             shell32
+            winmm
         )
     else()
         message(FATAL_ERROR "RelayDesk SkiaUI currently targets Windows only.")

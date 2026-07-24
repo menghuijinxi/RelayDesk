@@ -44,6 +44,7 @@
 #include "core/uuid.h"
 #include "main/app_runtime.h"
 #include "main/image_attachment_store.h"
+#include "main/skiaui_background.h"
 #include "platform/attachment_input.h"
 #include "platform/text_encoding.h"
 #include "storage/app_paths.h"
@@ -161,6 +162,7 @@ struct CaptureOptions {
 
 struct SkiaUiRuntimeBinding {
     relaydesk::runtime::RelayDeskRuntime* relayRuntime = nullptr;
+    relaydesk::skiaui::BackgroundController* backgroundController = nullptr;
     skui::Runtime* skiaRuntime = nullptr;
     HWND window = nullptr;
     UINT_PTR timerId = 0;
@@ -3702,6 +3704,9 @@ void CALLBACK refreshRelayDeskSkiaUiTimer(HWND, UINT, UINT_PTR, DWORD)
     if (refreshRelayDeskDevicePanelIfChanged(*gRuntimeBinding, false)) {
         requestSkiaUiWindowRedraw(*gRuntimeBinding);
     }
+    if (gRuntimeBinding->backgroundController != nullptr) {
+        gRuntimeBinding->backgroundController->processRuntimeState();
+    }
 }
 
 relaydesk::runtime::RelayDeskRuntimeOptions makeCaptureRuntimeOptions()
@@ -5447,6 +5452,13 @@ int runSkiaUiApp(HINSTANCE instance, int showCmd)
         return result;
     }
 
+    relaydesk::skiaui::SingleInstanceGuard singleInstance;
+    if (singleInstance.alreadyRunning()) {
+        relaydesk::skiaui::activateExistingInstance();
+        return 0;
+    }
+    relaydesk::skiaui::syncLaunchAtStartupOnAppStart();
+
     const auto html =
         std::make_shared<const std::string>(makeEmbeddedDocument());
     if (html->empty()) {
@@ -5454,8 +5466,11 @@ int runSkiaUiApp(HINSTANCE instance, int showCmd)
     }
     const auto documentLoaded = std::make_shared<bool>(false);
     auto& relayRuntime = relaydesk::runtime::getRelayDeskRuntime();
+    relaydesk::skiaui::BackgroundController backgroundController(instance);
+    backgroundController.attachRuntime(relayRuntime);
     auto binding = std::make_shared<SkiaUiRuntimeBinding>();
     binding->relayRuntime = &relayRuntime;
+    binding->backgroundController = &backgroundController;
     gRuntimeBinding = binding.get();
 
     skui::win32::WindowOptions options;
@@ -5465,6 +5480,18 @@ int runSkiaUiApp(HINSTANCE instance, int showCmd)
     options.useSystemDpiScale = true;
     options.clearColor = colorRefFromSkColor(kDemoClearColor);
     options.runtime.clearColor = kDemoClearColor;
+    options.onWindowMessage =
+        [&backgroundController](HWND window,
+                                UINT message,
+                                WPARAM wParam,
+                                LPARAM lParam,
+                                skui::Runtime&) {
+            return backgroundController.handleMainWindowMessage(
+                window,
+                message,
+                wParam,
+                lParam);
+        };
     options.onRuntimeReady = [binding](skui::Runtime& runtime) {
         binding->skiaRuntime = &runtime;
         installRelayDeskInteractions(runtime, *binding->relayRuntime, *binding);
@@ -5496,6 +5523,7 @@ int runSkiaUiApp(HINSTANCE instance, int showCmd)
     if (gRuntimeBinding == binding.get()) {
         gRuntimeBinding = nullptr;
     }
+    backgroundController.detachRuntime();
     core::async::shutdown();
     return result;
 }
