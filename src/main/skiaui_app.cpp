@@ -20,6 +20,7 @@
 #include <fstream>
 #include <functional>
 #include <iomanip>
+#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -89,6 +90,17 @@ constexpr std::string_view kComposerInitialParagraphId =
     "composer-text-initial";
 constexpr std::string_view kComposerAttachmentElementPrefix =
     "composer-attachment:";
+constexpr std::string_view kTransferSendActionPrefix = "transfer-send:";
+constexpr std::string_view kTransferResendMessageActionPrefix =
+    "transfer-resend-message:";
+constexpr std::string_view kTransferCancelActionPrefix = "transfer-cancel:";
+constexpr std::string_view kTransferAcceptActionPrefix = "transfer-accept:";
+constexpr std::string_view kTransferSaveAsActionPrefix = "transfer-save-as:";
+constexpr std::string_view kTransferOverwriteActionPrefix =
+    "transfer-overwrite:";
+constexpr std::string_view kTransferRejectActionPrefix = "transfer-reject:";
+constexpr std::string_view kTransferOpenActionPrefix = "transfer-open:";
+constexpr std::string_view kTransferRevealActionPrefix = "transfer-reveal:";
 constexpr UINT kSkiaUiRequestRedrawMessage = WM_APP + 0x531;
 constexpr UINT kRelayDeskSkiaUiRefreshMs = 100;
 
@@ -120,6 +132,16 @@ struct PendingFolderSizeResult {
     std::string attachmentId;
     std::filesystem::path sourcePath;
     std::uintmax_t fileSize = 0;
+};
+
+struct OpenableTransferPath {
+    std::filesystem::path path;
+    bool folder = false;
+};
+
+struct TransferPartActionTarget {
+    std::string messageId;
+    std::string partId;
 };
 
 struct CaptureOptions {
@@ -1547,6 +1569,17 @@ SaveFileResult saveFileAs(const std::filesystem::path& sourcePath)
         : SaveFileResult::Failed;
 }
 
+bool shellOpenPath(const std::filesystem::path& path)
+{
+    const HINSTANCE result = ShellExecuteW(nullptr,
+                                           L"open",
+                                           path.wstring().c_str(),
+                                           nullptr,
+                                           nullptr,
+                                           SW_SHOWNORMAL);
+    return reinterpret_cast<std::intptr_t>(result) > 32;
+}
+
 void hideMessageContextMenu(skui::Runtime& runtime)
 {
     gMessageContextMenuVisible = false;
@@ -1682,9 +1715,9 @@ std::string transferStateText(relaydesk::storage::TransferState state)
 {
     switch (state) {
     case relaydesk::storage::TransferState::Pending:
-        return "等待传输";
+        return "待发送";
     case relaydesk::storage::TransferState::Offered:
-        return "等待接收";
+        return "待接收";
     case relaydesk::storage::TransferState::Transferring:
         return "传输中";
     case relaydesk::storage::TransferState::Interrupted:
@@ -1699,6 +1732,18 @@ std::string transferStateText(relaydesk::storage::TransferState state)
         return "已拒绝";
     }
     return "未知状态";
+}
+
+std::string transferStateText(relaydesk::storage::TransferState state,
+                              bool outgoing)
+{
+    if (state == relaydesk::storage::TransferState::Failed) {
+        return outgoing ? "发送失败" : "接收失败";
+    }
+    if (state == relaydesk::storage::TransferState::Interrupted) {
+        return outgoing ? "发送中断" : "接收中断";
+    }
+    return transferStateText(state);
 }
 
 bool isCompletedAttachmentMissing(
@@ -1725,21 +1770,25 @@ bool isCompletedAttachmentMissing(
 }
 
 std::string transferStateText(
-    const relaydesk::storage::ChatMessagePart& part)
+    const relaydesk::storage::ChatMessagePart& part,
+    bool outgoing)
 {
     if (isCompletedAttachmentMissing(part)) {
         return "已清理";
     }
     if (part.GetTransferState().has_value()) {
-        return transferStateText(part.GetTransferState().value());
+        return transferStateText(part.GetTransferState().value(), outgoing);
     }
-    return "等待传输";
+    return "待发送";
 }
 
-std::optional<std::filesystem::path> resolveFileContextPath(
+std::optional<OpenableTransferPath> resolveOpenableTransferPath(
     const relaydesk::storage::ChatMessagePart& part)
 {
-    if (part.GetType() != relaydesk::storage::MessagePartType::File ||
+    const bool folder =
+        part.GetType() == relaydesk::storage::MessagePartType::Folder;
+    if ((part.GetType() != relaydesk::storage::MessagePartType::File &&
+         !folder) ||
         !part.GetLocalPath().has_value() || part.GetLocalPath()->empty()) {
         return std::nullopt;
     }
@@ -1756,13 +1805,432 @@ std::optional<std::filesystem::path> resolveFileContextPath(
         }
         filePath = filePath.lexically_normal();
         error.clear();
-        if (!std::filesystem::is_regular_file(filePath, error) || error) {
-            return std::nullopt;
+        if (std::filesystem::is_directory(filePath, error) && !error) {
+            return OpenableTransferPath{filePath, true};
         }
-        return filePath;
+        error.clear();
+        if (std::filesystem::is_regular_file(filePath, error) && !error) {
+            return OpenableTransferPath{filePath, false};
+        }
+    } catch (const std::exception&) {
+    }
+    return std::nullopt;
+}
+
+std::optional<std::filesystem::path> resolveFileContextPath(
+    const relaydesk::storage::ChatMessagePart& part)
+{
+    const std::optional<OpenableTransferPath> openablePath =
+        resolveOpenableTransferPath(part);
+    if (!openablePath.has_value() || openablePath->folder) {
+        return std::nullopt;
+    }
+    return openablePath->path;
+}
+
+bool shouldShowOpenTransferActions(
+    relaydesk::storage::TransferState state,
+    bool outgoing)
+{
+    if (outgoing) {
+        return state == relaydesk::storage::TransferState::Completed ||
+            state == relaydesk::storage::TransferState::Cancelled ||
+            state == relaydesk::storage::TransferState::Rejected;
+    }
+    return state == relaydesk::storage::TransferState::Completed ||
+        state == relaydesk::storage::TransferState::Cancelled;
+}
+
+bool shouldShowIncomingTransferAcceptActions(
+    relaydesk::storage::TransferState state)
+{
+    return state == relaydesk::storage::TransferState::Offered ||
+        state == relaydesk::storage::TransferState::Interrupted;
+}
+
+std::string transferFileNameLeaf(std::string fileName)
+{
+    const std::size_t position = fileName.find_last_of("/\\");
+    if (position != std::string::npos) {
+        fileName = fileName.substr(position + 1u);
+    }
+    if (fileName.empty() || fileName == "." || fileName == "..") {
+        return "transfer.bin";
+    }
+    for (char& value : fileName) {
+        if (value == '/' || value == '\\' || value == ':' || value == '*' ||
+            value == '?' || value == '"' || value == '<' || value == '>' ||
+            value == '|') {
+            value = '_';
+        }
+    }
+    return fileName;
+}
+
+bool incomingTransferTargetExists(
+    const relaydesk::storage::ChatMessagePart& part)
+{
+    const bool folder =
+        part.GetType() == relaydesk::storage::MessagePartType::Folder;
+    if ((part.GetType() != relaydesk::storage::MessagePartType::File &&
+         !folder) ||
+        !part.GetFileName().has_value()) {
+        return false;
+    }
+    try {
+        const relaydesk::storage::AppPaths appPaths =
+            relaydesk::storage::createAppPaths();
+        const std::filesystem::path targetPath =
+            appPaths.GetInboxDirectory() /
+            filesystemPathFromUtf8(
+                transferFileNameLeaf(part.GetFileName().value()));
+        std::error_code error;
+        return std::filesystem::exists(targetPath, error) && !error;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+std::optional<std::filesystem::path> selectIncomingTransferSavePath(
+    const std::string& fileName)
+{
+    if (fileName.empty()) {
+        return std::nullopt;
+    }
+    try {
+        const relaydesk::storage::AppPaths appPaths =
+            relaydesk::storage::createAppPaths();
+        return relaydesk::platform::selectSavePathFromDialog(
+            appPaths.GetInboxDirectory(), transferFileNameLeaf(fileName));
     } catch (const std::exception&) {
         return std::nullopt;
     }
+}
+
+std::string makeTransferPartActionValue(
+    std::string_view prefix,
+    const relaydesk::storage::ChatMessageRecord& message,
+    const relaydesk::storage::ChatMessagePart& part)
+{
+    std::string action(prefix);
+    action += message.GetMessageId();
+    action += ':';
+    action += part.GetPartId();
+    return action;
+}
+
+std::optional<TransferPartActionTarget> parseTransferPartActionTarget(
+    std::string_view action,
+    std::string_view prefix)
+{
+    if (!action.starts_with(prefix)) {
+        return std::nullopt;
+    }
+    const std::string_view payload = action.substr(prefix.size());
+    const std::size_t separator = payload.find(':');
+    if (separator == std::string_view::npos || separator == 0u ||
+        separator + 1u >= payload.size()) {
+        return std::nullopt;
+    }
+    return TransferPartActionTarget{
+        std::string(payload.substr(0u, separator)),
+        std::string(payload.substr(separator + 1u)),
+    };
+}
+
+const relaydesk::storage::ChatMessagePart* findSelectedPeerMessagePart(
+    const relaydesk::runtime::RelayDeskRuntime& relayRuntime,
+    const TransferPartActionTarget& target)
+{
+    for (const auto& message : relayRuntime.GetSelectedPeerMessages()) {
+        if (message.GetMessageId() != target.messageId) {
+            continue;
+        }
+        for (const auto& part : message.GetParts()) {
+            if (part.GetPartId() == target.partId) {
+                return &part;
+            }
+        }
+        return nullptr;
+    }
+    return nullptr;
+}
+
+void appendTransferActionButtonMarkup(std::string& markup,
+                                      std::string_view label,
+                                      std::string_view action,
+                                      bool primary)
+{
+    markup += R"(<div class="transfer-action-button)";
+    if (primary) {
+        markup += " primary";
+    }
+    markup += R"(" data-action=")";
+    markup += escapeHtml(action);
+    markup += R"(">)";
+    markup += escapeHtml(label);
+    markup += R"(</div>)";
+}
+
+std::string wrapTransferActionButtons(std::string buttons)
+{
+    if (buttons.empty()) {
+        return {};
+    }
+    return R"(<div class="transfer-actions">)" +
+        std::move(buttons) + R"(</div>)";
+}
+
+std::string makeTransferActionsMarkup(
+    const relaydesk::storage::ChatMessageRecord& message,
+    const relaydesk::storage::ChatMessagePart& part,
+    const std::optional<OpenableTransferPath>& openablePath,
+    bool incomingTargetExists)
+{
+    const bool fileOrFolder =
+        part.GetType() == relaydesk::storage::MessagePartType::File ||
+        part.GetType() == relaydesk::storage::MessagePartType::Folder;
+    if (!fileOrFolder || !part.GetTransferState().has_value()) {
+        return {};
+    }
+
+    const bool outgoing =
+        message.GetDirection() == relaydesk::storage::MessageDirection::Outgoing;
+    const relaydesk::storage::TransferState state =
+        part.GetTransferState().value();
+    const bool canAcceptIncoming =
+        !outgoing && shouldShowIncomingTransferAcceptActions(state);
+    if (!canAcceptIncoming && shouldShowOpenTransferActions(state, outgoing)) {
+        if (!openablePath.has_value()) {
+            if (outgoing || state == relaydesk::storage::TransferState::Completed) {
+                return R"(<div class="transfer-cleaned-notice">已清理</div>)";
+            }
+            return {};
+        }
+
+        std::string buttons;
+        const std::string openPath =
+            filesystemPathToGenericUtf8(openablePath->path);
+        if (!openablePath->folder) {
+            appendTransferActionButtonMarkup(
+                buttons,
+                "打开",
+                std::string(kTransferOpenActionPrefix) + openPath,
+                true);
+        }
+        appendTransferActionButtonMarkup(
+            buttons,
+            "打开文件夹",
+            std::string(openablePath->folder
+                            ? kTransferOpenActionPrefix
+                            : kTransferRevealActionPrefix) +
+                openPath,
+            false);
+        return wrapTransferActionButtons(std::move(buttons));
+    }
+
+    std::string buttons;
+    if (outgoing && state == relaydesk::storage::TransferState::Interrupted) {
+        appendTransferActionButtonMarkup(
+            buttons,
+            "继续发送",
+            makeTransferPartActionValue(kTransferSendActionPrefix,
+                                        message,
+                                        part),
+            true);
+    } else if (outgoing && state == relaydesk::storage::TransferState::Failed) {
+        const bool deliveryFailed =
+            message.GetDeliveryState() == relaydesk::storage::DeliveryState::Failed;
+        const std::string action = deliveryFailed
+            ? std::string(kTransferResendMessageActionPrefix) +
+                message.GetMessageId()
+            : makeTransferPartActionValue(kTransferSendActionPrefix,
+                                          message,
+                                          part);
+        appendTransferActionButtonMarkup(
+            buttons, "重新发送", action, true);
+    } else if (outgoing && state == relaydesk::storage::TransferState::Offered) {
+        appendTransferActionButtonMarkup(
+            buttons,
+            "主动发送",
+            makeTransferPartActionValue(kTransferSendActionPrefix,
+                                        message,
+                                        part),
+            true);
+        appendTransferActionButtonMarkup(
+            buttons,
+            "取消",
+            makeTransferPartActionValue(kTransferCancelActionPrefix,
+                                        message,
+                                        part),
+            false);
+    } else if (state == relaydesk::storage::TransferState::Transferring) {
+        appendTransferActionButtonMarkup(
+            buttons,
+            "取消",
+            makeTransferPartActionValue(kTransferCancelActionPrefix,
+                                        message,
+                                        part),
+            false);
+    } else if (!outgoing &&
+               state == relaydesk::storage::TransferState::Interrupted) {
+        appendTransferActionButtonMarkup(
+            buttons,
+            "继续接收",
+            makeTransferPartActionValue(kTransferAcceptActionPrefix,
+                                        message,
+                                        part),
+            true);
+    } else if (!outgoing && state == relaydesk::storage::TransferState::Offered) {
+        appendTransferActionButtonMarkup(
+            buttons,
+            "接收",
+            makeTransferPartActionValue(kTransferAcceptActionPrefix,
+                                        message,
+                                        part),
+            true);
+        appendTransferActionButtonMarkup(
+            buttons,
+            "另存为",
+            makeTransferPartActionValue(kTransferSaveAsActionPrefix,
+                                        message,
+                                        part),
+            false);
+        if (incomingTargetExists) {
+            appendTransferActionButtonMarkup(
+                buttons,
+                "覆盖",
+                makeTransferPartActionValue(kTransferOverwriteActionPrefix,
+                                            message,
+                                            part),
+                false);
+        }
+        appendTransferActionButtonMarkup(
+            buttons,
+            "拒绝",
+            makeTransferPartActionValue(kTransferRejectActionPrefix,
+                                        message,
+                                        part),
+            false);
+    }
+    return wrapTransferActionButtons(std::move(buttons));
+}
+
+std::string transferStateTextWithActions(
+    const relaydesk::storage::ChatMessagePart& part,
+    bool outgoing,
+    const std::string& actionsMarkup)
+{
+    std::string stateText = transferStateText(part, outgoing);
+    if (stateText == "已清理" &&
+        actionsMarkup.find(R"(class="transfer-cleaned-notice")") !=
+            std::string::npos &&
+        part.GetTransferState().has_value()) {
+        stateText = transferStateText(part.GetTransferState().value(), outgoing);
+    }
+    return stateText;
+}
+
+bool handleTransferCardAction(
+    std::string_view action,
+    relaydesk::runtime::RelayDeskRuntime& relayRuntime)
+{
+    if (action.starts_with(kTransferOpenActionPrefix)) {
+        const std::optional<std::filesystem::path> path =
+            tryFilesystemPathFromUtf8(action.substr(
+                kTransferOpenActionPrefix.size()));
+        if (path.has_value()) {
+            (void)shellOpenPath(path.value());
+        }
+        return true;
+    }
+    if (action.starts_with(kTransferRevealActionPrefix)) {
+        const std::optional<std::filesystem::path> path =
+            tryFilesystemPathFromUtf8(action.substr(
+                kTransferRevealActionPrefix.size()));
+        if (path.has_value()) {
+            (void)relaydesk::platform::revealPathInFileManager(path.value());
+        }
+        return true;
+    }
+    if (action.starts_with(kTransferResendMessageActionPrefix)) {
+        const std::string messageId(
+            action.substr(kTransferResendMessageActionPrefix.size()));
+        if (!messageId.empty()) {
+            relayRuntime.resendSelectedPeerMessage(messageId);
+        }
+        return true;
+    }
+
+    if (action.starts_with(kTransferSendActionPrefix)) {
+        const std::optional<TransferPartActionTarget> target =
+            parseTransferPartActionTarget(action, kTransferSendActionPrefix);
+        if (target.has_value()) {
+            relayRuntime.sendSelectedPeerFileTransfer(target->messageId,
+                                                      target->partId);
+        }
+        return true;
+    }
+    if (action.starts_with(kTransferCancelActionPrefix)) {
+        const std::optional<TransferPartActionTarget> target =
+            parseTransferPartActionTarget(action, kTransferCancelActionPrefix);
+        if (target.has_value()) {
+            relayRuntime.cancelSelectedPeerFileTransfer(target->messageId,
+                                                        target->partId);
+        }
+        return true;
+    }
+    if (action.starts_with(kTransferAcceptActionPrefix)) {
+        const std::optional<TransferPartActionTarget> target =
+            parseTransferPartActionTarget(action, kTransferAcceptActionPrefix);
+        if (target.has_value()) {
+            relayRuntime.acceptSelectedPeerFileTransfer(target->messageId,
+                                                        target->partId,
+                                                        false);
+        }
+        return true;
+    }
+    if (action.starts_with(kTransferOverwriteActionPrefix)) {
+        const std::optional<TransferPartActionTarget> target =
+            parseTransferPartActionTarget(
+                action, kTransferOverwriteActionPrefix);
+        if (target.has_value()) {
+            relayRuntime.acceptSelectedPeerFileTransfer(target->messageId,
+                                                        target->partId,
+                                                        true);
+        }
+        return true;
+    }
+    if (action.starts_with(kTransferRejectActionPrefix)) {
+        const std::optional<TransferPartActionTarget> target =
+            parseTransferPartActionTarget(action, kTransferRejectActionPrefix);
+        if (target.has_value()) {
+            relayRuntime.rejectSelectedPeerFileTransfer(target->messageId,
+                                                        target->partId);
+        }
+        return true;
+    }
+    if (action.starts_with(kTransferSaveAsActionPrefix)) {
+        const std::optional<TransferPartActionTarget> target =
+            parseTransferPartActionTarget(action, kTransferSaveAsActionPrefix);
+        if (!target.has_value()) {
+            return true;
+        }
+        const relaydesk::storage::ChatMessagePart* part =
+            findSelectedPeerMessagePart(relayRuntime, target.value());
+        if (part == nullptr || !part->GetFileName().has_value()) {
+            return true;
+        }
+        const std::optional<std::filesystem::path> savePath =
+            selectIncomingTransferSavePath(part->GetFileName().value());
+        if (savePath.has_value()) {
+            relayRuntime.acceptSelectedPeerFileTransferAs(target->messageId,
+                                                          target->partId,
+                                                          savePath.value());
+        }
+        return true;
+    }
+    return false;
 }
 
 int transferProgressPercent(const relaydesk::storage::ChatMessagePart& part)
@@ -1875,9 +2343,21 @@ std::string makeTransferMessageMarkup(
     const std::string sizeText =
         part.GetFileSize().has_value() ? formatFileSize(part.GetFileSize().value())
                                        : "文件夹";
-    const std::string stateText = transferStateText(part);
+    const std::optional<OpenableTransferPath> openablePath =
+        resolveOpenableTransferPath(part);
     const std::optional<std::filesystem::path> fileContextPath =
-        resolveFileContextPath(part);
+        openablePath.has_value() && !openablePath->folder
+            ? std::optional<std::filesystem::path>(openablePath->path)
+            : std::nullopt;
+    const bool targetExists =
+        !outgoing && part.GetTransferState().has_value() &&
+        part.GetTransferState().value() ==
+            relaydesk::storage::TransferState::Offered &&
+        incomingTransferTargetExists(part);
+    const std::string actionsMarkup = makeTransferActionsMarkup(
+        message, part, openablePath, targetExists);
+    const std::string stateText =
+        transferStateTextWithActions(part, outgoing, actionsMarkup);
 
     std::string html;
     html.reserve(760);
@@ -1933,7 +2413,9 @@ std::string makeTransferMessageMarkup(
     if (outgoing) {
         html += R"(<svg class="card-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5 6 17.5 15 8.5"></path><path d="M9 15.5 11 17.5 22 6.5"></path></svg>)";
     }
-    html += R"(</div></div></div></div></div>)";
+    html += R"(</div></div>)";
+    html += actionsMarkup;
+    html += R"(</div></div></div>)";
     return html;
 }
 
@@ -2080,17 +2562,32 @@ std::string makeDocumentTextPartMarkup(
 }
 
 std::string makeDocumentTransferPartMarkup(
+    const relaydesk::storage::ChatMessageRecord& message,
     const relaydesk::storage::ChatMessagePart& part)
 {
+    const bool outgoing =
+        message.GetDirection() == relaydesk::storage::MessageDirection::Outgoing;
     const int progress = transferProgressPercent(part);
     const bool warning = isTransferWarning(part);
     const std::string title = partDisplayText(part);
     const std::string sizeText = part.GetFileSize().has_value()
         ? formatFileSize(part.GetFileSize().value())
         : "文件夹";
-    const std::string stateText = transferStateText(part);
+    const std::optional<OpenableTransferPath> openablePath =
+        resolveOpenableTransferPath(part);
     const std::optional<std::filesystem::path> fileContextPath =
-        resolveFileContextPath(part);
+        openablePath.has_value() && !openablePath->folder
+            ? std::optional<std::filesystem::path>(openablePath->path)
+            : std::nullopt;
+    const bool targetExists =
+        !outgoing && part.GetTransferState().has_value() &&
+        part.GetTransferState().value() ==
+            relaydesk::storage::TransferState::Offered &&
+        incomingTransferTargetExists(part);
+    const std::string actionsMarkup = makeTransferActionsMarkup(
+        message, part, openablePath, targetExists);
+    const std::string stateText =
+        transferStateTextWithActions(part, outgoing, actionsMarkup);
 
     std::string html;
     html.reserve(title.size() + 640u);
@@ -2127,7 +2624,9 @@ std::string makeDocumentTransferPartMarkup(
     }
     html += R"(" value=")";
     html += std::to_string(progress);
-    html += R"(" max="100"></progress></div></div>)";
+    html += R"(" max="100"></progress>)";
+    html += actionsMarkup;
+    html += R"(</div></div>)";
     return html;
 }
 
@@ -2146,11 +2645,11 @@ std::string makeCompoundMessageMarkup(
                 makeMessageImageCardMarkup(part);
             documentMarkup += imageMarkup.has_value()
                 ? imageMarkup.value()
-                : makeDocumentTransferPartMarkup(part);
+                : makeDocumentTransferPartMarkup(message, part);
         } else if (part.GetType() == relaydesk::storage::MessagePartType::File ||
                    part.GetType() ==
                        relaydesk::storage::MessagePartType::Folder) {
-            documentMarkup += makeDocumentTransferPartMarkup(part);
+            documentMarkup += makeDocumentTransferPartMarkup(message, part);
         } else {
             documentMarkup += makeDocumentTextPartMarkup(part);
         }
@@ -2965,7 +3464,9 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
         }
 
         const std::string_view action(event.action);
-        if (action.starts_with(imageContextPrefix)) {
+        if (handleTransferCardAction(action, relayRuntime)) {
+            hideMessageContextMenu(runtime);
+        } else if (action.starts_with(imageContextPrefix)) {
             hideMessageContextMenu(runtime);
             const std::optional<std::filesystem::path> imagePath =
                 tryFilesystemPathFromUtf8(
@@ -3276,6 +3777,294 @@ relaydesk::storage::ChatMessageRecord makeCaptureMessage(
                                 : relaydesk::storage::DeliveryState::Received);
     record.SetParts(std::move(parts));
     return record;
+}
+
+struct CaptureTransferActionScenario {
+    relaydesk::storage::MessageDirection direction =
+        relaydesk::storage::MessageDirection::Outgoing;
+    relaydesk::storage::TransferState state =
+        relaydesk::storage::TransferState::Pending;
+    relaydesk::storage::DeliveryState deliveryState =
+        relaydesk::storage::DeliveryState::Delivered;
+    relaydesk::storage::MessagePartType partType =
+        relaydesk::storage::MessagePartType::File;
+    std::optional<OpenableTransferPath> openablePath;
+    bool incomingTargetExists = false;
+};
+
+struct ExpectedTransferAction {
+    std::string_view label;
+    std::string_view actionPrefix;
+    bool primary = false;
+};
+
+std::string makeCaptureTransferActionsMarkup(
+    const CaptureTransferActionScenario& scenario)
+{
+    const relaydesk::storage::ChatMessagePart part = makeCaptureFilePart(
+        "capture-action-part",
+        scenario.partType,
+        scenario.partType == relaydesk::storage::MessagePartType::Folder
+            ? "capture-action-folder"
+            : "capture-action.bin",
+        1024,
+        0,
+        scenario.state);
+    relaydesk::storage::ChatMessageRecord message = makeCaptureMessage(
+        "capture-action-message",
+        scenario.direction,
+        "2026-07-09T09:35:00Z",
+        {part});
+    message.SetDeliveryState(scenario.deliveryState);
+    return makeTransferActionsMarkup(message,
+                                     part,
+                                     scenario.openablePath,
+                                     scenario.incomingTargetExists);
+}
+
+bool transferActionsMatch(
+    const std::string& markup,
+    std::initializer_list<ExpectedTransferAction> expectedActions)
+{
+    constexpr std::string_view kButtonMarker =
+        R"(class="transfer-action-button)";
+    constexpr std::string_view kActionMarker = R"(data-action=")";
+    std::size_t cursor = 0;
+    for (const ExpectedTransferAction& expected : expectedActions) {
+        const std::size_t buttonStart = markup.find(kButtonMarker, cursor);
+        if (buttonStart == std::string::npos) {
+            return false;
+        }
+        const std::size_t classValueStart = buttonStart + kButtonMarker.size();
+        const std::size_t classValueEnd = markup.find('"', classValueStart);
+        if (classValueEnd == std::string::npos) {
+            return false;
+        }
+        const bool primary =
+            markup.substr(classValueStart, classValueEnd - classValueStart) ==
+            " primary";
+        if (primary != expected.primary) {
+            return false;
+        }
+
+        const std::size_t actionMarkerStart =
+            markup.find(kActionMarker, classValueEnd);
+        if (actionMarkerStart == std::string::npos) {
+            return false;
+        }
+        const std::size_t actionStart =
+            actionMarkerStart + kActionMarker.size();
+        if (markup.compare(actionStart,
+                           expected.actionPrefix.size(),
+                           expected.actionPrefix) != 0) {
+            return false;
+        }
+        const std::size_t actionEnd = markup.find('"', actionStart);
+        const std::size_t labelStart = markup.find('>', actionEnd);
+        if (actionEnd == std::string::npos || labelStart == std::string::npos) {
+            return false;
+        }
+        const std::size_t labelEnd = markup.find("</div>", labelStart + 1u);
+        if (labelEnd == std::string::npos ||
+            markup.substr(labelStart + 1u, labelEnd - labelStart - 1u) !=
+                expected.label) {
+            return false;
+        }
+        cursor = labelEnd + 6u;
+    }
+    return markup.find(kButtonMarker, cursor) == std::string::npos &&
+        (expectedActions.size() != 0u || markup.empty());
+}
+
+bool captureTransferActionMatrixMatchesOriginal()
+{
+    constexpr std::string_view kCleanedMarkup =
+        R"(<div class="transfer-cleaned-notice">已清理</div>)";
+    const OpenableTransferPath filePath{
+        std::filesystem::path("capture-action.bin"), false};
+    const OpenableTransferPath folderPath{
+        std::filesystem::path("capture-action-folder"), true};
+    CaptureTransferActionScenario scenario;
+
+    if (!transferActionsMatch(makeCaptureTransferActionsMarkup(scenario), {})) {
+        return false;
+    }
+
+    scenario.state = relaydesk::storage::TransferState::Offered;
+    if (!transferActionsMatch(
+            makeCaptureTransferActionsMarkup(scenario),
+            {{"主动发送", kTransferSendActionPrefix, true},
+             {"取消", kTransferCancelActionPrefix, false}})) {
+        return false;
+    }
+
+    scenario.state = relaydesk::storage::TransferState::Transferring;
+    if (!transferActionsMatch(
+            makeCaptureTransferActionsMarkup(scenario),
+            {{"取消", kTransferCancelActionPrefix, false}})) {
+        return false;
+    }
+
+    scenario.state = relaydesk::storage::TransferState::Interrupted;
+    if (!transferActionsMatch(
+            makeCaptureTransferActionsMarkup(scenario),
+            {{"继续发送", kTransferSendActionPrefix, true}})) {
+        return false;
+    }
+
+    scenario.state = relaydesk::storage::TransferState::Failed;
+    if (!transferActionsMatch(
+            makeCaptureTransferActionsMarkup(scenario),
+            {{"重新发送", kTransferSendActionPrefix, true}})) {
+        return false;
+    }
+    scenario.deliveryState = relaydesk::storage::DeliveryState::Failed;
+    if (!transferActionsMatch(
+            makeCaptureTransferActionsMarkup(scenario),
+            {{"重新发送", kTransferResendMessageActionPrefix, true}})) {
+        return false;
+    }
+
+    scenario.deliveryState = relaydesk::storage::DeliveryState::Delivered;
+    for (const relaydesk::storage::TransferState openState : {
+             relaydesk::storage::TransferState::Completed,
+             relaydesk::storage::TransferState::Cancelled}) {
+        scenario.state = openState;
+        scenario.openablePath = filePath;
+        if (!transferActionsMatch(
+                makeCaptureTransferActionsMarkup(scenario),
+                {{"打开", kTransferOpenActionPrefix, true},
+                 {"打开文件夹", kTransferRevealActionPrefix, false}})) {
+            return false;
+        }
+        scenario.openablePath.reset();
+        if (makeCaptureTransferActionsMarkup(scenario) != kCleanedMarkup) {
+            return false;
+        }
+    }
+
+    scenario.state = relaydesk::storage::TransferState::Rejected;
+    scenario.partType = relaydesk::storage::MessagePartType::Folder;
+    scenario.openablePath = folderPath;
+    if (!transferActionsMatch(
+            makeCaptureTransferActionsMarkup(scenario),
+            {{"打开文件夹", kTransferOpenActionPrefix, false}})) {
+        return false;
+    }
+    scenario.openablePath.reset();
+    if (makeCaptureTransferActionsMarkup(scenario) != kCleanedMarkup) {
+        return false;
+    }
+
+    scenario = CaptureTransferActionScenario{};
+    scenario.direction = relaydesk::storage::MessageDirection::Incoming;
+    if (!transferActionsMatch(makeCaptureTransferActionsMarkup(scenario), {})) {
+        return false;
+    }
+
+    scenario.state = relaydesk::storage::TransferState::Offered;
+    if (!transferActionsMatch(
+            makeCaptureTransferActionsMarkup(scenario),
+            {{"接收", kTransferAcceptActionPrefix, true},
+             {"另存为", kTransferSaveAsActionPrefix, false},
+             {"拒绝", kTransferRejectActionPrefix, false}})) {
+        return false;
+    }
+    scenario.incomingTargetExists = true;
+    if (!transferActionsMatch(
+            makeCaptureTransferActionsMarkup(scenario),
+            {{"接收", kTransferAcceptActionPrefix, true},
+             {"另存为", kTransferSaveAsActionPrefix, false},
+             {"覆盖", kTransferOverwriteActionPrefix, false},
+             {"拒绝", kTransferRejectActionPrefix, false}})) {
+        return false;
+    }
+
+    scenario.incomingTargetExists = false;
+    scenario.state = relaydesk::storage::TransferState::Transferring;
+    if (!transferActionsMatch(
+            makeCaptureTransferActionsMarkup(scenario),
+            {{"取消", kTransferCancelActionPrefix, false}})) {
+        return false;
+    }
+
+    scenario.state = relaydesk::storage::TransferState::Interrupted;
+    if (!transferActionsMatch(
+            makeCaptureTransferActionsMarkup(scenario),
+            {{"继续接收", kTransferAcceptActionPrefix, true}})) {
+        return false;
+    }
+
+    scenario.state = relaydesk::storage::TransferState::Completed;
+    scenario.openablePath = filePath;
+    if (!transferActionsMatch(
+            makeCaptureTransferActionsMarkup(scenario),
+            {{"打开", kTransferOpenActionPrefix, true},
+             {"打开文件夹", kTransferRevealActionPrefix, false}})) {
+        return false;
+    }
+    scenario.openablePath.reset();
+    if (makeCaptureTransferActionsMarkup(scenario) != kCleanedMarkup) {
+        return false;
+    }
+
+    scenario.state = relaydesk::storage::TransferState::Cancelled;
+    scenario.openablePath = filePath;
+    if (!transferActionsMatch(
+            makeCaptureTransferActionsMarkup(scenario),
+            {{"打开", kTransferOpenActionPrefix, true},
+             {"打开文件夹", kTransferRevealActionPrefix, false}})) {
+        return false;
+    }
+    scenario.openablePath.reset();
+    if (!transferActionsMatch(makeCaptureTransferActionsMarkup(scenario), {})) {
+        return false;
+    }
+
+    for (const relaydesk::storage::TransferState emptyState : {
+             relaydesk::storage::TransferState::Failed,
+             relaydesk::storage::TransferState::Rejected}) {
+        scenario.state = emptyState;
+        if (!transferActionsMatch(
+                makeCaptureTransferActionsMarkup(scenario), {})) {
+            return false;
+        }
+    }
+
+    const relaydesk::storage::ChatMessagePart offeredPart = makeCaptureFilePart(
+        "capture-standalone-action",
+        relaydesk::storage::MessagePartType::File,
+        "standalone-action.bin",
+        1024,
+        0,
+        relaydesk::storage::TransferState::Offered);
+    relaydesk::storage::ChatMessageRecord offeredMessage = makeCaptureMessage(
+        "capture-standalone-action-message",
+        relaydesk::storage::MessageDirection::Outgoing,
+        "2026-07-09T09:35:00Z",
+        {offeredPart});
+    const std::string standaloneMarkup =
+        makeTransferMessageMarkup(offeredMessage, offeredPart);
+    offeredMessage.SetParts(
+        {makeCaptureTextPart("capture-compound-text", "file follows"),
+         offeredPart});
+    const std::string compoundMarkup = makeCompoundMessageMarkup(offeredMessage);
+    return standaloneMarkup.find(R"(class="transfer-actions")") !=
+            std::string::npos &&
+        standaloneMarkup.find(">主动发送</div>") != std::string::npos &&
+        compoundMarkup.find(R"(class="message-document-file)") !=
+            std::string::npos &&
+        compoundMarkup.find(R"(class="transfer-actions")") !=
+            std::string::npos &&
+        compoundMarkup.find(">主动发送</div>") != std::string::npos &&
+        transferStateText(relaydesk::storage::TransferState::Failed, true) ==
+            "发送失败" &&
+        transferStateText(relaydesk::storage::TransferState::Failed, false) ==
+            "接收失败" &&
+        transferStateText(relaydesk::storage::TransferState::Interrupted, true) ==
+            "发送中断" &&
+        transferStateText(relaydesk::storage::TransferState::Interrupted, false) ==
+            "接收中断";
 }
 
 std::vector<relaydesk::storage::ChatMessageRecord> makeCaptureChatMessages(
@@ -3821,6 +4610,9 @@ int captureSkiaUiPng(const CaptureOptions& options)
         relayRuntime.showPagedConversation();
     }
     if (options.testFileCard) {
+        if (!captureTransferActionMatrixMatchesOriginal()) {
+            return 61;
+        }
         const relaydesk::storage::AppPaths appPaths =
             relaydesk::storage::createAppPaths();
         const std::string executablePath =
@@ -3828,9 +4620,21 @@ int captureSkiaUiPng(const CaptureOptions& options)
         relayRuntime.showFileCardConversation(executablePath);
         const std::string fileCardMarkup =
             makeChatContentMarkup(relayRuntime);
-        if (fileCardMarkup.find(
-                R"(class="transfer-meta cleaned">已清理)") ==
-            std::string::npos) {
+        constexpr std::string_view kCleanedNoticeMarker =
+            R"(class="transfer-cleaned-notice">已清理)";
+        const std::size_t firstCleanedNotice = fileCardMarkup.find(
+            kCleanedNoticeMarker);
+        const std::size_t secondCleanedNotice = fileCardMarkup.find(
+            kCleanedNoticeMarker,
+            firstCleanedNotice == std::string::npos
+                ? 0u
+                : firstCleanedNotice + kCleanedNoticeMarker.size());
+        if (firstCleanedNotice == std::string::npos ||
+            secondCleanedNotice == std::string::npos ||
+            fileCardMarkup.find(
+                "已清理",
+                secondCleanedNotice + kCleanedNoticeMarker.size()) !=
+                std::string::npos) {
             return 24;
         }
         if (fileCardMarkup.find(
@@ -3859,7 +4663,7 @@ int captureSkiaUiPng(const CaptureOptions& options)
                 0,
                 relaydesk::storage::TransferState::Cancelled,
                 "capture");
-        if (transferStateText(cancelledPart) != "已取消") {
+        if (transferStateText(cancelledPart, true) != "已取消") {
             return 26;
         }
     }

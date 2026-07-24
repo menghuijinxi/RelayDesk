@@ -766,6 +766,75 @@
       align-items: center;
       flex-shrink: 0;
     }
+    .transfer-actions {
+      position: relative;
+      display: flex;
+      flex-direction: row;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: flex-end;
+      width: 100%;
+      height: auto;
+      margin-top: 10px;
+      gap: 6px;
+    }
+    .transfer-action-button {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      width: auto;
+      min-width: 48px;
+      height: 28px;
+      padding: 0px 12px;
+      box-sizing: border-box;
+      border-width: 1px;
+      border-style: solid;
+      border-color: #8addd9;
+      border-radius: 5px;
+      background-color: #ffffff;
+      color: #0b7773;
+      font-size: 13px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    .transfer-action-button:hover {
+      background-color: #effcfb;
+    }
+    .transfer-action-button.primary {
+      border-color: #0aa39e;
+      background-color: #0aa39e;
+      color: #ffffff;
+    }
+    .transfer-action-button.primary:hover {
+      background-color: #078a86;
+    }
+    .transfer-cleaned-notice {
+      position: relative;
+      width: 100%;
+      height: 20px;
+      margin-top: 10px;
+      text-align: right;
+      color: #dc2626;
+      font-size: 13px;
+      font-weight: bold;
+    }
+    .message-document-file .transfer-actions {
+      margin-top: 7px;
+      gap: 4px;
+    }
+    .message-document-file .transfer-action-button {
+      min-width: 44px;
+      height: 26px;
+      padding: 0px 9px;
+      font-size: 12px;
+    }
+    .message-document-file .transfer-cleaned-notice {
+      height: 18px;
+      margin-top: 6px;
+      font-size: 12px;
+    }
     .card-time {
       position: relative;
       width: 48px;
