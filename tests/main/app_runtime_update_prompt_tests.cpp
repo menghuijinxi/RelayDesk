@@ -31,6 +31,9 @@
 
 namespace {
 
+constexpr wchar_t kAppUpdateRestartProbeEnvironment[] =
+    L"RELAYDESK_APP_UPDATE_RESTART_PROBE";
+
 int fail(const std::string& message)
 {
     std::cerr << message << '\n';
@@ -370,6 +373,83 @@ std::filesystem::path currentExecutablePath()
     buffer.resize(length);
     return std::filesystem::path(buffer);
 }
+
+std::optional<std::filesystem::path> appUpdateRestartProbePath()
+{
+    const DWORD requiredLength = GetEnvironmentVariableW(
+        kAppUpdateRestartProbeEnvironment, nullptr, 0);
+    if (requiredLength == 0) {
+        return std::nullopt;
+    }
+
+    std::wstring value(requiredLength, L'\0');
+    const DWORD actualLength = GetEnvironmentVariableW(
+        kAppUpdateRestartProbeEnvironment,
+        value.data(),
+        static_cast<DWORD>(value.size()));
+    if (actualLength == 0 || actualLength >= value.size()) {
+        throw std::runtime_error(
+            "Failed to read app update restart probe path.");
+    }
+    value.resize(actualLength);
+    return std::filesystem::path(value);
+}
+
+int writeAppUpdateRestartProbe(const std::filesystem::path& markerPath)
+{
+    STARTUPINFOW startupInfo{};
+    startupInfo.cb = sizeof(startupInfo);
+    GetStartupInfoW(&startupInfo);
+
+    std::ostringstream status;
+    status << "started=1\n"
+           << "use_show_window="
+           << ((startupInfo.dwFlags & STARTF_USESHOWWINDOW) != 0 ? 1 : 0)
+           << "\nshow_window="
+           << static_cast<unsigned int>(startupInfo.wShowWindow) << '\n';
+    writeTextFile(markerPath, status.str());
+    return 0;
+}
+
+class ScopedEnvironmentVariable final {
+public:
+    ScopedEnvironmentVariable(const wchar_t* name, const std::wstring& value)
+        : name_(name)
+    {
+        const DWORD requiredLength = GetEnvironmentVariableW(name_, nullptr, 0);
+        if (requiredLength != 0) {
+            previousValue_.emplace(requiredLength, L'\0');
+            const DWORD actualLength = GetEnvironmentVariableW(
+                name_,
+                previousValue_->data(),
+                static_cast<DWORD>(previousValue_->size()));
+            if (actualLength == 0 || actualLength >= previousValue_->size()) {
+                throw std::runtime_error(
+                    "Failed to save existing environment variable.");
+            }
+            previousValue_->resize(actualLength);
+        }
+        if (!SetEnvironmentVariableW(name_, value.c_str())) {
+            throw std::runtime_error("Failed to set environment variable.");
+        }
+    }
+
+    ~ScopedEnvironmentVariable()
+    {
+        const wchar_t* previousValue = previousValue_.has_value()
+            ? previousValue_->c_str()
+            : nullptr;
+        (void)SetEnvironmentVariableW(name_, previousValue);
+    }
+
+    ScopedEnvironmentVariable(const ScopedEnvironmentVariable&) = delete;
+    ScopedEnvironmentVariable& operator=(const ScopedEnvironmentVariable&) =
+        delete;
+
+protected:
+    const wchar_t* name_;
+    std::optional<std::wstring> previousValue_;
+};
 
 std::wstring utf8ToWideForTest(const std::string& value)
 {
@@ -3924,6 +4004,101 @@ int runsAppUpdateAcrossProcesses()
     return 0;
 }
 
+int skiaUiUpdateHelperRestartsUpdatedAppVisible()
+{
+#if defined(RELAYDESK_SKIAUI_EXECUTABLE_PATH)
+    const std::filesystem::path scenarioRoot =
+        makeUniqueProcessScenarioRoot("skiaui-update-restart");
+    const std::filesystem::path targetPath =
+        scenarioRoot / "relaydesk-restarted.exe";
+    const std::filesystem::path markerPath =
+        scenarioRoot / "restart-probe.txt";
+    const std::filesystem::path logPath = scenarioRoot / "apply-update.log";
+    const std::filesystem::path payloadPath = currentExecutablePath();
+    const std::filesystem::path helperPath =
+        std::filesystem::path(RELAYDESK_SKIAUI_EXECUTABLE_PATH);
+    std::filesystem::create_directories(scenarioRoot);
+    writeBytes(targetPath, {'s', 't', 'a', 'l', 'e'});
+
+    relaydesk::runtime::AppUpdateApplyOptions options;
+    options.SetTargetPath(targetPath);
+    options.SetPayloadPath(payloadPath);
+    options.SetHelperPath(helperPath);
+    options.SetStartDirectory(scenarioRoot);
+    options.SetLogPath(logPath);
+    options.SetTargetProcessId(0);
+    options.SetRestartAfterApply(true);
+
+    DWORD helperExitCode = 1;
+    {
+        const ScopedEnvironmentVariable restartProbe(
+            kAppUpdateRestartProbeEnvironment, markerPath.wstring());
+        helperExitCode = runCommandAndWait(
+            helperPath,
+            makeAppUpdateApplyArgumentsForTest(options),
+            scenarioRoot,
+            std::chrono::seconds(5));
+        (void)waitForPredicate(
+            [&markerPath] {
+                return std::filesystem::is_regular_file(markerPath);
+            },
+            std::chrono::seconds(5));
+    }
+
+    const std::string helperLog = readTextFileIfExists(logPath);
+    const std::string marker = readTextFileIfExists(markerPath);
+    if (const int result = expect(
+            helperExitCode == 0,
+            "SkiaUI update helper did not exit successfully. Log: "
+                + helperLog);
+        result != 0) {
+        return result;
+    }
+    if (const int result = expect(
+            readBytes(targetPath) == readBytes(payloadPath),
+            "SkiaUI update helper did not replace the target executable.");
+        result != 0) {
+        return result;
+    }
+    if (const int result = expect(
+            helperLog.find("copy succeeded") != std::string::npos
+                && helperLog.find("restart requested") != std::string::npos
+                && helperLog.find("update helper finished")
+                    != std::string::npos,
+            "SkiaUI update helper log did not confirm replacement and "
+            "restart. Log: " + helperLog);
+        result != 0) {
+        return result;
+    }
+    if (const int result = expect(
+            marker.find("started=1") != std::string::npos,
+            "Updated application was not restarted. Marker: " + marker);
+        result != 0) {
+        return result;
+    }
+    if (const int result = expect(
+            readStatusValue(marker, "show_window")
+                == std::to_string(SW_SHOWNORMAL),
+            "Updated application was restarted with a hidden window. Marker: "
+                + marker);
+        result != 0) {
+        return result;
+    }
+
+    if (!waitForPredicate(
+            [&targetPath] {
+                std::error_code error;
+                (void)std::filesystem::remove(targetPath, error);
+                return !std::filesystem::exists(targetPath);
+            },
+            std::chrono::seconds(5))) {
+        return fail("Restarted update probe process did not exit.");
+    }
+    removeScenarioRoot(scenarioRoot);
+#endif
+    return 0;
+}
+
 int sendsFileTransferBetweenTwoRuntimeProcesses()
 {
     const std::filesystem::path scenarioRoot =
@@ -5017,6 +5192,15 @@ int resumesInterruptedOutgoingFolderTransferAcrossProcesses()
 
 int main(int argc, char** argv)
 {
+    try {
+        if (const std::optional<std::filesystem::path> markerPath =
+                appUpdateRestartProbePath()) {
+            return writeAppUpdateRestartProbe(*markerPath);
+        }
+    } catch (const std::exception& error) {
+        return fail(std::string("Restart probe failed: ") + error.what());
+    }
+
     struct AsyncShutdownGuard {
         ~AsyncShutdownGuard()
         {
@@ -5187,6 +5371,11 @@ int main(int argc, char** argv)
                 runsAppUpdateAcrossProcesses();
             appUpdateProcessResult != 0) {
             return appUpdateProcessResult;
+        }
+        if (const int appUpdateRestartResult =
+                skiaUiUpdateHelperRestartsUpdatedAppVisible();
+            appUpdateRestartResult != 0) {
+            return appUpdateRestartResult;
         }
         if (const int fileTransferProcessResult =
                 sendsFileTransferBetweenTwoRuntimeProcesses();

@@ -1168,9 +1168,15 @@ std::wstring makeWindowsCommandLine(
     return commandLine;
 }
 
+enum class WindowsProcessVisibility {
+    Hidden,
+    Normal,
+};
+
 bool launchWindowsProcess(const std::filesystem::path& executablePath,
                           const std::vector<std::wstring>& arguments,
-                          const std::filesystem::path& workingDirectory)
+                          const std::filesystem::path& workingDirectory,
+                          WindowsProcessVisibility visibility)
 {
 #if defined(_WIN32)
     std::wstring commandLine = makeWindowsCommandLine(executablePath, arguments);
@@ -1178,14 +1184,19 @@ bool launchWindowsProcess(const std::filesystem::path& executablePath,
     STARTUPINFOW startupInfo{};
     startupInfo.cb = sizeof(startupInfo);
     startupInfo.dwFlags = STARTF_USESHOWWINDOW;
-    startupInfo.wShowWindow = SW_HIDE;
+    startupInfo.wShowWindow = visibility == WindowsProcessVisibility::Hidden
+        ? SW_HIDE
+        : SW_SHOWNORMAL;
+    const DWORD creationFlags = visibility == WindowsProcessVisibility::Hidden
+        ? CREATE_NO_WINDOW
+        : 0;
     PROCESS_INFORMATION processInfo{};
     const BOOL started = CreateProcessW(nullptr,
                                         commandLine.data(),
                                         nullptr,
                                         nullptr,
                                         FALSE,
-                                        CREATE_NO_WINDOW,
+                                        creationFlags,
                                         nullptr,
                                         directory.empty() ? nullptr : directory.c_str(),
                                         &startupInfo,
@@ -1200,6 +1211,7 @@ bool launchWindowsProcess(const std::filesystem::path& executablePath,
     (void)executablePath;
     (void)arguments;
     (void)workingDirectory;
+    (void)visibility;
     return false;
 #endif
 }
@@ -2015,7 +2027,8 @@ int runAppUpdateApplyMode(const AppUpdateApplyOptions& options) noexcept
         if (options.GetRestartAfterApply()) {
             if (!launchWindowsProcess(options.GetTargetPath(),
                                       {},
-                                      options.GetStartDirectory())) {
+                                      options.GetStartDirectory(),
+                                      WindowsProcessVisibility::Normal)) {
                 appendAppUpdateLog(options.GetLogPath(), "restart failed");
                 return 5;
             }
@@ -3045,7 +3058,8 @@ bool RelayDeskRuntime::launchAppUpdateHelper(
     }
     return launchWindowsProcess(options.GetHelperPath(),
                                 makeAppUpdateApplyArguments(options),
-                                options.GetStartDirectory());
+                                options.GetStartDirectory(),
+                                WindowsProcessVisibility::Hidden);
 #else
     (void)options;
     return false;

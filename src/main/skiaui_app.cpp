@@ -108,6 +108,24 @@ constexpr std::string_view kTransferRevealActionPrefix = "transfer-reveal:";
 constexpr UINT kSkiaUiRequestRedrawMessage = WM_APP + 0x531;
 constexpr UINT kRelayDeskSkiaUiRefreshMs = 100;
 
+std::vector<std::wstring> currentProcessArguments()
+{
+    int argumentCount = 0;
+    LPWSTR* rawArguments =
+        CommandLineToArgvW(GetCommandLineW(), &argumentCount);
+    if (rawArguments == nullptr) {
+        return {};
+    }
+
+    std::vector<std::wstring> arguments;
+    arguments.reserve(static_cast<std::size_t>(argumentCount));
+    for (int index = 1; index < argumentCount; ++index) {
+        arguments.emplace_back(rawArguments[index]);
+    }
+    LocalFree(rawArguments);
+    return arguments;
+}
+
 enum class ComposerAttachmentKind {
     Image,
     File,
@@ -455,6 +473,18 @@ bool loadStoredLaunchAtStartupEnabled()
         return relaydesk::storage::loadLaunchAtStartupEnabled(paths);
     } catch (const std::exception&) {
         return true;
+    }
+}
+
+std::optional<bool> loadSystemLaunchAtStartupEnabled()
+{
+    try {
+        const auto paths = relaydesk::storage::createAppPaths();
+        return relaydesk::platform::getStartupLaunchState(
+                   paths.GetExecutablePath())
+            == relaydesk::platform::StartupLaunchState::Enabled;
+    } catch (const std::exception&) {
+        return std::nullopt;
     }
 }
 
@@ -3151,8 +3181,8 @@ void initializeSettingsState(skui::Runtime& runtime,
     binding.settingsSavedProfileName = binding.settingsProfileName;
     if (binding.backgroundController != nullptr) {
         binding.darkModeEnabled = loadStoredDarkModeEnabled();
-        binding.launchAtStartupEnabled =
-            loadStoredLaunchAtStartupEnabled();
+        binding.launchAtStartupEnabled = loadSystemLaunchAtStartupEnabled()
+            .value_or(loadStoredLaunchAtStartupEnabled());
         binding.backgroundController->setNotificationSoundEnabled(
             binding.notificationSoundEnabled);
     }
@@ -4044,6 +4074,11 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
         } else if (action == "app-update-block") {
             return;
         } else if (action == "open-settings") {
+            if (const std::optional<bool> systemStartupEnabled =
+                    loadSystemLaunchAtStartupEnabled()) {
+                binding.launchAtStartupEnabled = *systemStartupEnabled;
+                binding.startupStatus.clear();
+            }
             const relaydesk::runtime::LocalUserSummary& localUser =
                 relayRuntime.GetLocalUser();
             const std::string currentName = localUser.GetDisplayName().empty()
@@ -4135,20 +4170,21 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
             }
             applySettingsView(runtime, binding);
         } else if (action == "settings-startup-toggle") {
-            binding.launchAtStartupEnabled =
+            const bool requestedEnabled =
                 !binding.launchAtStartupEnabled;
-            const bool saved = saveStoredLaunchAtStartupEnabled(
-                binding.launchAtStartupEnabled);
-            const bool applied = applyLaunchAtStartupEnabled(
-                binding.launchAtStartupEnabled);
-            if (saved && applied) {
-                binding.startupStatus.clear();
-            } else if (!saved && !applied) {
-                binding.startupStatus = "保存设置和写入系统启动项失败";
-            } else if (!saved) {
-                binding.startupStatus = "系统启动项已更新，但保存设置失败";
+            if (!applyLaunchAtStartupEnabled(requestedEnabled)) {
+                binding.launchAtStartupEnabled =
+                    loadSystemLaunchAtStartupEnabled().value_or(
+                        binding.launchAtStartupEnabled);
+                binding.startupStatus = "写入系统启动项失败";
             } else {
-                binding.startupStatus = "保存设置成功，但写入系统启动项失败";
+                binding.launchAtStartupEnabled = requestedEnabled;
+                if (saveStoredLaunchAtStartupEnabled(requestedEnabled)) {
+                    binding.startupStatus.clear();
+                } else {
+                    binding.startupStatus =
+                        "系统启动项已更新，但保存设置失败";
+                }
             }
             applySettingsView(runtime, binding);
         } else if (action == "settings-check-update") {
@@ -5612,7 +5648,13 @@ int captureSkiaUiPng(const CaptureOptions& options)
     }
     initializeSettingsState(runtime, relayRuntime, binding);
     if (options.testDarkChatTabs) {
+        constexpr std::string_view kDarkComposerText =
+            "Dark composer text";
         binding.darkModeEnabled = true;
+        if (!runtime.setTextById(kComposerInitialParagraphId,
+                                 kDarkComposerText)) {
+            return 81;
+        }
         applySettingsView(runtime, binding);
     }
     if (options.testSettings || options.testSettingsDark) {
@@ -6312,6 +6354,33 @@ int captureSkiaUiPng(const CaptureOptions& options)
         if (pixels[pixelIndex] != kDarkTabBackground) {
             return 79;
         }
+
+        constexpr int kComposerTextProbeLeft = 448;
+        constexpr int kComposerTextProbeTop = 638;
+        constexpr int kComposerTextProbeRight = 700;
+        constexpr int kComposerTextProbeBottom = 670;
+        int lightTextPixelCount = 0;
+        for (int y = kComposerTextProbeTop;
+             y < std::min(options.height, kComposerTextProbeBottom);
+             ++y) {
+            for (int x = kComposerTextProbeLeft;
+                 x < std::min(options.width, kComposerTextProbeRight);
+                 ++x) {
+                const std::uint32_t pixel =
+                    pixels[static_cast<std::size_t>(y) *
+                               static_cast<std::size_t>(options.width) +
+                           static_cast<std::size_t>(x)];
+                const std::uint32_t red = (pixel >> 16u) & 0xFFu;
+                const std::uint32_t green = (pixel >> 8u) & 0xFFu;
+                const std::uint32_t blue = pixel & 0xFFu;
+                if (red >= 180u && green >= 180u && blue >= 180u) {
+                    ++lightTextPixelCount;
+                }
+            }
+        }
+        if (lightTextPixelCount < 10) {
+            return 81;
+        }
     }
 
     if (options.testFileCard &&
@@ -6451,6 +6520,18 @@ int runSkiaUiApp(HINSTANCE instance, int showCmd)
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd)
 {
     try {
+        const std::vector<std::wstring> arguments = currentProcessArguments();
+        const std::optional<relaydesk::runtime::AppUpdateApplyOptions>
+            updateOptions =
+                relaydesk::runtime::parseAppUpdateApplyOptions(arguments);
+        if (updateOptions.has_value()) {
+            return relaydesk::runtime::runAppUpdateApplyMode(
+                updateOptions.value());
+        }
+        if (!arguments.empty()
+            && arguments.front() == L"--relaydesk-apply-update") {
+            return 2;
+        }
         return runSkiaUiApp(instance, showCmd);
     } catch (...) {
         core::async::shutdown();

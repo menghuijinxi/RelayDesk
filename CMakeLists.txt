@@ -185,6 +185,7 @@ if(RELAYDESK_HAS_EUI_NEO)
         src/core/uuid.cpp
         src/platform/attachment_input_win.cpp
         src/platform/computer_name_win.cpp
+        src/platform/startup_launch_state.cpp
         src/platform/startup_launch_win.cpp
         src/platform/text_encoding_win.cpp
         src/platform/windows_install_id_win.cpp
@@ -280,6 +281,7 @@ if(RELAYDESK_BUILD_SKIAUI)
         src/core/uuid.cpp
         src/platform/attachment_input_win.cpp
         src/platform/computer_name_win.cpp
+        src/platform/startup_launch_state.cpp
         src/platform/startup_launch_win.cpp
         src/platform/text_encoding_win.cpp
         src/platform/windows_install_id_win.cpp
@@ -597,6 +599,15 @@ if(WIN32 AND RELAYDESK_HAS_EUI_NEO AND RELAYDESK_HAS_BOOST_ASIO)
         _UNICODE
         WIN32_LEAN_AND_MEAN
     )
+
+    if(TARGET relaydesk_skiaui)
+        add_dependencies(relaydesk_app_runtime_update_prompt_tests
+            relaydesk_skiaui)
+        target_compile_definitions(
+            relaydesk_app_runtime_update_prompt_tests PRIVATE
+            "RELAYDESK_SKIAUI_EXECUTABLE_PATH=\"$<TARGET_FILE:relaydesk_skiaui>\"")
+    endif()
+
     target_link_libraries(relaydesk_app_runtime_update_prompt_tests PRIVATE
         eui::neo
         relaydesk_boost_asio
@@ -735,6 +746,22 @@ if(MSVC)
 endif()
 
 add_test(NAME relaydesk_text_encoding_tests COMMAND relaydesk_text_encoding_tests)
+
+add_executable(relaydesk_startup_launch_state_tests
+    tests/platform/startup_launch_state_tests.cpp
+    src/platform/startup_launch_state.cpp
+)
+
+target_include_directories(relaydesk_startup_launch_state_tests PRIVATE src)
+target_compile_features(relaydesk_startup_launch_state_tests PRIVATE cxx_std_23)
+
+if(MSVC)
+    target_compile_options(relaydesk_startup_launch_state_tests
+        PRIVATE /W4 /permissive- /utf-8)
+endif()
+
+add_test(NAME relaydesk_startup_launch_state_tests
+    COMMAND relaydesk_startup_launch_state_tests)
 
 add_executable(relaydesk_discovery_message_tests
     tests/net/discovery_message_tests.cpp

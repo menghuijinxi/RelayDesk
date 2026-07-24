@@ -915,6 +915,18 @@ bool loadStoredLaunchAtStartupEnabled()
     }
 }
 
+std::optional<bool> loadSystemLaunchAtStartupEnabled()
+{
+    try {
+        const auto paths = relaydesk::storage::createAppPaths();
+        return relaydesk::platform::getStartupLaunchState(
+                   paths.GetExecutablePath())
+            == relaydesk::platform::StartupLaunchState::Enabled;
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
 bool saveStoredLaunchAtStartupEnabled(bool enabled)
 {
     try {
@@ -924,6 +936,18 @@ bool saveStoredLaunchAtStartupEnabled(bool enabled)
     } catch (const std::exception&) {
         return false;
     }
+}
+
+void reportLaunchAtStartupSyncFailure(const std::exception& error)
+{
+#if defined(_WIN32)
+    std::string message = "RelayDesk startup synchronization failed: ";
+    message += error.what();
+    message += '\n';
+    OutputDebugStringA(message.c_str());
+#else
+    (void)error;
+#endif
 }
 
 bool applyLaunchAtStartupEnabled(bool enabled)
@@ -946,7 +970,22 @@ void syncLaunchAtStartupOnAppStart()
         return;
     }
 
-    applyLaunchAtStartupEnabled(loadStoredLaunchAtStartupEnabled());
+    try {
+        const auto paths = relaydesk::storage::createAppPaths();
+        const bool configuredEnabled =
+            relaydesk::storage::loadLaunchAtStartupEnabled(paths);
+        const bool effectiveEnabled =
+            relaydesk::platform::synchronizeStartupLaunch(
+                paths.GetExecutablePath(),
+                configuredEnabled);
+        if (effectiveEnabled != configuredEnabled) {
+            relaydesk::storage::saveLaunchAtStartupEnabled(
+                paths,
+                effectiveEnabled);
+        }
+    } catch (const std::exception& error) {
+        reportLaunchAtStartupSyncFailure(error);
+    }
     synced = true;
 }
 
@@ -7378,7 +7417,8 @@ void drawRuntimeLocalUserHeader(eui::Ui& ui,
         .states(settingsButtonFill, kTealSoft, kTealSoft)
         .instantStates()
         .radius(settingsButtonSize * 0.5f)
-        .onClick([&settingsOpen] {
+        .onClick([&ui, &settingsOpen] {
+            ui.state<bool>("settings.startup.initialized") = false;
             settingsOpen = true;
         })
         .build();
@@ -9724,7 +9764,8 @@ bool& launchAtStartupEnabledState(eui::Ui& ui)
     bool& launchAtStartup =
         ui.state<bool>("settings.startup.launch_at_startup");
     if (!initialized) {
-        launchAtStartup = loadStoredLaunchAtStartupEnabled();
+        launchAtStartup = loadSystemLaunchAtStartupEnabled()
+            .value_or(loadStoredLaunchAtStartupEnabled());
         initialized = true;
     }
     return launchAtStartup;
@@ -9790,17 +9831,20 @@ void drawSettingsNotificationPage(eui::Ui& ui,
                 .trackSize(48.0f, 24.0f)
                 .style(settingsSwitchStyle())
                 .onChange([&launchAtStartup, &startupStatus](bool next) {
-                    launchAtStartup = next;
-                    const bool saved = saveStoredLaunchAtStartupEnabled(next);
                     const bool applied = applyLaunchAtStartupEnabled(next);
-                    if (saved && applied) {
-                        startupStatus.clear();
-                    } else if (!saved && !applied) {
-                        startupStatus = "保存设置和写入系统启动项失败";
-                    } else if (!saved) {
-                        startupStatus = "系统启动项已更新，但保存设置失败";
+                    if (!applied) {
+                        launchAtStartup =
+                            loadSystemLaunchAtStartupEnabled().value_or(
+                                launchAtStartup);
+                        startupStatus = "写入系统启动项失败";
                     } else {
-                        startupStatus = "保存设置成功，但写入系统启动项失败";
+                        launchAtStartup = next;
+                        if (saveStoredLaunchAtStartupEnabled(next)) {
+                            startupStatus.clear();
+                        } else {
+                            startupStatus =
+                                "系统启动项已更新，但保存设置失败";
+                        }
                     }
                 })
                 .build();

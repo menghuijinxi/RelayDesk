@@ -35,6 +35,14 @@ struct ExistingInstanceActivationContext {
     bool activated = false;
 };
 
+void reportLaunchAtStartupSyncFailure(const std::exception& error)
+{
+    std::string message = "RelayDesk startup synchronization failed: ";
+    message += error.what();
+    message += '\n';
+    OutputDebugStringA(message.c_str());
+}
+
 BOOL CALLBACK activateExistingTrayWindow(HWND window, LPARAM contextAddress)
 {
     wchar_t className[64]{};
@@ -149,24 +157,23 @@ private:
     HWND trayWindow_ = nullptr;
 };
 
-bool loadStoredLaunchAtStartupEnabled()
+void synchronizeLaunchAtStartup()
 {
     try {
         const auto paths = relaydesk::storage::createAppPaths();
-        return relaydesk::storage::loadLaunchAtStartupEnabled(paths);
-    } catch (const std::exception&) {
-        return true;
-    }
-}
-
-void applyLaunchAtStartupEnabled(bool enabled)
-{
-    try {
-        const auto paths = relaydesk::storage::createAppPaths();
-        relaydesk::platform::setStartupLaunchEnabled(
-            paths.GetExecutablePath(),
-            enabled);
-    } catch (const std::exception&) {
+        const bool configuredEnabled =
+            relaydesk::storage::loadLaunchAtStartupEnabled(paths);
+        const bool effectiveEnabled =
+            relaydesk::platform::synchronizeStartupLaunch(
+                paths.GetExecutablePath(),
+                configuredEnabled);
+        if (effectiveEnabled != configuredEnabled) {
+            relaydesk::storage::saveLaunchAtStartupEnabled(
+                paths,
+                effectiveEnabled);
+        }
+    } catch (const std::exception& error) {
+        reportLaunchAtStartupSyncFailure(error);
     }
 }
 
@@ -220,7 +227,7 @@ void activateExistingInstance()
 
 void syncLaunchAtStartupOnAppStart()
 {
-    applyLaunchAtStartupEnabled(loadStoredLaunchAtStartupEnabled());
+    synchronizeLaunchAtStartup();
 }
 
 class BackgroundController::Impl {
