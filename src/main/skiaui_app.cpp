@@ -158,6 +158,7 @@ struct CaptureOptions {
     bool testComposerAttachments = false;
     bool testComposerKeyboard = false;
     bool testHistoryPagination = false;
+    bool testUnreadBadge = false;
 };
 
 struct SkiaUiRuntimeBinding {
@@ -260,7 +261,9 @@ std::string makeDeviceRowMarkup(int index)
     html += R"(<rect x="10.56" y="16" width="2.88" height="3.84" fill="currentColor"></rect>)";
     html += R"(<rect x="5.4" y="19.41" width="13.2" height="1.92")";
     html += R"( rx="0.96" fill="currentColor"></rect>)";
-    html += R"(</svg><div id="device-name-)";
+    html += R"(</svg><div id="device-unread-)";
+    html += rowIndex;
+    html += R"(" class="device-unread"></div><div id="device-name-)";
     html += rowIndex;
     html += R"(" class="device-name"></div><div id="device-ip-)";
     html += rowIndex;
@@ -2921,6 +2924,10 @@ void hideDeviceRow(skui::RuntimeUpdates& updates, int rowIndex)
                        indexedId("device-dot-", rowIndex),
                        "class",
                        "status-dot");
+    addStyleUpdate(updates,
+                   indexedId("device-unread-", rowIndex),
+                   "display: none;");
+    addTextUpdate(updates, indexedId("device-unread-", rowIndex), "");
     addTextUpdate(updates, indexedId("device-name-", rowIndex), "");
     addTextUpdate(updates, indexedId("device-ip-", rowIndex), "");
 }
@@ -2948,6 +2955,22 @@ void showDeviceRow(skui::RuntimeUpdates& updates,
                        indexedId("device-dot-", rowIndex),
                        "class",
                        peer.GetOnline() ? "status-dot" : "status-dot offline");
+    const int unreadMessageCount = peer.GetUnreadMessageCount();
+    const std::string unreadText = unreadMessageCount > 99
+        ? "99+"
+        : unreadMessageCount > 0 ? std::to_string(unreadMessageCount) : "";
+    const int unreadBadgeWidth = unreadText.size() >= 3u
+        ? 30
+        : unreadText.size() == 2u ? 26 : 22;
+    addStyleUpdate(updates,
+                   indexedId("device-unread-", rowIndex),
+                   unreadText.empty()
+                       ? "display: none;"
+                       : "display: flex; width: " +
+                           std::to_string(unreadBadgeWidth) + "px;");
+    addTextUpdate(updates,
+                  indexedId("device-unread-", rowIndex),
+                  unreadText);
     addTextUpdate(updates, indexedId("device-name-", rowIndex), peerDisplayName(peer));
     addTextUpdate(updates, indexedId("device-ip-", rowIndex), peerAddressText(peer));
 }
@@ -4290,6 +4313,11 @@ public:
             makeCaptureFileCardMessages(existingFilePath);
     }
 
+    void setFirstPeerUnreadMessageCount(int unreadMessageCount)
+    {
+        peers_.front().SetUnreadMessageCount(unreadMessageCount);
+    }
+
 protected:
     std::string imagePath_;
     std::vector<relaydesk::storage::ChatMessageRecord> pagedMessages_;
@@ -4379,6 +4407,8 @@ std::optional<CaptureOptions> parseCaptureOptions()
             options.testComposerKeyboard = true;
         } else if (argument == L"--capture-test-history-pagination") {
             options.testHistoryPagination = true;
+        } else if (argument == L"--capture-test-unread-badge") {
+            options.testUnreadBadge = true;
         }
     }
 
@@ -4597,6 +4627,9 @@ int captureSkiaUiPng(const CaptureOptions& options)
             ? "capture"
             : std::string(captureImagePathText.begin(),
                           captureImagePathText.end()));
+    if (options.testUnreadBadge) {
+        relayRuntime.setFirstPeerUnreadMessageCount(2);
+    }
     if (options.testImageMessage) {
         relayRuntime.showImageConversation();
     }
@@ -4926,6 +4959,35 @@ int captureSkiaUiPng(const CaptureOptions& options)
                               relayRuntime,
                               binding,
                               ChatScrollUpdateMode::ScrollToLatest);
+    if (options.testUnreadBadge) {
+        const auto unreadText = [&runtime]() {
+            return runtime.textContentById("device-unread-0");
+        };
+        if (unreadText() != std::optional<std::string>{"2"}) {
+            return 64;
+        }
+
+        binding.documentLoaded = true;
+        binding.chatInitialized = true;
+        binding.lastDeviceSignature =
+            makeRelayDeskUiSignature(relayRuntime, binding);
+        relayRuntime.setFirstPeerUnreadMessageCount(123);
+        if (!refreshRelayDeskDevicePanelIfChanged(binding, false) ||
+            unreadText() != std::optional<std::string>{"99+"}) {
+            return 65;
+        }
+
+        relayRuntime.setFirstPeerUnreadMessageCount(0);
+        if (!refreshRelayDeskDevicePanelIfChanged(binding, false) ||
+            unreadText() != std::optional<std::string>{""}) {
+            return 66;
+        }
+
+        relayRuntime.setFirstPeerUnreadMessageCount(2);
+        if (!refreshRelayDeskDevicePanelIfChanged(binding, false)) {
+            return 68;
+        }
+    }
     if (options.testHistoryPagination) {
         runtime.endUpdate();
         if (!isChatScrolledToLatest(runtime)) {
@@ -5400,6 +5462,17 @@ int captureSkiaUiPng(const CaptureOptions& options)
         }
     } else if (!imageRendered) {
         return 13;
+    }
+
+    if (options.testUnreadBadge) {
+        constexpr std::uint32_t kUnreadBadgeColor = 0xFFFA4A52u;
+        if (std::none_of(pixels.begin(),
+                         pixels.end(),
+                         [](std::uint32_t pixel) {
+                             return pixel == kUnreadBadgeColor;
+                         })) {
+            return 67;
+        }
     }
 
     if (options.testFileCard &&

@@ -416,6 +416,15 @@ if(RELAYDESK_BUILD_SKIAUI)
             --capture-dpi-scale 1.0
             --capture-test-history-pagination
     )
+    add_test(NAME relaydesk_skiaui_unread_badge_capture
+        COMMAND relaydesk_skiaui
+            --capture-skiaui
+            "${CMAKE_BINARY_DIR}/tmp/relaydesk_skiaui_unread_badge.png"
+            --capture-width 1600
+            --capture-height 900
+            --capture-dpi-scale 1.0
+            --capture-test-unread-badge
+    )
 endif()
 
 add_test(NAME relaydesk_patch_eui_neo_app_shortcuts_tests
