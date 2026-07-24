@@ -488,6 +488,207 @@
     .image-preview-close:hover {
       background-color: #dff8f6;
     }
+    .app-update-overlay {
+      position: absolute;
+      display: none;
+      left: 0px;
+      top: 0px;
+      right: 0px;
+      bottom: 0px;
+      align-items: center;
+      justify-content: center;
+      z-index: 1300;
+    }
+    .app-update-backdrop {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      right: 0px;
+      bottom: 0px;
+      background-color: rgba(0,0,0,0.38);
+    }
+    .app-update-panel {
+      position: relative;
+      width: 540px;
+      height: 238px;
+      max-width: 88%;
+      border-radius: 8px;
+      border-color: #d4d9de;
+      border-width: 1px;
+      border-style: solid;
+      background-color: #fefeff;
+      color: #14181d;
+    }
+    .app-update-title {
+      position: absolute;
+      left: 26px;
+      top: 22px;
+      right: 26px;
+      height: 28px;
+      font-size: 19px;
+      font-weight: bold;
+    }
+    .app-update-available {
+      position: absolute;
+      display: block;
+      left: 0px;
+      top: 0px;
+      right: 0px;
+      bottom: 0px;
+    }
+    .app-update-message {
+      position: absolute;
+      left: 26px;
+      top: 62px;
+      right: 26px;
+      height: 60px;
+      color: #5c636e;
+      font-size: 14px;
+    }
+    .app-update-version {
+      position: absolute;
+      left: 26px;
+      top: 116px;
+      right: 26px;
+      height: 24px;
+      color: #14181d;
+      font-size: 13px;
+    }
+    .app-update-button {
+      position: absolute;
+      display: flex;
+      height: 38px;
+      align-items: center;
+      justify-content: center;
+      box-sizing: border-box;
+      border-radius: 7px;
+      border-width: 1px;
+      border-style: solid;
+      font-size: 14px;
+      font-weight: bold;
+    }
+    .app-update-button-secondary {
+      width: 132px;
+      right: 172px;
+      bottom: 20px;
+      border-color: #d4d9de;
+      background-color: #ffffff;
+      color: #14181d;
+    }
+    .app-update-button-secondary:hover {
+      background-color: #fbfffe;
+    }
+    .app-update-button-primary {
+      width: 132px;
+      right: 26px;
+      bottom: 20px;
+      border-color: #009696;
+      background-color: #009696;
+      color: #ffffff;
+    }
+    .app-update-button-primary:hover {
+      border-color: #00abaa;
+      background-color: #00abaa;
+    }
+    .app-update-download {
+      position: absolute;
+      display: none;
+      left: 26px;
+      top: 72px;
+      right: 26px;
+      height: 68px;
+    }
+    .app-update-file-icon {
+      position: absolute;
+      left: 0px;
+      top: 4px;
+      width: 34px;
+      height: 34px;
+      border-radius: 7px;
+      background-color: #0f1214;
+      color: #ffffff;
+    }
+    .app-update-file-icon-symbol {
+      position: absolute;
+      left: 7px;
+      top: 6px;
+      width: 20px;
+      height: 22px;
+    }
+    .app-update-file-icon-mark {
+      position: absolute;
+      right: 3px;
+      top: 19px;
+      width: 9px;
+      height: 9px;
+      border-radius: 5px;
+      background-color: #40a829;
+    }
+    .app-update-file-name {
+      position: absolute;
+      left: 48px;
+      top: 0px;
+      right: 0px;
+      height: 26px;
+      color: #14181d;
+      font-size: 15px;
+      font-weight: bold;
+    }
+    .app-update-file-detail {
+      position: absolute;
+      left: 48px;
+      top: 30px;
+      right: 0px;
+      height: 22px;
+      color: #5c636e;
+      font-size: 12px;
+    }
+    .app-update-file-progress-track {
+      position: absolute;
+      left: 48px;
+      top: 61px;
+      right: 0px;
+      height: 4px;
+      border-radius: 2px;
+      background-color: #e6e8eb;
+    }
+    .app-update-file-progress-fill {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      width: 0%;
+      height: 4px;
+      border-radius: 2px;
+      background-color: #14181d;
+    }
+    .app-update-error {
+      position: absolute;
+      display: none;
+      left: 0px;
+      top: 0px;
+      right: 0px;
+      bottom: 0px;
+    }
+    .app-update-error-message {
+      position: absolute;
+      left: 26px;
+      top: 150px;
+      right: 26px;
+      height: 48px;
+      color: #d1301f;
+      font-size: 13px;
+    }
+    .app-update-button-close {
+      width: 100px;
+      right: 26px;
+      bottom: 20px;
+      border-color: #d4d9de;
+      background-color: #ffffff;
+      color: #14181d;
+    }
+    .app-update-button-close:hover {
+      background-color: #fbfffe;
+    }
     .message-row {
       position: relative;
       display: flex;
@@ -1268,6 +1469,37 @@
       <div id="image-preview-overlay" class="image-preview-overlay">
           <img id="image-preview-image" class="image-preview-image" src="">
           <div class="image-preview-close" data-action="close-image-preview">×</div>
+      </div>
+    </div>
+
+    <div id="app-update-overlay" class="app-update-overlay">
+      <div class="app-update-backdrop" data-action="app-update-block"></div>
+      <div id="app-update-panel" class="app-update-panel" data-action="app-update-block">
+        <div id="app-update-title" class="app-update-title">发现新版本</div>
+        <div id="app-update-available" class="app-update-available">
+          <div id="app-update-message" class="app-update-message">附近设备提供了更新后的 RelayDesk。</div>
+          <div id="app-update-version" class="app-update-version">当前版本 0，可更新到 1</div>
+          <div class="app-update-button app-update-button-secondary" data-action="app-update-install-on-exit">关闭后更新</div>
+          <div class="app-update-button app-update-button-primary" data-action="app-update-restart-now">更新并重启</div>
+        </div>
+        <div id="app-update-download" class="app-update-download">
+          <div class="app-update-file-icon">
+            <svg class="app-update-file-icon-symbol" viewBox="0 0 20 22" fill="none">
+              <path d="M4 1h8l4 4v16H4z" fill="currentColor"></path>
+              <path d="M12 1v5h4" fill="#0f1214"></path>
+            </svg>
+            <div id="app-update-file-icon-mark" class="app-update-file-icon-mark"></div>
+          </div>
+          <div id="app-update-file-name" class="app-update-file-name">relaydesk.exe</div>
+          <div id="app-update-file-detail" class="app-update-file-detail">计算速度中 · 正在准备更新包</div>
+          <div class="app-update-file-progress-track">
+            <div id="app-update-file-progress-fill" class="app-update-file-progress-fill"></div>
+          </div>
+        </div>
+        <div id="app-update-error" class="app-update-error">
+          <div id="app-update-error-message" class="app-update-error-message">更新没有完成，可以关闭这次提示后稍后重试。</div>
+          <div class="app-update-button app-update-button-close" data-action="app-update-dismiss">关闭</div>
+        </div>
       </div>
     </div>
 

@@ -40,6 +40,7 @@
 #include "include/encode/SkPngEncoder.h"
 #include "skui_win32_app.h"
 
+#include "core/app_version.h"
 #include "core/platform/async.h"
 #include "core/uuid.h"
 #include "main/app_runtime.h"
@@ -159,6 +160,9 @@ struct CaptureOptions {
     bool testComposerKeyboard = false;
     bool testHistoryPagination = false;
     bool testUnreadBadge = false;
+    bool testAppUpdateAvailable = false;
+    bool testAppUpdateDownloading = false;
+    bool testAppUpdateFailed = false;
 };
 
 struct SkiaUiRuntimeBinding {
@@ -1715,6 +1719,59 @@ std::string formatFileSize(std::uintmax_t size)
     return output.str();
 }
 
+std::string formatTransferRate(double bytesPerSecond)
+{
+    if (bytesPerSecond <= 0.0) {
+        return "计算速度中";
+    }
+
+    return formatFileSize(static_cast<std::uintmax_t>(bytesPerSecond)) + "/s";
+}
+
+std::string formatRemainingTime(double seconds)
+{
+    if (seconds <= 1.0) {
+        return "剩余 1 秒";
+    }
+
+    const int roundedSeconds = static_cast<int>(std::ceil(seconds));
+    if (roundedSeconds < 60) {
+        return "剩余 " + std::to_string(roundedSeconds) + " 秒";
+    }
+
+    const int minutes = roundedSeconds / 60;
+    const int secondsPart = roundedSeconds % 60;
+    if (secondsPart == 0) {
+        return "剩余 " + std::to_string(minutes) + " 分钟";
+    }
+    return "剩余 " + std::to_string(minutes) + " 分 "
+        + std::to_string(secondsPart) + " 秒";
+}
+
+std::string appUpdateDownloadDetail(
+    const relaydesk::runtime::AppUpdatePrompt& prompt)
+{
+    const std::uintmax_t receivedSize = prompt.GetReceivedSize();
+    const std::uintmax_t expectedSize = prompt.GetExpectedSize();
+    std::string detail = formatTransferRate(prompt.GetBytesPerSecond());
+    if (expectedSize > 0) {
+        detail += " · " + formatFileSize(receivedSize) + "/"
+            + formatFileSize(expectedSize);
+        const double bytesPerSecond = prompt.GetBytesPerSecond();
+        if (prompt.GetState() ==
+                relaydesk::runtime::AppUpdatePromptState::Downloading &&
+            bytesPerSecond > 0.0 && receivedSize < expectedSize) {
+            const double remainingSeconds =
+                static_cast<double>(expectedSize - receivedSize) /
+                bytesPerSecond;
+            detail += "，" + formatRemainingTime(remainingSeconds);
+        }
+    } else {
+        detail += " · 正在准备更新包";
+    }
+    return detail;
+}
+
 std::string transferStateText(relaydesk::storage::TransferState state)
 {
     switch (state) {
@@ -2807,6 +2864,117 @@ void addAttributeUpdate(skui::RuntimeUpdates& updates,
         {std::move(id), std::move(name), std::move(value)});
 }
 
+std::string makeAppUpdatePromptSignature(
+    const std::optional<relaydesk::runtime::AppUpdatePrompt>& prompt)
+{
+    if (!prompt.has_value()) {
+        return "hidden";
+    }
+
+    std::string signature = prompt->GetSourceDeviceId();
+    signature += '|';
+    signature += prompt->GetSourceDisplayName();
+    signature += '|';
+    signature += prompt->GetFileName();
+    signature += '|';
+    signature += std::to_string(prompt->GetAppVersion());
+    signature += '|';
+    signature += std::to_string(static_cast<int>(prompt->GetState()));
+    signature += '|';
+    signature += std::to_string(static_cast<int>(prompt->GetInstallMode()));
+    signature += '|';
+    signature += std::to_string(prompt->GetExpectedSize());
+    signature += '|';
+    signature += std::to_string(prompt->GetReceivedSize());
+    signature += '|';
+    signature += std::to_string(prompt->GetBytesPerSecond());
+    signature += '|';
+    signature += prompt->GetErrorMessage();
+    return signature;
+}
+
+void applyAppUpdatePrompt(
+    skui::Runtime& runtime,
+    const std::optional<relaydesk::runtime::AppUpdatePrompt>& prompt)
+{
+    skui::RuntimeUpdates updates;
+    if (!prompt.has_value()) {
+        addStyleUpdate(updates, "app-update-overlay", "display: none;");
+        runtime.applyUpdates(updates);
+        return;
+    }
+
+    const relaydesk::runtime::AppUpdatePromptState state = prompt->GetState();
+    const bool downloading =
+        state == relaydesk::runtime::AppUpdatePromptState::Downloading;
+    const bool failed =
+        state == relaydesk::runtime::AppUpdatePromptState::Failed;
+    const int panelHeight = failed ? 288 : downloading ? 214 : 238;
+    addStyleUpdate(updates, "app-update-overlay", "display: flex;");
+    addStyleUpdate(updates,
+                   "app-update-panel",
+                   "height: " + std::to_string(panelHeight) + "px;");
+    addStyleUpdate(updates,
+                   "app-update-available",
+                   downloading || failed ? "display: none;" : "display: block;");
+    addStyleUpdate(updates,
+                   "app-update-download",
+                   downloading ? "display: block; top: 72px;"
+                               : failed ? "display: block; top: 70px;"
+                                        : "display: none;");
+    addStyleUpdate(updates,
+                   "app-update-error",
+                   failed ? "display: block;" : "display: none;");
+    addTextUpdate(updates,
+                  "app-update-title",
+                  downloading ? "正在下载更新"
+                              : failed ? "更新失败" : "发现新版本");
+
+    const std::string sourceName = prompt->GetSourceDisplayName().empty()
+        ? "附近设备"
+        : prompt->GetSourceDisplayName();
+    addTextUpdate(updates,
+                  "app-update-message",
+                  sourceName + " 提供了更新后的 RelayDesk。");
+    addTextUpdate(updates,
+                  "app-update-version",
+                  "当前版本 " +
+                      std::to_string(relaydesk::core::kAppVersion) +
+                      "，可更新到 " +
+                      std::to_string(prompt->GetAppVersion()));
+
+    const std::string fileName = prompt->GetFileName().empty()
+        ? "relaydesk.exe"
+        : prompt->GetFileName();
+    addTextUpdate(updates, "app-update-file-name", fileName);
+    addTextUpdate(updates,
+                  "app-update-file-detail",
+                  appUpdateDownloadDetail(prompt.value()));
+    const float progress = prompt->GetExpectedSize() > 0
+        ? std::clamp(
+              static_cast<float>(
+                  static_cast<double>(prompt->GetReceivedSize()) /
+                  static_cast<double>(prompt->GetExpectedSize())),
+              0.0f,
+              1.0f)
+        : 0.0f;
+    addStyleUpdate(updates,
+                   "app-update-file-progress-fill",
+                   "width: " + std::to_string(progress * 100.0f) +
+                       "%; background-color: " +
+                       (failed ? "#d1301f;" : "#14181d;"));
+    addStyleUpdate(updates,
+                   "app-update-file-icon-mark",
+                   "background-color: " +
+                       std::string(failed ? "#d1301f;" : "#40a829;"));
+    addTextUpdate(updates,
+                  "app-update-error-message",
+                  prompt->GetErrorMessage().empty()
+                      ? "更新没有完成，可以关闭这次提示后稍后重试。"
+                      : prompt->GetErrorMessage());
+    runtime.applyUpdates(updates);
+}
+
 std::string makeDeviceListSignature(
     const relaydesk::runtime::RelayDeskRuntime& relayRuntime)
 {
@@ -2888,7 +3056,8 @@ std::string makeChatSignature(
 
 std::string makeRelayDeskUiSignature(
     const relaydesk::runtime::RelayDeskRuntime& relayRuntime,
-    const SkiaUiRuntimeBinding& binding)
+    const SkiaUiRuntimeBinding& binding,
+    const std::optional<relaydesk::runtime::AppUpdatePrompt>& updatePrompt)
 {
     std::string signature = "--devices--\n";
     signature += makeDeviceListSignature(relayRuntime);
@@ -2906,6 +3075,8 @@ std::string makeRelayDeskUiSignature(
         signature += attachment.fileSizePending ? '1' : '0';
         signature += '\n';
     }
+    signature += "--app-update--\n";
+    signature += makeAppUpdatePromptSignature(updatePrompt);
     return signature;
 }
 
@@ -3513,6 +3684,19 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
             hideMessageContextMenu(runtime);
             const std::string url(action.substr(urlPrefix.size()));
             ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        } else if (action == "app-update-install-on-exit") {
+            relayRuntime.startAppUpdate(
+                relaydesk::runtime::AppUpdateInstallMode::InstallOnExit);
+            applyAppUpdatePrompt(runtime, relayRuntime.GetAppUpdatePrompt());
+        } else if (action == "app-update-restart-now") {
+            relayRuntime.startAppUpdate(
+                relaydesk::runtime::AppUpdateInstallMode::RestartNow);
+            applyAppUpdatePrompt(runtime, relayRuntime.GetAppUpdatePrompt());
+        } else if (action == "app-update-dismiss") {
+            relayRuntime.dismissAppUpdatePrompt();
+            applyAppUpdatePrompt(runtime, std::nullopt);
+        } else if (action == "app-update-block") {
+            return;
         } else if (action == "copy-message-context") {
             (void)writeClipboardText(gMessageContextText);
             hideMessageContextMenu(runtime);
@@ -3670,8 +3854,12 @@ bool refreshRelayDeskDevicePanelIfChanged(SkiaUiRuntimeBinding& binding,
                                    binding,
                                    changedAttachmentIds);
     binding.relayRuntime->refreshPeersIfNeeded();
+    const std::optional<relaydesk::runtime::AppUpdatePrompt> updatePrompt =
+        binding.relayRuntime->GetAppUpdatePrompt();
     const std::string nextSignature =
-        makeRelayDeskUiSignature(*binding.relayRuntime, binding);
+        makeRelayDeskUiSignature(*binding.relayRuntime,
+                                 binding,
+                                 updatePrompt);
     const bool scrollChatToLatest = !binding.chatInitialized;
     if (!force && !scrollChatToLatest &&
         !binding.chatHistoryPrependPending &&
@@ -3689,6 +3877,7 @@ bool refreshRelayDeskDevicePanelIfChanged(SkiaUiRuntimeBinding& binding,
                               *binding.relayRuntime,
                               binding,
                               scrollUpdateMode);
+    applyAppUpdatePrompt(*binding.skiaRuntime, updatePrompt);
     binding.chatInitialized = true;
     binding.chatHistoryPrependPending = false;
     return true;
@@ -4318,6 +4507,31 @@ public:
         peers_.front().SetUnreadMessageCount(unreadMessageCount);
     }
 
+    void showAppUpdatePrompt(
+        relaydesk::runtime::AppUpdatePromptState state)
+    {
+        relaydesk::runtime::AppUpdatePrompt prompt;
+        prompt.SetSourceDeviceId("capture-peer");
+        prompt.SetSourceDisplayName("Alex-PC");
+        prompt.SetFileName("relaydesk.exe");
+        prompt.SetAppVersion(relaydesk::core::kAppVersion + 1);
+        prompt.SetState(state);
+        prompt.SetExpectedSize(100u * 1024u * 1024u);
+        prompt.SetReceivedSize(40u * 1024u * 1024u);
+        prompt.SetBytesPerSecond(4.0 * 1024.0 * 1024.0);
+        if (state == relaydesk::runtime::AppUpdatePromptState::Failed) {
+            prompt.SetErrorMessage("更新连接意外中断。");
+        }
+        appUpdatePrompt_ = std::move(prompt);
+    }
+
+    void setAppUpdateProgress(std::uintmax_t receivedSize)
+    {
+        if (appUpdatePrompt_.has_value()) {
+            appUpdatePrompt_->SetReceivedSize(receivedSize);
+        }
+    }
+
 protected:
     std::string imagePath_;
     std::vector<relaydesk::storage::ChatMessageRecord> pagedMessages_;
@@ -4409,6 +4623,12 @@ std::optional<CaptureOptions> parseCaptureOptions()
             options.testHistoryPagination = true;
         } else if (argument == L"--capture-test-unread-badge") {
             options.testUnreadBadge = true;
+        } else if (argument == L"--capture-test-app-update-available") {
+            options.testAppUpdateAvailable = true;
+        } else if (argument == L"--capture-test-app-update-downloading") {
+            options.testAppUpdateDownloading = true;
+        } else if (argument == L"--capture-test-app-update-failed") {
+            options.testAppUpdateFailed = true;
         }
     }
 
@@ -4630,6 +4850,16 @@ int captureSkiaUiPng(const CaptureOptions& options)
     if (options.testUnreadBadge) {
         relayRuntime.setFirstPeerUnreadMessageCount(2);
     }
+    if (options.testAppUpdateAvailable) {
+        relayRuntime.showAppUpdatePrompt(
+            relaydesk::runtime::AppUpdatePromptState::Available);
+    } else if (options.testAppUpdateDownloading) {
+        relayRuntime.showAppUpdatePrompt(
+            relaydesk::runtime::AppUpdatePromptState::Downloading);
+    } else if (options.testAppUpdateFailed) {
+        relayRuntime.showAppUpdatePrompt(
+            relaydesk::runtime::AppUpdatePromptState::Failed);
+    }
     if (options.testImageMessage) {
         relayRuntime.showImageConversation();
     }
@@ -4696,6 +4926,17 @@ int captureSkiaUiPng(const CaptureOptions& options)
         if (transferStateText(cancelledPart, true) != "已取消") {
             return 26;
         }
+    }
+    const bool testAppUpdate = options.testAppUpdateAvailable ||
+        options.testAppUpdateDownloading || options.testAppUpdateFailed;
+    if (testAppUpdate &&
+        (html.find(R"(data-action="app-update-install-on-exit")") ==
+             std::string::npos ||
+         html.find(R"(data-action="app-update-restart-now")") ==
+             std::string::npos ||
+         html.find(R"(data-action="app-update-dismiss")") ==
+             std::string::npos)) {
+        return 69;
     }
     if (options.testImageMessage) {
         const std::string compoundMessageMarkup =
@@ -4959,6 +5200,64 @@ int captureSkiaUiPng(const CaptureOptions& options)
                               relayRuntime,
                               binding,
                               ChatScrollUpdateMode::ScrollToLatest);
+    if (testAppUpdate) {
+        applyAppUpdatePrompt(runtime, relayRuntime.GetAppUpdatePrompt());
+        const std::optional<std::string> title =
+            runtime.textContentById("app-update-title");
+        if (options.testAppUpdateAvailable) {
+            const std::optional<std::string> message =
+                runtime.textContentById("app-update-message");
+            const std::optional<std::string> version =
+                runtime.textContentById("app-update-version");
+            const std::string expectedVersion =
+                "当前版本 " +
+                std::to_string(relaydesk::core::kAppVersion) +
+                "，可更新到 " +
+                std::to_string(relaydesk::core::kAppVersion + 1);
+            if (title != std::optional<std::string>{"发现新版本"} ||
+                message != std::optional<std::string>{
+                    "Alex-PC 提供了更新后的 RelayDesk。"} ||
+                version != std::optional<std::string>{expectedVersion}) {
+                return 70;
+            }
+        } else if (options.testAppUpdateDownloading) {
+            const std::optional<std::string> detail =
+                runtime.textContentById("app-update-file-detail");
+            if (title != std::optional<std::string>{"正在下载更新"} ||
+                !detail.has_value() ||
+                detail->find("4.0 MB/s · 40.0 MB/100 MB，剩余 15 秒") ==
+                    std::string::npos) {
+                return 71;
+            }
+
+            binding.documentLoaded = true;
+            binding.chatInitialized = true;
+            binding.lastDeviceSignature = makeRelayDeskUiSignature(
+                relayRuntime,
+                binding,
+                relayRuntime.GetAppUpdatePrompt());
+            relayRuntime.setAppUpdateProgress(60u * 1024u * 1024u);
+            if (!refreshRelayDeskDevicePanelIfChanged(binding, false)) {
+                return 72;
+            }
+            const std::optional<std::string> updatedDetail =
+                runtime.textContentById("app-update-file-detail");
+            if (!updatedDetail.has_value() ||
+                updatedDetail->find(
+                    "4.0 MB/s · 60.0 MB/100 MB，剩余 10 秒") ==
+                    std::string::npos) {
+                return 73;
+            }
+        } else if (options.testAppUpdateFailed) {
+            const std::optional<std::string> errorMessage =
+                runtime.textContentById("app-update-error-message");
+            if (title != std::optional<std::string>{"更新失败"} ||
+                errorMessage !=
+                    std::optional<std::string>{"更新连接意外中断。"}) {
+                return 74;
+            }
+        }
+    }
     if (options.testUnreadBadge) {
         const auto unreadText = [&runtime]() {
             return runtime.textContentById("device-unread-0");
@@ -4969,8 +5268,10 @@ int captureSkiaUiPng(const CaptureOptions& options)
 
         binding.documentLoaded = true;
         binding.chatInitialized = true;
-        binding.lastDeviceSignature =
-            makeRelayDeskUiSignature(relayRuntime, binding);
+        binding.lastDeviceSignature = makeRelayDeskUiSignature(
+            relayRuntime,
+            binding,
+            relayRuntime.GetAppUpdatePrompt());
         relayRuntime.setFirstPeerUnreadMessageCount(123);
         if (!refreshRelayDeskDevicePanelIfChanged(binding, false) ||
             unreadText() != std::optional<std::string>{"99+"}) {
@@ -4995,8 +5296,10 @@ int captureSkiaUiPng(const CaptureOptions& options)
         }
         binding.documentLoaded = true;
         binding.chatInitialized = true;
-        binding.lastDeviceSignature =
-            makeRelayDeskUiSignature(relayRuntime, binding);
+        binding.lastDeviceSignature = makeRelayDeskUiSignature(
+            relayRuntime,
+            binding,
+            relayRuntime.GetAppUpdatePrompt());
         const std::optional<skui::ScrollState> initialChatScroll =
             runtime.scrollStateById("chat-scroll");
         if (relayRuntime.GetSelectedPeerMessages().size() !=
@@ -5391,8 +5694,10 @@ int captureSkiaUiPng(const CaptureOptions& options)
     if (options.testPeerSwitch) {
         binding.documentLoaded = true;
         binding.chatInitialized = true;
-        binding.lastDeviceSignature =
-            makeRelayDeskUiSignature(relayRuntime, binding);
+        binding.lastDeviceSignature = makeRelayDeskUiSignature(
+            relayRuntime,
+            binding,
+            relayRuntime.GetAppUpdatePrompt());
 
         relayRuntime.showFullConversation();
         skui::Event mouseDown;

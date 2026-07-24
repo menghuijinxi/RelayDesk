@@ -425,6 +425,33 @@ if(RELAYDESK_BUILD_SKIAUI)
             --capture-dpi-scale 1.0
             --capture-test-unread-badge
     )
+    add_test(NAME relaydesk_skiaui_app_update_available_capture
+        COMMAND relaydesk_skiaui
+            --capture-skiaui
+            "${CMAKE_BINARY_DIR}/tmp/relaydesk_skiaui_app_update_available.png"
+            --capture-width 1600
+            --capture-height 900
+            --capture-dpi-scale 1.0
+            --capture-test-app-update-available
+    )
+    add_test(NAME relaydesk_skiaui_app_update_downloading_capture
+        COMMAND relaydesk_skiaui
+            --capture-skiaui
+            "${CMAKE_BINARY_DIR}/tmp/relaydesk_skiaui_app_update_downloading.png"
+            --capture-width 1600
+            --capture-height 900
+            --capture-dpi-scale 1.0
+            --capture-test-app-update-downloading
+    )
+    add_test(NAME relaydesk_skiaui_app_update_failed_capture
+        COMMAND relaydesk_skiaui
+            --capture-skiaui
+            "${CMAKE_BINARY_DIR}/tmp/relaydesk_skiaui_app_update_failed.png"
+            --capture-width 1600
+            --capture-height 900
+            --capture-dpi-scale 1.0
+            --capture-test-app-update-failed
+    )
 endif()
 
 add_test(NAME relaydesk_patch_eui_neo_app_shortcuts_tests
