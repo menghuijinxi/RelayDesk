@@ -169,7 +169,6 @@ struct SkiaUiRuntimeBinding {
     UINT_PTR deferredRefreshTimerId = 0;
     bool documentLoaded = false;
     bool chatInitialized = false;
-    bool scrollChatToLatestPending = false;
     bool chatHistoryPrependPending = false;
     bool suppressChatHistoryPagination = false;
     std::function<void()> loadMoreSelectedPeerMessages;
@@ -3237,8 +3236,12 @@ void applyRelayDeskDevicePanel(
     const bool paginationWasSuppressed =
         binding.suppressChatHistoryPagination;
     binding.suppressChatHistoryPagination = true;
-    (void)skiaRuntime.setScrollOffsetById(
-        "chat-scroll", updatedChatScroll->scrollX, targetScrollY);
+    if (keepChatAtLatest && !historyPrepended) {
+        (void)skiaRuntime.scrollToBottomById("chat-scroll");
+    } else {
+        (void)skiaRuntime.setScrollOffsetById(
+            "chat-scroll", updatedChatScroll->scrollX, targetScrollY);
+    }
     binding.suppressChatHistoryPagination = paginationWasSuppressed;
 }
 
@@ -3267,12 +3270,6 @@ void scheduleRelayDeskPanelRefresh(SkiaUiRuntimeBinding& binding)
     }
 }
 
-void scheduleChatScrollToLatest(SkiaUiRuntimeBinding& binding)
-{
-    binding.scrollChatToLatestPending = true;
-    scheduleRelayDeskPanelRefresh(binding);
-}
-
 bool sendComposerMessage(
     skui::Runtime& runtime,
     relaydesk::runtime::RelayDeskRuntime& relayRuntime,
@@ -3297,7 +3294,6 @@ bool sendComposerMessage(
     binding.composerSelection = {};
     (void)runtime.replaceHtmlById(
         kComposerDocumentId, makeEmptyComposerDocumentMarkup());
-    scheduleChatScrollToLatest(binding);
     applyRelayDeskDevicePanel(runtime,
                               relayRuntime,
                               binding,
@@ -3377,7 +3373,6 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
             if (relayRuntime.GetSelectedPeerMessages().size() >
                 previousMessageCount) {
                 binding.chatHistoryPrependPending = true;
-                binding.scrollChatToLatestPending = false;
                 scheduleRelayDeskPanelRefresh(binding);
             }
             return;
@@ -3484,7 +3479,6 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
             hideMessageContextMenu(runtime);
             hideImagePreview(runtime);
             relayRuntime.selectPeer(std::string(action.substr(devicePrefix.size())));
-            scheduleChatScrollToLatest(binding);
             applyRelayDeskDevicePanel(runtime,
                                       relayRuntime,
                                       binding,
@@ -3655,8 +3649,7 @@ bool refreshRelayDeskDevicePanelIfChanged(SkiaUiRuntimeBinding& binding,
     binding.relayRuntime->refreshPeersIfNeeded();
     const std::string nextSignature =
         makeRelayDeskUiSignature(*binding.relayRuntime, binding);
-    const bool scrollChatToLatest =
-        !binding.chatInitialized || binding.scrollChatToLatestPending;
+    const bool scrollChatToLatest = !binding.chatInitialized;
     if (!force && !scrollChatToLatest &&
         !binding.chatHistoryPrependPending &&
         nextSignature == binding.lastDeviceSignature) {
@@ -3674,7 +3667,6 @@ bool refreshRelayDeskDevicePanelIfChanged(SkiaUiRuntimeBinding& binding,
                               binding,
                               scrollUpdateMode);
     binding.chatInitialized = true;
-    binding.scrollChatToLatestPending = false;
     binding.chatHistoryPrependPending = false;
     return true;
 }
@@ -4866,8 +4858,14 @@ int captureSkiaUiPng(const CaptureOptions& options)
         options.initialWidth > 0 ? options.initialWidth : options.width;
     const int initialHeight =
         options.initialHeight > 0 ? options.initialHeight : options.height;
+    if (options.testHistoryPagination) {
+        runtime.beginUpdate();
+    }
     runtime.resize(initialWidth, initialHeight, options.dpiScale);
     if (!runtime.loadDocumentFromString(html)) {
+        if (options.testHistoryPagination) {
+            runtime.endUpdate();
+        }
         return 4;
     }
     if (options.testComposerAttachments) {
@@ -4929,6 +4927,10 @@ int captureSkiaUiPng(const CaptureOptions& options)
                               binding,
                               ChatScrollUpdateMode::ScrollToLatest);
     if (options.testHistoryPagination) {
+        runtime.endUpdate();
+        if (!isChatScrolledToLatest(runtime)) {
+            return 62;
+        }
         binding.documentLoaded = true;
         binding.chatInitialized = true;
         binding.lastDeviceSignature =
@@ -5345,6 +5347,10 @@ int captureSkiaUiPng(const CaptureOptions& options)
             runtime.scrollStateById("chat-scroll");
         if (!switchedScroll.has_value() || switchedScroll->maxScrollY <= 0.0f) {
             return 8;
+        }
+        if (std::abs(switchedScroll->maxScrollY - switchedScroll->scrollY) >
+            kChatScrollBottomTolerance) {
+            return 63;
         }
         (void)refreshRelayDeskDevicePanelIfChanged(binding, false);
     }
