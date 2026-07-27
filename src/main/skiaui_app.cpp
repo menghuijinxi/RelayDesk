@@ -3832,6 +3832,7 @@ bool sendComposerMessage(
                               relayRuntime,
                               binding,
                               ChatScrollUpdateMode::ScrollToLatest);
+    (void)runtime.collapseSelection(kComposerInitialParagraphId, 0u);
     return true;
 }
 
@@ -6062,7 +6063,16 @@ int captureSkiaUiPng(const CaptureOptions& options)
             std::string::npos) {
             return 42;
         }
-        (void)runtime.collapseSelection(kComposerInitialParagraphId, 0u);
+        textInput.text = "next message";
+        if (!runtime.handleEvent(textInput) ||
+            runtime.textContentById(kComposerInitialParagraphId).value_or("") !=
+                textInput.text) {
+            return 78;
+        }
+        if (!runtime.setTextById(kComposerInitialParagraphId, "") ||
+            !runtime.collapseSelection(kComposerInitialParagraphId, 0u)) {
+            return 79;
+        }
         (void)runtime.handleEvent(enter);
         if (relayRuntime.GetSelectedPeerMessages().size() !=
                 messageCountBefore + 1u ||
