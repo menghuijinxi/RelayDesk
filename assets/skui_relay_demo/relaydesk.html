@@ -1250,6 +1250,54 @@
     .compose-icon:hover {
       color: #0aa39e;
     }
+    .composer-emoji-picker {
+      position: absolute;
+      display: none;
+      right: 42px;
+      bottom: 278px;
+      width: 340px;
+      height: 202px;
+      box-sizing: border-box;
+      border-width: 1px;
+      border-style: solid;
+      border-color: #d6dee8;
+      border-radius: 8px;
+      background-color: #ffffff;
+      box-shadow: 0px 8px 24px rgba(15,23,42,0.16);
+      z-index: 70;
+    }
+    .composer-emoji-title {
+      position: absolute;
+      left: 14px;
+      top: 10px;
+      right: 14px;
+      height: 22px;
+      color: #68778a;
+      font-size: 13px;
+      font-weight: bold;
+    }
+    .composer-emoji-grid {
+      position: absolute;
+      left: 12px;
+      top: 42px;
+      width: 316px;
+      height: 148px;
+    }
+    .composer-emoji-item {
+      position: absolute;
+      display: flex;
+      width: 36px;
+      height: 34px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      color: #1f2937;
+      font-size: 23px;
+      cursor: pointer;
+    }
+    .composer-emoji-item:hover {
+      background-color: #e8f7f6;
+    }
     .emoji-icon {
       right: 192px;
     }
@@ -1848,6 +1896,7 @@
     .screen.dark .search-box,
     .screen.dark .tabbar,
     .screen.dark .composer-wrap,
+    .screen.dark .composer-emoji-picker,
     .screen.dark .settings-field,
     .screen.dark .settings-button,
     .screen.dark .settings-font-preview,
@@ -1858,6 +1907,15 @@
       border-color: #2e373c;
       background-color: #181d21;
       color: #e8edf1;
+    }
+    .screen.dark .composer-emoji-title {
+      color: #adb8c1;
+    }
+    .screen.dark .composer-emoji-item {
+      color: #e8edf1;
+    }
+    .screen.dark .composer-emoji-item:hover {
+      background-color: #0f3e40;
     }
     .screen.dark .settings-page,
     .screen.dark .settings-content-panel {
@@ -2080,10 +2138,14 @@
       <div class="message-row message-row-right"><div class="time-label">09:25</div><selectable class="bubble bubble-right">是的，这是最新版本。</selectable></div>
         </div>
       </div>
+      <div id="composer-emoji-picker" class="composer-emoji-picker">
+        <div class="composer-emoji-title">常用表情</div>
+        <div class="composer-emoji-grid"><!-- COMPOSER_EMOJI_ITEMS --></div>
+      </div>
       <div id="composer-wrap" class="composer-wrap">
         <div id="composer-document" class="composer-document" contenteditable="true" contenteditable-flow="inline"><p id="composer-text-initial" class="composer-document-paragraph"><br></p></div>
         <div id="composer-placeholder" class="composer-placeholder">选择设备后发送消息</div>
-        <svg id="composer-emoji" class="compose-icon emoji-icon" title="表情" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M8 14s1.5 2 4 2 4-2 4-2"></path><path d="M9 9h.01"></path><path d="M15 9h.01"></path></svg>
+        <svg id="composer-emoji" class="compose-icon emoji-icon" title="表情" data-action="toggle-composer-emoji-picker" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M8 14s1.5 2 4 2 4-2 4-2"></path><path d="M9 9h.01"></path><path d="M15 9h.01"></path></svg>
         <svg id="composer-attach" class="compose-icon attach-icon" title="添加文件" data-action="select-attachment-files" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.1-8.9 8.9a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"></path></svg>
         <svg id="composer-folder" class="compose-icon folder-icon" title="添加文件夹" data-action="select-attachment-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"></path></svg>
         <div id="composer-send" class="send-button" data-action="send-message">发送</div>

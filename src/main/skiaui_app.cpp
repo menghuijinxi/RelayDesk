@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -94,6 +95,8 @@ constexpr std::string_view kComposerInitialParagraphId =
     "composer-text-initial";
 constexpr std::string_view kComposerAttachmentElementPrefix =
     "composer-attachment:";
+constexpr std::string_view kComposerEmojiActionPrefix =
+    "insert-composer-emoji:";
 constexpr std::string_view kTransferSendActionPrefix = "transfer-send:";
 constexpr std::string_view kTransferResendMessageActionPrefix =
     "transfer-resend-message:";
@@ -107,6 +110,46 @@ constexpr std::string_view kTransferOpenActionPrefix = "transfer-open:";
 constexpr std::string_view kTransferRevealActionPrefix = "transfer-reveal:";
 constexpr UINT kSkiaUiRequestRedrawMessage = WM_APP + 0x531;
 constexpr UINT kRelayDeskSkiaUiRefreshMs = 100;
+
+struct ComposerEmoji {
+    std::string_view text;
+    std::string_view label;
+};
+
+constexpr std::array<ComposerEmoji, 32> kComposerEmojis = {{
+    {"😂", "笑哭"},
+    {"🤣", "笑趴"},
+    {"😅", "尴尬"},
+    {"🤭", "偷笑"},
+    {"🤔", "思考"},
+    {"🙄", "白眼"},
+    {"😒", "撇嘴"},
+    {"😑", "无语"},
+    {"😏", "得意"},
+    {"😤", "哼"},
+    {"😡", "发怒"},
+    {"😭", "大哭"},
+    {"🥺", "可怜"},
+    {"😳", "害羞"},
+    {"😴", "睡觉"},
+    {"🤦", "捂脸"},
+    {"🙈", "不看"},
+    {"🤡", "小丑"},
+    {"🫠", "裂开"},
+    {"🐶", "狗头"},
+    {"🍉", "吃瓜"},
+    {"👍", "强"},
+    {"👏", "鼓掌"},
+    {"🙏", "谢谢"},
+    {"💪", "加油"},
+    {"🤝", "握手"},
+    {"🫡", "收到"},
+    {"👌", "没问题"},
+    {"🌹", "玫瑰"},
+    {"🧧", "红包"},
+    {"💯", "满分"},
+    {"🔥", "火"},
+}};
 
 std::vector<std::wstring> currentProcessArguments()
 {
@@ -206,6 +249,7 @@ struct SkiaUiRuntimeBinding {
     bool notificationSoundEnabled = true;
     bool launchAtStartupEnabled = true;
     bool sendModeDropdownOpen = false;
+    bool composerEmojiPickerOpen = false;
     int settingsCategory = 0;
     int settingsFontSize = 14;
     int sendMode = 0;
@@ -325,6 +369,35 @@ std::string makeDeviceRowsMarkup()
     return html;
 }
 
+std::string makeComposerEmojiItemsMarkup()
+{
+    constexpr int kColumnCount = 8;
+    constexpr int kColumnStep = 40;
+    constexpr int kRowStep = 38;
+    std::string html;
+    html.reserve(kComposerEmojis.size() * 180u);
+    for (std::size_t index = 0; index < kComposerEmojis.size(); ++index) {
+        const ComposerEmoji& emoji = kComposerEmojis[index];
+        const int column = static_cast<int>(index) % kColumnCount;
+        const int row = static_cast<int>(index) / kColumnCount;
+        html += R"(<div id="composer-emoji-item-)";
+        html += std::to_string(index);
+        html += R"(" class="composer-emoji-item" title=")";
+        html += emoji.label;
+        html += R"(" data-action=")";
+        html += kComposerEmojiActionPrefix;
+        html += std::to_string(index);
+        html += R"(" style="left: )";
+        html += std::to_string(column * kColumnStep);
+        html += R"(px; top: )";
+        html += std::to_string(row * kRowStep);
+        html += R"(px;">)";
+        html += emoji.text;
+        html += "</div>";
+    }
+    return html;
+}
+
 bool removeCssBlock(std::string& text, std::string_view marker)
 {
     const std::size_t blockStart = text.find(marker);
@@ -402,6 +475,9 @@ std::string makeEmbeddedDocument()
     keepDesktopLayout(html);
     injectDocumentIconStyles(html);
     replaceAll(html, "<!-- DEVICE_ROWS -->", makeDeviceRowsMarkup());
+    replaceAll(html,
+               "<!-- COMPOSER_EMOJI_ITEMS -->",
+               makeComposerEmojiItemsMarkup());
 
     replaceAll(
         html,
@@ -1167,6 +1243,53 @@ bool restoreComposerSelection(skui::Runtime& runtime,
         }
     }
     return runtime.collapseSelection(kComposerInitialParagraphId, 0u);
+}
+
+void setComposerEmojiPickerOpen(skui::Runtime& runtime,
+                                SkiaUiRuntimeBinding& binding,
+                                bool open)
+{
+    binding.composerEmojiPickerOpen = open;
+    (void)runtime.setVisibleById("composer-emoji-picker", open);
+}
+
+std::optional<std::size_t> composerEmojiIndexFromAction(
+    std::string_view action)
+{
+    if (!action.starts_with(kComposerEmojiActionPrefix)) {
+        return std::nullopt;
+    }
+
+    const std::string_view indexText =
+        action.substr(kComposerEmojiActionPrefix.size());
+    std::size_t index = 0u;
+    const auto [end, error] = std::from_chars(
+        indexText.data(), indexText.data() + indexText.size(), index);
+    if (error != std::errc{} ||
+        end != indexText.data() + indexText.size() ||
+        index >= kComposerEmojis.size()) {
+        return std::nullopt;
+    }
+    return index;
+}
+
+bool insertComposerEmoji(skui::Runtime& runtime,
+                         SkiaUiRuntimeBinding& binding,
+                         std::size_t emojiIndex)
+{
+    if (emojiIndex >= kComposerEmojis.size() ||
+        !restoreComposerSelection(runtime, binding)) {
+        return false;
+    }
+
+    skui::Event textInput;
+    textInput.type = skui::EventType::TextInput;
+    textInput.text = std::string(kComposerEmojis[emojiIndex].text);
+    if (!runtime.handleEvent(textInput)) {
+        return false;
+    }
+    rememberComposerSelection(runtime, binding);
+    return true;
 }
 
 void discardComposerAttachmentsMissingFromDocument(
@@ -3883,6 +4006,7 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
                 return false;
             }
             hideMessageContextMenu(runtime);
+            setComposerEmojiPickerOpen(runtime, binding, false);
             (void)sendComposerMessage(runtime, relayRuntime, binding);
             return true;
         });
@@ -3949,6 +4073,14 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
              event.type == skui::ElementEventType::MouseUp) &&
             event.button == skui::MouseButton::Left) {
             rememberComposerSelection(runtime, binding);
+        }
+        if (binding.composerEmojiPickerOpen &&
+            event.type == skui::ElementEventType::MouseDown &&
+            event.button == skui::MouseButton::Left &&
+            event.id != "composer-emoji" &&
+            !eventHasClass(event, "composer-emoji-item") &&
+            !eventHasClass(event, "composer-emoji-picker")) {
+            setComposerEmojiPickerOpen(runtime, binding, false);
         }
 
         if (event.type == skui::ElementEventType::MouseUp &&
@@ -4020,7 +4152,13 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
         }
 
         const std::string_view action(event.action);
-        if (handleTransferCardAction(action, relayRuntime)) {
+        if (const std::optional<std::size_t> emojiIndex =
+                composerEmojiIndexFromAction(action)) {
+            hideMessageContextMenu(runtime);
+            (void)insertComposerEmoji(runtime, binding, *emojiIndex);
+            setComposerEmojiPickerOpen(runtime, binding, false);
+            applyComposerDocumentPanel(runtime, relayRuntime);
+        } else if (handleTransferCardAction(action, relayRuntime)) {
             hideMessageContextMenu(runtime);
         } else if (action.starts_with(imageContextPrefix)) {
             hideMessageContextMenu(runtime);
@@ -4233,6 +4371,10 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
             }
         } else if (action == "close-image-preview") {
             hideImagePreview(runtime);
+        } else if (action == "toggle-composer-emoji-picker") {
+            hideMessageContextMenu(runtime);
+            setComposerEmojiPickerOpen(
+                runtime, binding, !binding.composerEmojiPickerOpen);
         } else if (action.starts_with(removeAttachmentPrefix)) {
             const std::string_view attachmentId =
                 action.substr(removeAttachmentPrefix.size());
@@ -4258,6 +4400,7 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
             }
         } else if (action == "send-message") {
             hideMessageContextMenu(runtime);
+            setComposerEmojiPickerOpen(runtime, binding, false);
             (void)sendComposerMessage(runtime, relayRuntime, binding);
         } else if (action == "finish-transfer") {
             hideMessageContextMenu(runtime);
@@ -5978,6 +6121,42 @@ int captureSkiaUiPng(const CaptureOptions& options)
     if (options.testComposerKeyboard) {
         const std::size_t messageCountBefore =
             relayRuntime.GetSelectedPeerMessages().size();
+        constexpr std::string_view kSelectionFixture = "abc";
+        if (html.find(R"(data-action="toggle-composer-emoji-picker")") ==
+                std::string::npos ||
+            html.find("insert-composer-emoji:19") == std::string::npos ||
+            !runtime.setTextById(kComposerInitialParagraphId,
+                                 kSelectionFixture) ||
+            !runtime.setSelectionBaseAndExtent(
+                kComposerInitialParagraphId,
+                1u,
+                kComposerInitialParagraphId,
+                2u)) {
+            return 82;
+        }
+        binding.composerSelection = runtime.selection();
+        const auto clickComposerPoint = [&runtime](float x, float y) {
+            skui::Event mouseDown;
+            mouseDown.type = skui::EventType::MouseDown;
+            mouseDown.x = x;
+            mouseDown.y = y;
+            mouseDown.button = skui::MouseButton::Left;
+            (void)runtime.handleEvent(mouseDown);
+            skui::Event mouseUp = mouseDown;
+            mouseUp.type = skui::EventType::MouseUp;
+            (void)runtime.handleEvent(mouseUp);
+        };
+        clickComposerPoint(1364.0f, 844.0f);
+        if (!binding.composerEmojiPickerOpen) {
+            return 83;
+        }
+        clickComposerPoint(1368.0f, 555.0f);
+        if (binding.composerEmojiPickerOpen ||
+            runtime.textContentById(kComposerInitialParagraphId) !=
+                std::optional<std::string>{"a🐶c"}) {
+            return 84;
+        }
+
         constexpr std::string_view kFirstLine = "line one";
         if (!runtime.setTextById(kComposerInitialParagraphId, kFirstLine) ||
             !runtime.collapseSelection(kComposerInitialParagraphId,
@@ -6085,6 +6264,7 @@ int captureSkiaUiPng(const CaptureOptions& options)
             (void)runtime.setScrollOffsetById(
                 "chat-scroll", chatScroll->scrollX, chatScroll->maxScrollY);
         }
+        setComposerEmojiPickerOpen(runtime, binding, true);
     }
     if (initialWidth != options.width || initialHeight != options.height) {
         runtime.resize(options.width, options.height, options.dpiScale);
