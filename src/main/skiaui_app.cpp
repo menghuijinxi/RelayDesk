@@ -83,6 +83,10 @@ constexpr int kImageContextMenuWidth = 160;
 constexpr int kImageContextMenuHeight = 114;
 constexpr int kFileContextMenuWidth = 160;
 constexpr int kFileContextMenuHeight = 114;
+constexpr int kImagePreviewViewportPadding = 48;
+constexpr float kImagePreviewMinimumScale = 0.1f;
+constexpr float kImagePreviewMaximumScale = 8.0f;
+constexpr float kImagePreviewZoomStep = 1.2f;
 constexpr float kMessageImageMaxWidth = 420.0f;
 constexpr float kMessageImageMaxHeight = 300.0f;
 constexpr float kChatScrollBottomTolerance = 0.5f;
@@ -209,6 +213,20 @@ struct TransferPartActionTarget {
     std::string partId;
 };
 
+struct ImagePreviewState {
+    float originalWidth = 1.0f;
+    float originalHeight = 1.0f;
+    float fittedScale = 1.0f;
+    float scale = 1.0f;
+    float panX = 0.0f;
+    float panY = 0.0f;
+    float dragStartX = 0.0f;
+    float dragStartY = 0.0f;
+    float dragOriginX = 0.0f;
+    float dragOriginY = 0.0f;
+    bool dragging = false;
+};
+
 struct CaptureOptions {
     std::filesystem::path outputPath;
     int width = kDefaultCaptureWidth;
@@ -273,6 +291,7 @@ std::filesystem::path gImageContextPath;
 std::filesystem::path gFileContextPath;
 bool gMessageContextMenuVisible = false;
 bool gImagePreviewVisible = false;
+ImagePreviewState gImagePreviewState;
 std::vector<PendingFolderSizeResult> gPendingFolderSizeResults;
 
 COLORREF colorRefFromSkColor(SkColor color)
@@ -3046,6 +3065,170 @@ std::string makeChatContentMarkup(
     return html;
 }
 
+float imagePreviewViewportWidth(const skui::Runtime& runtime)
+{
+    return static_cast<float>(std::max(
+        1,
+        runtimeLogicalWidth(runtime) - kChatMessagePaneLeft -
+            kImagePreviewViewportPadding * 2));
+}
+
+float imagePreviewViewportHeight(const skui::Runtime& runtime)
+{
+    return static_cast<float>(std::max(
+        1,
+        runtimeLogicalHeight(runtime) - kImagePreviewViewportPadding * 2));
+}
+
+void clampImagePreviewPan(const skui::Runtime& runtime)
+{
+    const float scaledWidth =
+        gImagePreviewState.originalWidth * gImagePreviewState.scale;
+    const float scaledHeight =
+        gImagePreviewState.originalHeight * gImagePreviewState.scale;
+    const float maximumPanX = std::max(
+        0.0f,
+        (scaledWidth - imagePreviewViewportWidth(runtime)) * 0.5f);
+    const float maximumPanY = std::max(
+        0.0f,
+        (scaledHeight - imagePreviewViewportHeight(runtime)) * 0.5f);
+    gImagePreviewState.panX = std::clamp(
+        gImagePreviewState.panX, -maximumPanX, maximumPanX);
+    gImagePreviewState.panY = std::clamp(
+        gImagePreviewState.panY, -maximumPanY, maximumPanY);
+}
+
+void applyImagePreviewView(skui::Runtime& runtime)
+{
+    const float minimumScale = std::min(
+        kImagePreviewMinimumScale, gImagePreviewState.fittedScale);
+    gImagePreviewState.scale = std::clamp(
+        gImagePreviewState.scale,
+        minimumScale,
+        kImagePreviewMaximumScale);
+    clampImagePreviewPan(runtime);
+
+    const int displayWidth = std::max(
+        1,
+        static_cast<int>(std::lround(
+            gImagePreviewState.originalWidth * gImagePreviewState.scale)));
+    const int displayHeight = std::max(
+        1,
+        static_cast<int>(std::lround(
+            gImagePreviewState.originalHeight * gImagePreviewState.scale)));
+    const std::string transform =
+        "transform: translate(" + std::to_string(gImagePreviewState.panX) +
+        "px, " + std::to_string(gImagePreviewState.panY) + "px);";
+    (void)runtime.setStyleById(
+        "image-preview-image",
+        "width: " + std::to_string(displayWidth) +
+            "px; height: " + std::to_string(displayHeight) + "px; " +
+            transform);
+    (void)runtime.setTextById(
+        "image-preview-percent",
+        std::to_string(static_cast<int>(
+            std::lround(gImagePreviewState.scale * 100.0f))) + "%");
+}
+
+void zoomImagePreviewAt(skui::Runtime& runtime,
+                        float requestedScale,
+                        float anchorX,
+                        float anchorY)
+{
+    const float previousScale = gImagePreviewState.scale;
+    const float minimumScale = std::min(
+        kImagePreviewMinimumScale, gImagePreviewState.fittedScale);
+    const float nextScale = std::clamp(
+        requestedScale,
+        minimumScale,
+        kImagePreviewMaximumScale);
+    if (std::fabs(nextScale - previousScale) <= 0.0001f) {
+        return;
+    }
+
+    const float centerX =
+        (static_cast<float>(kChatMessagePaneLeft) +
+         static_cast<float>(runtimeLogicalWidth(runtime))) * 0.5f;
+    const float centerY =
+        static_cast<float>(runtimeLogicalHeight(runtime)) * 0.5f;
+    const float zoomRatio = nextScale / previousScale;
+    gImagePreviewState.panX =
+        anchorX - centerX -
+        (anchorX - centerX - gImagePreviewState.panX) * zoomRatio;
+    gImagePreviewState.panY =
+        anchorY - centerY -
+        (anchorY - centerY - gImagePreviewState.panY) * zoomRatio;
+    gImagePreviewState.scale = nextScale;
+    applyImagePreviewView(runtime);
+}
+
+void zoomImagePreviewFromCenter(skui::Runtime& runtime, float requestedScale)
+{
+    const float centerX =
+        (static_cast<float>(kChatMessagePaneLeft) +
+         static_cast<float>(runtimeLogicalWidth(runtime))) * 0.5f;
+    const float centerY =
+        static_cast<float>(runtimeLogicalHeight(runtime)) * 0.5f;
+    zoomImagePreviewAt(runtime, requestedScale, centerX, centerY);
+}
+
+void resetImagePreviewView(skui::Runtime& runtime)
+{
+    gImagePreviewState.scale = gImagePreviewState.fittedScale;
+    gImagePreviewState.panX = 0.0f;
+    gImagePreviewState.panY = 0.0f;
+    gImagePreviewState.dragging = false;
+    applyImagePreviewView(runtime);
+}
+
+bool handleImagePreviewPointerEvent(skui::Runtime& runtime,
+                                    const skui::ElementEvent& event)
+{
+    if (!gImagePreviewVisible ||
+        event.action != "image-preview-viewport") {
+        return false;
+    }
+
+    if (event.type == skui::ElementEventType::MouseWheel) {
+        if (event.wheelDelta != 0.0f) {
+            const float zoomFactor = std::pow(
+                kImagePreviewZoomStep, event.wheelDelta / 120.0f);
+            zoomImagePreviewAt(
+                runtime,
+                gImagePreviewState.scale * zoomFactor,
+                event.x,
+                event.y);
+        }
+        return true;
+    }
+    if (event.type == skui::ElementEventType::MouseDown &&
+        event.button == skui::MouseButton::Left) {
+        gImagePreviewState.dragging = true;
+        gImagePreviewState.dragStartX = event.x;
+        gImagePreviewState.dragStartY = event.y;
+        gImagePreviewState.dragOriginX = gImagePreviewState.panX;
+        gImagePreviewState.dragOriginY = gImagePreviewState.panY;
+        return true;
+    }
+    if (event.type == skui::ElementEventType::MouseMove &&
+        gImagePreviewState.dragging) {
+        gImagePreviewState.panX =
+            gImagePreviewState.dragOriginX + event.x -
+            gImagePreviewState.dragStartX;
+        gImagePreviewState.panY =
+            gImagePreviewState.dragOriginY + event.y -
+            gImagePreviewState.dragStartY;
+        applyImagePreviewView(runtime);
+        return true;
+    }
+    if (event.type == skui::ElementEventType::MouseUp &&
+        event.button == skui::MouseButton::Left) {
+        gImagePreviewState.dragging = false;
+        return true;
+    }
+    return event.type == skui::ElementEventType::MouseMove;
+}
+
 void showImagePreview(skui::Runtime& runtime,
                       const std::filesystem::path& imagePath)
 {
@@ -3056,36 +3239,32 @@ void showImagePreview(skui::Runtime& runtime,
         return;
     }
 
-    const float availableWidth = static_cast<float>(std::max(
-        1,
-        runtimeLogicalWidth(runtime) - kChatMessagePaneLeft - 96));
-    const float availableHeight = static_cast<float>(
-        std::max(1, runtimeLogicalHeight(runtime) - 96));
+    const float availableWidth = imagePreviewViewportWidth(runtime);
+    const float availableHeight = imagePreviewViewportHeight(runtime);
     const float width = static_cast<float>(imageSize->width);
     const float height = static_cast<float>(imageSize->height);
-    const float scale = std::min(
+    const float fittedScale = std::min(
         1.0f,
         std::min(availableWidth / width, availableHeight / height));
-    const int displayWidth =
-        std::max(1, static_cast<int>(std::lround(width * scale)));
-    const int displayHeight =
-        std::max(1, static_cast<int>(std::lround(height * scale)));
-
-    runtime.setAttributeById("image-preview-image",
-                             "src",
-                             filesystemPathToGenericUtf8(imagePath));
-    runtime.setStyleById(
+    gImagePreviewState = {};
+    gImagePreviewState.originalWidth = width;
+    gImagePreviewState.originalHeight = height;
+    gImagePreviewState.fittedScale = fittedScale;
+    gImagePreviewState.scale = fittedScale;
+    (void)runtime.setAttributeById(
         "image-preview-image",
-        "width: " + std::to_string(displayWidth) +
-            "px; height: " + std::to_string(displayHeight) + "px;");
-    runtime.setStyleById("image-preview-overlay", "display: flex;");
+        "src",
+        filesystemPathToGenericUtf8(imagePath));
+    (void)runtime.setStyleById("image-preview-overlay", "display: flex;");
     gImagePreviewVisible = true;
+    applyImagePreviewView(runtime);
 }
 
 void hideImagePreview(skui::Runtime& runtime)
 {
-    runtime.setStyleById("image-preview-overlay", "display: none;");
+    (void)runtime.setStyleById("image-preview-overlay", "display: none;");
     gImagePreviewVisible = false;
+    gImagePreviewState = {};
 }
 
 void addTextUpdate(skui::RuntimeUpdates& updates,
@@ -4016,6 +4195,9 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
         constexpr std::string_view fileContextPrefix = "file-context:";
         constexpr std::string_view removeAttachmentPrefix =
             "remove-attachment:";
+        if (handleImagePreviewPointerEvent(runtime, event)) {
+            return;
+        }
         if (event.type == skui::ElementEventType::Scroll &&
             event.id == "chat-scroll" &&
             event.scrollY <= kChatLoadMoreTopThreshold &&
@@ -4369,6 +4551,16 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
                             L"RelayDesk",
                             MB_OK | MB_ICONERROR);
             }
+        } else if (action == "image-preview-zoom-out") {
+            zoomImagePreviewFromCenter(
+                runtime,
+                gImagePreviewState.scale / kImagePreviewZoomStep);
+        } else if (action == "image-preview-zoom-in") {
+            zoomImagePreviewFromCenter(
+                runtime,
+                gImagePreviewState.scale * kImagePreviewZoomStep);
+        } else if (action == "image-preview-reset") {
+            resetImagePreviewView(runtime);
         } else if (action == "close-image-preview") {
             hideImagePreview(runtime);
         } else if (action == "toggle-composer-emoji-picker") {
@@ -5328,11 +5520,25 @@ bool writePngFile(const std::filesystem::path& outputPath,
 
 bool writeCaptureImageFixture(const std::filesystem::path& outputPath)
 {
-    constexpr int kWidth = 320;
-    constexpr int kHeight = 180;
-    const std::vector<std::uint32_t> pixels(
+    constexpr int kWidth = 1920;
+    constexpr int kHeight = 1080;
+    constexpr int kOpaqueBorderWidth = 12;
+    std::vector<std::uint32_t> pixels(
         static_cast<std::size_t>(kWidth) * static_cast<std::size_t>(kHeight),
-        0xFFFF00FFu);
+        0x00000000u);
+    for (int y = 0; y < kHeight; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            const bool isOpaqueBorder = x < kOpaqueBorderWidth ||
+                x >= kWidth - kOpaqueBorderWidth ||
+                y < kOpaqueBorderWidth || y >= kHeight - kOpaqueBorderWidth;
+            if (!isOpaqueBorder) {
+                continue;
+            }
+            pixels[static_cast<std::size_t>(y) *
+                       static_cast<std::size_t>(kWidth) +
+                   static_cast<std::size_t>(x)] = 0xFFFF00FFu;
+        }
+    }
     return writePngFile(outputPath,
                         pixels,
                         kWidth,
@@ -5603,6 +5809,21 @@ int captureSkiaUiPng(const CaptureOptions& options)
             firstMessageRow == std::string::npos ||
             compoundMessageMarkup.find(
                 "class=\"message-row ", firstMessageRow + 1u) !=
+                std::string::npos ||
+            html.find(
+                R"(data-action="image-preview-viewport")") ==
+                std::string::npos ||
+            html.find(
+                R"(data-action="image-preview-toolbar")") ==
+                std::string::npos ||
+            html.find(
+                R"(data-action="image-preview-zoom-out")") ==
+                std::string::npos ||
+            html.find(
+                R"(data-action="image-preview-zoom-in")") ==
+                std::string::npos ||
+            html.find(
+                R"(data-action="image-preview-reset")") ==
                 std::string::npos) {
             return 10;
         }
@@ -6401,7 +6622,110 @@ int captureSkiaUiPng(const CaptureOptions& options)
         if (!gImagePreviewVisible) {
             return 11;
         }
+
+        constexpr float kFixtureWidth = 1920.0f;
+        constexpr float kFixtureHeight = 1080.0f;
+        const float expectedFittedZoom = std::min(
+            1.0f,
+            std::min(imagePreviewViewportWidth(runtime) / kFixtureWidth,
+                     imagePreviewViewportHeight(runtime) / kFixtureHeight));
+        if (expectedFittedZoom >= 1.0f ||
+            std::fabs(gImagePreviewState.fittedScale - expectedFittedZoom) >
+                0.0001f ||
+            std::fabs(gImagePreviewState.scale - expectedFittedZoom) >
+                0.0001f) {
+            return 94;
+        }
+
+        zoomImagePreviewFromCenter(runtime, 1.0f);
+        if (std::fabs(gImagePreviewState.scale - 1.0f) > 0.0001f) {
+            return 95;
+        }
+        resetImagePreviewView(runtime);
+        if (std::fabs(gImagePreviewState.scale - expectedFittedZoom) >
+            0.0001f) {
+            return 96;
+        }
+
+        const float previewCenterX = static_cast<float>(
+            (kChatMessagePaneLeft + options.width) / 2);
+        const float previewCenterY =
+            static_cast<float>(options.height / 2);
+        skui::Event previewWheel;
+        previewWheel.type = skui::EventType::MouseWheel;
+        previewWheel.x =
+            (previewCenterX + 100.0f) * options.dpiScale;
+        previewWheel.y = previewCenterY * options.dpiScale;
+        previewWheel.wheelDelta = 960.0f;
+        if (!runtime.handleEvent(previewWheel) ||
+            gImagePreviewState.scale <= expectedFittedZoom * 4.0f ||
+            gImagePreviewState.panX >= 0.0f) {
+            return 89;
+        }
+
+        const float panBeforeDrag = gImagePreviewState.panX;
+        skui::Event previewDragDown;
+        previewDragDown.type = skui::EventType::MouseDown;
+        previewDragDown.x = previewCenterX * options.dpiScale;
+        previewDragDown.y = previewCenterY * options.dpiScale;
+        previewDragDown.button = skui::MouseButton::Left;
+        if (!runtime.handleEvent(previewDragDown) ||
+            !gImagePreviewState.dragging) {
+            return 90;
+        }
+        skui::Event previewDragMove = previewDragDown;
+        previewDragMove.type = skui::EventType::MouseMove;
+        previewDragMove.x += 80.0f * options.dpiScale;
+        (void)runtime.handleEvent(previewDragMove);
+        if (gImagePreviewState.panX <= panBeforeDrag) {
+            return 91;
+        }
+        skui::Event previewDragUp = previewDragMove;
+        previewDragUp.type = skui::EventType::MouseUp;
+        if (!runtime.handleEvent(previewDragUp) ||
+            gImagePreviewState.dragging) {
+            return 92;
+        }
+        resetImagePreviewView(runtime);
+        if (std::fabs(gImagePreviewState.scale - expectedFittedZoom) >
+                0.0001f ||
+            std::fabs(gImagePreviewState.panX) > 0.0001f ||
+            std::fabs(gImagePreviewState.panY) > 0.0001f) {
+            return 93;
+        }
+
+        const std::size_t previewCenterPixelIndex =
+            static_cast<std::size_t>(options.height / 2) *
+                static_cast<std::size_t>(options.width) +
+            static_cast<std::size_t>(
+                (kChatMessagePaneLeft + options.width) / 2);
+        if (!runtime.renderToBgraPixels(interactionPixels.data(),
+                                        options.width,
+                                        options.height,
+                                        interactionRowBytes,
+                                        options.dpiScale)) {
+            return 85;
+        }
+        if (interactionPixels[previewCenterPixelIndex] != 0xFFFFFFFFu) {
+            return 86;
+        }
+
+        binding.darkModeEnabled = true;
+        applySettingsTheme(runtime, binding);
+        if (!runtime.renderToBgraPixels(interactionPixels.data(),
+                                        options.width,
+                                        options.height,
+                                        interactionRowBytes,
+                                        options.dpiScale)) {
+            return 87;
+        }
+        if (interactionPixels[previewCenterPixelIndex] != 0xFF000000u) {
+            return 88;
+        }
+
         hideImagePreview(runtime);
+        binding.darkModeEnabled = false;
+        applySettingsTheme(runtime, binding);
 
         const std::size_t selectionPixelIndex =
             static_cast<std::size_t>(imageY) *

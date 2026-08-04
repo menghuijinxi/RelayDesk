@@ -462,6 +462,8 @@
       align-items: center;
       justify-content: center;
       background-color: rgba(10, 18, 24, 0.88);
+      cursor: move;
+      overflow: hidden;
       z-index: 100;
     }
     .image-preview-image {
@@ -469,6 +471,55 @@
       flex-shrink: 0;
       border-radius: 6px;
       background-color: #ffffff;
+    }
+    .image-preview-toolbar {
+      position: absolute;
+      display: flex;
+      left: 50%;
+      bottom: 22px;
+      width: 276px;
+      height: 46px;
+      padding: 4px;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      border-radius: 6px;
+      border-color: #d8e0e6;
+      border-width: 1px;
+      border-style: solid;
+      background-color: rgba(255, 255, 255, 0.96);
+      transform: translateX(-50%);
+      z-index: 2;
+    }
+    .image-preview-control {
+      display: flex;
+      width: 38px;
+      height: 38px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 4px;
+      color: #17202a;
+      cursor: pointer;
+      font-size: 22px;
+      font-weight: bold;
+    }
+    .image-preview-control:hover {
+      background-color: #dff8f6;
+    }
+    .image-preview-reset {
+      width: 62px;
+      font-size: 14px;
+      font-weight: normal;
+    }
+    .image-preview-percent {
+      display: flex;
+      width: 72px;
+      height: 38px;
+      align-items: center;
+      justify-content: center;
+      color: #465463;
+      font-size: 14px;
+      font-weight: bold;
     }
     .image-preview-close {
       position: absolute;
@@ -482,8 +533,10 @@
       border-radius: 6px;
       background-color: #ffffff;
       color: #17202a;
+      cursor: pointer;
       font-size: 24px;
       font-weight: bold;
+      z-index: 2;
     }
     .image-preview-close:hover {
       background-color: #dff8f6;
@@ -1952,6 +2005,9 @@
       background-color: #0f3e40;
       color: #e8edf1;
     }
+    .screen.dark .image-preview-image {
+      background-color: #000000;
+    }
     .screen.dark .file-name,
     .screen.dark .message-document-text,
     .screen.dark .composer-attachment-name,
@@ -2289,9 +2345,15 @@
           </div>
         </div>
       </div>
-      <div id="image-preview-overlay" class="image-preview-overlay">
-          <img id="image-preview-image" class="image-preview-image" src="">
-          <div class="image-preview-close" data-action="close-image-preview">×</div>
+      <div id="image-preview-overlay" class="image-preview-overlay" data-action="image-preview-viewport">
+        <img id="image-preview-image" class="image-preview-image" src="">
+        <div class="image-preview-toolbar" data-action="image-preview-toolbar">
+          <div class="image-preview-control" title="缩小" data-action="image-preview-zoom-out">−</div>
+          <div id="image-preview-percent" class="image-preview-percent">100%</div>
+          <div class="image-preview-control" title="放大" data-action="image-preview-zoom-in">+</div>
+          <div class="image-preview-control image-preview-reset" title="适应窗口" data-action="image-preview-reset">适应</div>
+        </div>
+        <div class="image-preview-close" title="关闭" data-action="close-image-preview">×</div>
       </div>
     </div>
 
