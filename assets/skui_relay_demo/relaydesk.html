@@ -405,12 +405,74 @@
       border-color: #98dfdc;
       color: #17202a;
     }
+    .message-bubble {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      width: auto;
+      box-sizing: border-box;
+    }
+    .message-body {
+      position: relative;
+      display: block;
+      width: auto;
+      max-width: 100%;
+      height: auto;
+      min-height: 20px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .message-quote {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 1;
+      width: auto;
+      max-width: 100%;
+      min-width: 0px;
+      margin-bottom: 8px;
+      padding: 7px 10px;
+      box-sizing: border-box;
+      border-left-width: 3px;
+      border-left-style: solid;
+      border-left-color: #75c9c5;
+      background-color: rgba(110, 196, 191, 0.14);
+      color: #5d6b7c;
+      font-size: 12px;
+      font-weight: normal;
+      overflow: hidden;
+    }
+    .message-quote-sender,
+    .composer-quote-sender {
+      position: relative;
+      width: 100%;
+      max-width: 100%;
+      height: 18px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: bold;
+    }
+    .message-quote-preview,
+    .composer-quote-preview {
+      position: relative;
+      width: 100%;
+      max-width: 100%;
+      max-height: 36px;
+      margin-top: 2px;
+      overflow: hidden;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      line-height: 17px;
+    }
     .message-context-menu {
       position: absolute;
       left: 0px;
       top: 0px;
       width: 132px;
-      height: 38px;
+      height: 76px;
       display: none;
       border-radius: 7px;
       border-color: #cfd9e5;
@@ -434,10 +496,13 @@
     .message-context-item:hover {
       background-color: #eef6f8;
     }
+    .message-context-quote {
+      top: 38px;
+    }
     .image-context-menu,
     .file-context-menu {
       width: 160px;
-      height: 114px;
+      height: 152px;
     }
     .image-context-item,
     .file-context-item {
@@ -446,11 +511,15 @@
     }
     .image-context-copy,
     .file-context-copy {
-      top: 38px;
+      top: 76px;
     }
     .image-context-save,
     .file-context-save {
-      top: 76px;
+      top: 114px;
+    }
+    .image-context-quote,
+    .file-context-quote {
+      top: 38px;
     }
     .image-preview-overlay {
       position: absolute;
@@ -761,6 +830,18 @@
     .message-row-transfer {
       justify-content: flex-end;
       padding-right: 36px;
+    }
+    .message-transfer-stack {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      flex-shrink: 1;
+      width: auto;
+      max-width: 75%;
+    }
+    .message-transfer-stack > .transfer-card {
+      max-width: 100%;
     }
     .message-row-document {
       align-items: center;
@@ -1164,6 +1245,55 @@
       color: #1f2937;
       background-color: rgba(255,255,255,0);
       font-size: 14px;
+    }
+    .composer-quote {
+      position: relative;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      flex-shrink: 0;
+      width: auto;
+      max-width: 100%;
+      min-height: 54px;
+      padding: 7px 34px 7px 10px;
+      box-sizing: border-box;
+      border-width: 1px;
+      border-style: solid;
+      border-color: #c9d8e4;
+      border-radius: 6px;
+      background-color: #f4f8fb;
+      color: #68778a;
+      font-size: 12px;
+    }
+    .composer-quote-copy {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      flex-grow: 1;
+      flex-shrink: 1;
+      min-width: 0px;
+      width: auto;
+      overflow: hidden;
+    }
+    .composer-quote-remove {
+      position: absolute;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      right: 6px;
+      top: 6px;
+      width: 22px;
+      height: 22px;
+      border-radius: 11px;
+      background-color: #e8edf3;
+      color: #556274;
+      font-size: 17px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    .composer-quote-remove:hover {
+      background-color: #dc2626;
+      color: #ffffff;
     }
     .composer-placeholder {
       position: absolute;
@@ -2005,6 +2135,20 @@
       background-color: #0f3e40;
       color: #e8edf1;
     }
+    .screen.dark .message-quote {
+      border-left-color: #3f9e9a;
+      background-color: rgba(43, 117, 115, 0.28);
+      color: #adb8c1;
+    }
+    .screen.dark .composer-quote {
+      border-color: #33454d;
+      background-color: #1d282e;
+      color: #adb8c1;
+    }
+    .screen.dark .composer-quote-remove {
+      background-color: #2b383e;
+      color: #c3cdd3;
+    }
     .screen.dark .image-preview-image {
       background-color: #000000;
     }
@@ -2034,6 +2178,9 @@
     @media (max-width: 1120px) {
       .transfer-card {
         min-width: 0px;
+        max-width: 100%;
+      }
+      .message-transfer-stack {
         max-width: 100%;
       }
     }
@@ -2111,6 +2258,9 @@
       }
       .transfer-card {
         min-width: 0px;
+        max-width: 100%;
+      }
+      .message-transfer-stack {
         max-width: 100%;
       }
       .transfer-content {
@@ -2208,13 +2358,16 @@
       </div>
       <div id="message-context-menu" class="message-context-menu">
           <div id="message-context-copy" class="message-context-item" data-action="copy-message-context">复制文本</div>
+          <div id="message-context-quote" class="message-context-item message-context-quote" data-action="quote-message-context">引用</div>
       </div>
       <div id="image-context-menu" class="message-context-menu image-context-menu">
+          <div id="image-context-quote" class="message-context-item image-context-item image-context-quote" data-action="quote-message-context">引用</div>
           <div id="image-context-reveal" class="message-context-item image-context-item" data-action="reveal-image-context">打开所在位置</div>
           <div id="image-context-copy" class="message-context-item image-context-item image-context-copy" data-action="copy-image-context">复制图片</div>
           <div id="image-context-save" class="message-context-item image-context-item image-context-save" data-action="save-image-context">另存为</div>
       </div>
       <div id="file-context-menu" class="message-context-menu file-context-menu">
+          <div id="file-context-quote" class="message-context-item file-context-item file-context-quote" data-action="quote-message-context">引用</div>
           <div id="file-context-reveal" class="message-context-item file-context-item" data-action="reveal-file-context">定位文件</div>
           <div id="file-context-copy" class="message-context-item file-context-item file-context-copy" data-action="copy-file-context">复制文件</div>
           <div id="file-context-save" class="message-context-item file-context-item file-context-save" data-action="save-file-context">另存为文件</div>

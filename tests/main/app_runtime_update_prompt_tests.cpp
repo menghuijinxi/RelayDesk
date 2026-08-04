@@ -4185,7 +4185,8 @@ int sendsFileTransferBetweenTwoRuntimeProcesses()
                                                     sourcePath,
                                                     partId,
                                                     "process-e2e-file-transfer"));
-        senderRuntime.sendMessagePartsToSelectedPeer(std::move(parts));
+        senderRuntime.sendMessagePartsToSelectedPeer(
+            std::move(parts), std::nullopt);
         if (!waitForCondition(senderRuntime, [&senderRuntime, &messageId, &partId] {
                 for (const auto& message : senderRuntime.GetSelectedPeerMessages()) {
                     for (const auto& part : message.GetParts()) {
@@ -4376,7 +4377,8 @@ int sendsFolderTransferBetweenTwoRuntimeProcesses()
             partId,
             "process-e2e-folder-transfer",
             expectedSize));
-        senderRuntime.sendMessagePartsToSelectedPeer(std::move(parts));
+        senderRuntime.sendMessagePartsToSelectedPeer(
+            std::move(parts), std::nullopt);
         if (!waitForCondition(senderRuntime, [&senderRuntime, &messageId, &partId] {
                 for (const auto& message : senderRuntime.GetSelectedPeerMessages()) {
                     for (const auto& part : message.GetParts()) {

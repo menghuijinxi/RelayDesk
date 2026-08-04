@@ -6,6 +6,7 @@
 #include <functional>
 #include <iostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -68,6 +69,11 @@ relaydesk::storage::ChatMessageRecord makeMixedTextEmojiRecord()
     record.SetReceiverDisplayNameSnapshot("Peer");
     record.SetCreatedAt("2026-06-14T00:00:00Z");
     record.SetDeliveryState(relaydesk::storage::DeliveryState::Pending);
+    relaydesk::storage::ChatMessageQuote quote;
+    quote.SetMessageId("original-message");
+    quote.SetSenderDisplayName("Peer");
+    quote.SetPreviewText("原消息摘要");
+    record.SetQuote(std::move(quote));
     record.AddPart(makeTextPart("p1", "hello"));
     record.AddPart(makeEmojiPart("p2", "thumbs_up"));
     return record;
@@ -108,6 +114,19 @@ int roundTripsChatMessageFrame()
     }
     if (const int check = expect(decoded.GetParts().size() == 2,
                                  "Decoded chat message part count mismatch.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(decoded.GetQuote().has_value(),
+                                 "Decoded chat message quote is missing.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(
+            decoded.GetQuote()->GetMessageId() == "original-message" &&
+                decoded.GetQuote()->GetSenderDisplayName() == "Peer" &&
+                decoded.GetQuote()->GetPreviewText() == "原消息摘要",
+            "Decoded chat message quote mismatch.");
         check != 0) {
         return check;
     }

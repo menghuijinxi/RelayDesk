@@ -454,7 +454,8 @@ relaydesk::storage::ChatMessagePart makeTextPart(std::string text)
 relaydesk::storage::ChatMessageRecord makeOutgoingMessageRecord(
     const LocalUserSummary& localUser,
     const PeerListItem& peer,
-    std::vector<relaydesk::storage::ChatMessagePart> parts)
+    std::vector<relaydesk::storage::ChatMessagePart> parts,
+    std::optional<relaydesk::storage::ChatMessageQuote> quote)
 {
     relaydesk::storage::ChatMessageRecord record;
     record.SetMessageId(relaydesk::core::createUuidV4());
@@ -469,6 +470,9 @@ relaydesk::storage::ChatMessageRecord makeOutgoingMessageRecord(
         peer.GetDisplayName().empty() ? peer.GetHostName() : peer.GetDisplayName());
     record.SetCreatedAt(relaydesk::core::currentUtcTimestamp());
     record.SetDeliveryState(relaydesk::storage::DeliveryState::Pending);
+    if (quote.has_value()) {
+        record.SetQuote(std::move(quote.value()));
+    }
     record.SetParts(std::move(parts));
     return record;
 }
@@ -3208,7 +3212,8 @@ void RelayDeskRuntime::selectPeer(std::string deviceId)
 }
 
 void RelayDeskRuntime::sendMessagePartsToSelectedPeer(
-    std::vector<relaydesk::storage::ChatMessagePart> parts)
+    std::vector<relaydesk::storage::ChatMessagePart> parts,
+    std::optional<relaydesk::storage::ChatMessageQuote> quote)
 {
     parts = normalizeOutgoingParts(std::move(parts));
     if (parts.empty()) {
@@ -3221,7 +3226,10 @@ void RelayDeskRuntime::sendMessagePartsToSelectedPeer(
     }
 
     relaydesk::storage::ChatMessageRecord record =
-        makeOutgoingMessageRecord(localUser_, selectedPeer.value(), std::move(parts));
+        makeOutgoingMessageRecord(localUser_,
+                                   selectedPeer.value(),
+                                   std::move(parts),
+                                   std::move(quote));
     selectedPeerMessages_.push_back(record);
     updatePeerLastConversationAt(selectedPeer->GetDeviceId(),
                                  record.GetCreatedAt());
@@ -3874,7 +3882,7 @@ void RelayDeskRuntime::sendTextMessageToSelectedPeer(std::string text)
 {
     std::vector<relaydesk::storage::ChatMessagePart> parts;
     parts.push_back(makeTextPart(std::move(text)));
-    sendMessagePartsToSelectedPeer(std::move(parts));
+    sendMessagePartsToSelectedPeer(std::move(parts), std::nullopt);
 }
 
 void RelayDeskRuntime::startAppUpdate(AppUpdateInstallMode installMode)

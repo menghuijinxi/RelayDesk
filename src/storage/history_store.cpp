@@ -254,6 +254,15 @@ void validateCoreFields(const ChatMessageRecord& record)
     }
 }
 
+void validateQuote(const ChatMessageQuote& quote)
+{
+    if (quote.GetMessageId().empty() ||
+        quote.GetSenderDisplayName().empty() ||
+        quote.GetPreviewText().empty()) {
+        throw std::runtime_error("Chat message quote is missing required fields.");
+    }
+}
+
 void addOptionalString(nlohmann::json& value,
                        const char* fieldName,
                        const std::optional<std::string>& fieldValue)
@@ -328,6 +337,9 @@ void validatePart(const ChatMessagePart& part)
 void validateRecord(const ChatMessageRecord& record)
 {
     validateCoreFields(record);
+    if (record.GetQuote().has_value()) {
+        validateQuote(record.GetQuote().value());
+    }
     if (record.GetParts().empty()) {
         throw std::runtime_error("Chat history record is missing message parts.");
     }
@@ -385,6 +397,15 @@ nlohmann::json toJson(const ChatMessageRecord& record)
         parts.push_back(partToJson(part));
     }
     value["parts"] = std::move(parts);
+    if (record.GetQuote().has_value()) {
+        const ChatMessageQuote& quote = record.GetQuote().value();
+        validateQuote(quote);
+        value["quote"] = {
+            {"message_id", quote.GetMessageId()},
+            {"sender_display_name", quote.GetSenderDisplayName()},
+            {"preview_text", quote.GetPreviewText()},
+        };
+    }
 
     return value;
 }
@@ -404,6 +425,19 @@ void readCommonRecordFields(const nlohmann::json& value, ChatMessageRecord& reco
     record.SetCreatedAt(readRequiredString(value, "created_at"));
     record.SetDeliveryState(
         deliveryStateFromJsonValue(readRequiredString(value, "delivery_state")));
+    if (value.contains("quote")) {
+        if (!value["quote"].is_object()) {
+            throw std::runtime_error("Chat message quote must be an object.");
+        }
+        ChatMessageQuote quote;
+        quote.SetMessageId(
+            readRequiredString(value["quote"], "message_id"));
+        quote.SetSenderDisplayName(
+            readRequiredString(value["quote"], "sender_display_name"));
+        quote.SetPreviewText(
+            readRequiredString(value["quote"], "preview_text"));
+        record.SetQuote(std::move(quote));
+    }
 }
 
 ChatMessagePart partFromJson(const nlohmann::json& value)

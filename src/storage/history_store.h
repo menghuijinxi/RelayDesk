@@ -104,6 +104,34 @@ protected:
     std::optional<std::string> manifestPath_;
 };
 
+class ChatMessageQuote {
+public:
+    const std::string& GetMessageId() const { return messageId_; }
+    const std::string& GetSenderDisplayName() const
+    {
+        return senderDisplayName_;
+    }
+    const std::string& GetPreviewText() const { return previewText_; }
+
+    void SetMessageId(std::string messageId)
+    {
+        messageId_ = std::move(messageId);
+    }
+    void SetSenderDisplayName(std::string displayName)
+    {
+        senderDisplayName_ = std::move(displayName);
+    }
+    void SetPreviewText(std::string previewText)
+    {
+        previewText_ = std::move(previewText);
+    }
+
+protected:
+    std::string messageId_;
+    std::string senderDisplayName_;
+    std::string previewText_;
+};
+
 class ChatMessageRecord {
 public:
     int GetSchemaVersion() const { return schemaVersion_; }
@@ -122,6 +150,7 @@ public:
     }
     const std::string& GetCreatedAt() const { return createdAt_; }
     DeliveryState GetDeliveryState() const { return deliveryState_; }
+    const std::optional<ChatMessageQuote>& GetQuote() const { return quote_; }
     const std::vector<ChatMessagePart>& GetParts() const { return parts_; }
 
     void SetMessageId(std::string messageId) { messageId_ = std::move(messageId); }
@@ -148,6 +177,8 @@ public:
     }
     void SetCreatedAt(std::string createdAt) { createdAt_ = std::move(createdAt); }
     void SetDeliveryState(DeliveryState deliveryState) { deliveryState_ = deliveryState; }
+    void SetQuote(ChatMessageQuote quote) { quote_ = std::move(quote); }
+    void ClearQuote() { quote_.reset(); }
     void AddPart(ChatMessagePart part) { parts_.push_back(std::move(part)); }
     void SetParts(std::vector<ChatMessagePart> parts)
     {
@@ -165,6 +196,7 @@ protected:
     std::string receiverDisplayNameSnapshot_;
     std::string createdAt_;
     DeliveryState deliveryState_ = DeliveryState::Pending;
+    std::optional<ChatMessageQuote> quote_;
     std::vector<ChatMessagePart> parts_;
 };
 

@@ -278,6 +278,54 @@ int appendsAndLoadsMixedMessageParts()
                   "Folder part manifest path was not loaded.");
 }
 
+int appendsAndLoadsMessageQuote()
+{
+    const auto appPaths = makeAppPaths("message-quote");
+    auto record = makeTextRecord("quoted-reply");
+    relaydesk::storage::ChatMessageQuote quote;
+    quote.SetMessageId("original-message");
+    quote.SetSenderDisplayName("Peer User");
+    quote.SetPreviewText("原消息摘要");
+    record.SetQuote(std::move(quote));
+    relaydesk::storage::appendChatMessage(appPaths, "peer-device", record);
+
+    const nlohmann::json rawValue = readFirstHistoryJsonLine(appPaths);
+    if (const int check = expect(
+            rawValue.contains("quote") && rawValue["quote"].is_object(),
+            "Quoted history record did not write quote metadata.");
+        check != 0) {
+        return check;
+    }
+
+    const auto result = relaydesk::storage::loadChatHistory(
+        appPaths, "peer-device");
+    if (const int check = expect(result.GetRecords().size() == 1u,
+                                 "Quoted history record count mismatch.");
+        check != 0) {
+        return check;
+    }
+    const auto& loadedQuote = result.GetRecords()[0].GetQuote();
+    if (const int check = expect(loadedQuote.has_value(),
+                                 "Quoted history record lost quote metadata.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(
+            loadedQuote->GetMessageId() == "original-message",
+            "Quoted history message ID did not round-trip.");
+        check != 0) {
+        return check;
+    }
+    if (const int check = expect(
+            loadedQuote->GetSenderDisplayName() == "Peer User",
+            "Quoted history sender did not round-trip.");
+        check != 0) {
+        return check;
+    }
+    return expect(loadedQuote->GetPreviewText() == "原消息摘要",
+                  "Quoted history preview did not round-trip.");
+}
+
 int appendsAndLoadsRejectedTransferState()
 {
     const auto appPaths = makeAppPaths("rejected-transfer");
@@ -653,6 +701,9 @@ int main()
     std::filesystem::remove_all(testRoot());
 
     if (const int result = appendsAndLoadsMixedMessageParts(); result != 0) {
+        return result;
+    }
+    if (const int result = appendsAndLoadsMessageQuote(); result != 0) {
         return result;
     }
     if (const int result = appendsAndLoadsRejectedTransferState(); result != 0) {

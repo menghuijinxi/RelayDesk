@@ -580,7 +580,8 @@ public:
     void loadMoreSelectedPeerMessages();
     bool loadSelectedPeerMessagesAround(const std::string& messageId);
     void sendMessagePartsToSelectedPeer(
-        std::vector<relaydesk::storage::ChatMessagePart> parts);
+        std::vector<relaydesk::storage::ChatMessagePart> parts,
+        std::optional<relaydesk::storage::ChatMessageQuote> quote);
     void resendSelectedPeerMessage(const std::string& messageId);
     void acceptSelectedPeerFileTransfer(const std::string& messageId,
                                         const std::string& partId,
