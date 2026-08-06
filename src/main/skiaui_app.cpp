@@ -269,6 +269,7 @@ struct SkiaUiRuntimeBinding {
     bool darkModeEnabled = false;
     bool notificationSoundEnabled = true;
     bool launchAtStartupEnabled = true;
+    bool autoReceiveFilesEnabled = false;
     bool sendModeDropdownOpen = false;
     bool composerEmojiPickerOpen = false;
     int settingsCategory = 0;
@@ -560,6 +561,27 @@ bool saveStoredDarkModeEnabled(bool enabled)
     try {
         const auto paths = relaydesk::storage::createAppPaths();
         relaydesk::storage::saveDarkModeEnabled(paths, enabled);
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+bool loadStoredAutoReceiveFilesEnabled()
+{
+    try {
+        const auto paths = relaydesk::storage::createAppPaths();
+        return relaydesk::storage::loadAutoReceiveFilesEnabled(paths);
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+bool saveStoredAutoReceiveFilesEnabled(bool enabled)
+{
+    try {
+        const auto paths = relaydesk::storage::createAppPaths();
+        relaydesk::storage::saveAutoReceiveFilesEnabled(paths, enabled);
         return true;
     } catch (const std::exception&) {
         return false;
@@ -3696,6 +3718,12 @@ void applySettingsView(skui::Runtime& runtime,
     (void)runtime.setTextById(
         "settings-startup-label",
         binding.launchAtStartupEnabled ? "已启用" : "已关闭");
+    applySettingsToggle(runtime,
+                        "settings-auto-receive-toggle",
+                        binding.autoReceiveFilesEnabled);
+    (void)runtime.setTextById(
+        "settings-auto-receive-label",
+        binding.autoReceiveFilesEnabled ? "已启用" : "已关闭");
     (void)runtime.setTextById("settings-startup-status",
                               binding.startupStatus);
     (void)runtime.setStyleById(
@@ -3727,9 +3755,11 @@ void initializeSettingsState(skui::Runtime& runtime,
         binding.darkModeEnabled = loadStoredDarkModeEnabled();
         binding.launchAtStartupEnabled = loadSystemLaunchAtStartupEnabled()
             .value_or(loadStoredLaunchAtStartupEnabled());
+        binding.autoReceiveFilesEnabled = loadStoredAutoReceiveFilesEnabled();
         binding.backgroundController->setNotificationSoundEnabled(
             binding.notificationSoundEnabled);
     }
+    relayRuntime.SetAutoReceiveFilesEnabled(binding.autoReceiveFilesEnabled);
     binding.settingsInitialized = true;
     (void)runtime.setValueById("settings-profile-name-input",
                                binding.settingsProfileName);
@@ -4779,6 +4809,12 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
                         "系统启动项已更新，但保存设置失败";
                 }
             }
+            applySettingsView(runtime, binding);
+        } else if (action == "settings-auto-receive-toggle") {
+            binding.autoReceiveFilesEnabled = !binding.autoReceiveFilesEnabled;
+            relayRuntime.SetAutoReceiveFilesEnabled(binding.autoReceiveFilesEnabled);
+            (void)saveStoredAutoReceiveFilesEnabled(
+                binding.autoReceiveFilesEnabled);
             applySettingsView(runtime, binding);
         } else if (action == "settings-check-update") {
             binding.updateStatus = "检查更新功能占位，等待接入更新服务";
@@ -5978,6 +6014,10 @@ int captureSkiaUiPng(const CaptureOptions& options)
     if (options.outputPath.empty()) {
         return 2;
     }
+    if (!relaydesk::storage::isTestDataSandboxEnabled()) {
+        return 10;
+    }
+    (void)relaydesk::storage::createAppPaths();
     const std::filesystem::path outputPath =
         std::filesystem::absolute(options.outputPath);
 
@@ -6339,6 +6379,8 @@ int captureSkiaUiPng(const CaptureOptions& options)
             html.find(R"(data-action="settings-profile-save")") ==
                 std::string::npos ||
             html.find(R"(data-action="settings-startup-toggle")") ==
+                std::string::npos ||
+            html.find(R"(data-action="settings-auto-receive-toggle")") ==
                 std::string::npos) {
             return 75;
         }

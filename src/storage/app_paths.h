@@ -7,6 +7,8 @@ namespace relaydesk::storage {
 class AppPaths {
 public:
     explicit AppPaths(std::filesystem::path executablePath);
+    AppPaths(std::filesystem::path executablePath,
+             std::filesystem::path dataDirectory);
 
     const std::filesystem::path& GetExecutablePath() const { return executablePath_; }
     const std::filesystem::path& GetWorkDirectory() const { return workDirectory_; }
@@ -65,6 +67,7 @@ protected:
 };
 
 AppPaths createAppPaths();
+bool isTestDataSandboxEnabled();
 void ensureAppDirectories(const AppPaths& appPaths);
 
 }

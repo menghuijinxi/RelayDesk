@@ -6,9 +6,15 @@
 namespace relaydesk::storage {
 
 AppPaths::AppPaths(std::filesystem::path executablePath)
+    : AppPaths(executablePath, executablePath.parent_path() / "data")
+{
+}
+
+AppPaths::AppPaths(std::filesystem::path executablePath,
+                   std::filesystem::path dataDirectory)
     : executablePath_(std::move(executablePath)),
       workDirectory_(executablePath_.parent_path()),
-      dataDirectory_(workDirectory_ / "data"),
+      dataDirectory_(std::move(dataDirectory)),
       configFilePath_(dataDirectory_ / "config.json"),
       identityFilePath_(dataDirectory_ / "identity.json"),
       logsDirectory_(dataDirectory_ / "logs"),

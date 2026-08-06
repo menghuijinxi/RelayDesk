@@ -147,6 +147,29 @@ int roundTripsDarkMode()
                   "Disabled dark mode preference did not round-trip.");
 }
 
+int defaultsAutoReceiveFilesToDisabled()
+{
+    const auto appPaths = makeAppPaths("auto-receive-default");
+    return expect(!relaydesk::storage::loadAutoReceiveFilesEnabled(appPaths),
+                  "Missing auto receive preference should default to disabled.");
+}
+
+int roundTripsAutoReceiveFiles()
+{
+    const auto appPaths = makeAppPaths("auto-receive-round-trip");
+    relaydesk::storage::saveAutoReceiveFilesEnabled(appPaths, true);
+    if (const int result =
+            expect(relaydesk::storage::loadAutoReceiveFilesEnabled(appPaths),
+                   "Enabled auto receive preference did not round-trip.");
+        result != 0) {
+        return result;
+    }
+
+    relaydesk::storage::saveAutoReceiveFilesEnabled(appPaths, false);
+    return expect(!relaydesk::storage::loadAutoReceiveFilesEnabled(appPaths),
+                  "Disabled auto receive preference did not round-trip.");
+}
+
 } // namespace
 
 int main()
@@ -178,6 +201,14 @@ int main()
     }
 
     if (const int result = roundTripsDarkMode(); result != 0) {
+        return result;
+    }
+
+    if (const int result = defaultsAutoReceiveFilesToDisabled(); result != 0) {
+        return result;
+    }
+
+    if (const int result = roundTripsAutoReceiveFiles(); result != 0) {
         return result;
     }
 

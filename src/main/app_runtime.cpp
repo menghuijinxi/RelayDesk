@@ -1159,6 +1159,22 @@ std::filesystem::path absoluteNormalizedPath(const std::filesystem::path& path)
     return absolutePath.lexically_normal();
 }
 
+bool isSafeAppUpdateTarget(const AppUpdateApplyOptions& options)
+{
+    std::error_code targetError;
+    const std::filesystem::path resolvedTarget =
+        std::filesystem::weakly_canonical(options.GetTargetPath(), targetError);
+    std::error_code startDirectoryError;
+    const std::filesystem::path resolvedStartDirectory =
+        std::filesystem::weakly_canonical(options.GetStartDirectory(),
+                                          startDirectoryError);
+    if (targetError || startDirectoryError || resolvedTarget.empty()
+        || resolvedStartDirectory.empty()) {
+        return false;
+    }
+    return resolvedTarget.parent_path() == resolvedStartDirectory;
+}
+
 std::wstring makeWindowsCommandLine(
     const std::filesystem::path& executablePath,
     const std::vector<std::wstring>& arguments)
@@ -1999,6 +2015,12 @@ int runAppUpdateApplyMode(const AppUpdateApplyOptions& options) noexcept
         if (!std::filesystem::is_regular_file(options.GetPayloadPath())) {
             appendAppUpdateLog(options.GetLogPath(), "payload file missing");
             return 2;
+        }
+        if (!isSafeAppUpdateTarget(options)) {
+            appendAppUpdateLog(
+                options.GetLogPath(),
+                "refusing update target outside start directory root");
+            return 6;
         }
 
         const bool processExited =
@@ -3531,6 +3553,190 @@ void RelayDeskRuntime::acceptSelectedPeerFileTransferToPath(
 #endif
 }
 
+bool RelayDeskRuntime::acceptIncomingFileTransferForRecord(
+    const std::string& peerDeviceId,
+    relaydesk::storage::ChatMessageRecord& record,
+    const std::string& partId,
+    bool overwriteExisting)
+{
+#if defined(RELAYDESK_HAS_BOOST_ASIO)
+    const std::optional<PeerListItem> peer = findPeerByDeviceId(peerDeviceId);
+    if (!peer.has_value()
+        || peer->GetAddress().empty()
+        || peer->GetAddress() == "unknown"
+        || peer->GetTcpPort() == 0
+        || record.GetDirection()
+            != relaydesk::storage::MessageDirection::Incoming) {
+        return false;
+    }
+
+    std::vector<relaydesk::storage::ChatMessagePart> parts = record.GetParts();
+    auto part = std::find_if(
+        parts.begin(),
+        parts.end(),
+        [&partId](const relaydesk::storage::ChatMessagePart& candidate) {
+            return candidate.GetPartId() == partId;
+        });
+    if (part == parts.end()
+        || !isManualTransferInvitePart(*part)
+        || !part->GetTransferId().has_value()
+        || !part->GetTransferState().has_value()
+        || !isAcceptableIncomingTransferState(part->GetTransferState().value())
+        || !part->GetFileName().has_value()) {
+        return false;
+    }
+
+    const auto appPaths = relaydesk::storage::createAppPaths();
+    std::filesystem::path desiredPath =
+        makeIncomingDesiredFilePath(appPaths, part->GetFileName().value());
+    const bool resumeInterrupted =
+        part->GetTransferState().value()
+        == relaydesk::storage::TransferState::Interrupted;
+    if (resumeInterrupted
+        && part->GetLocalPath().has_value()
+        && !part->GetLocalPath().value().empty()) {
+        const std::filesystem::path previousPath =
+            resolveLocalPath(appPaths, part->GetLocalPath().value());
+        if (!isLegacyIncomingTempPath(appPaths, previousPath)) {
+            desiredPath = previousPath;
+        }
+    }
+    const std::filesystem::path finalPath =
+        (overwriteExisting || resumeInterrupted)
+            ? desiredPath
+            : makeAvailableSiblingPath(desiredPath);
+    const bool folderTransfer =
+        part->GetType() == relaydesk::storage::MessagePartType::Folder;
+    const std::filesystem::path payloadPath = makeIncomingTransferPayloadPath(
+        appPaths,
+        part->GetTransferId().value(),
+        part->GetFileName().value(),
+        finalPath,
+        folderTransfer,
+        false);
+    const std::uintmax_t expectedSize = part->GetFileSize().value_or(0);
+    std::uintmax_t resumeOffset = 0;
+    if (resumeInterrupted) {
+        if (folderTransfer) {
+            resumeOffset =
+                existingIncomingFolderPayloadSize(payloadPath, expectedSize);
+        } else {
+            resumeOffset = existingIncomingPayloadSize(payloadPath, expectedSize);
+            if (resumeOffset == 0) {
+                resumeOffset = migrateLegacyIncomingPayload(
+                    appPaths,
+                    payloadPath,
+                    part->GetTransferId().value(),
+                    part->GetFileName().value(),
+                    expectedSize);
+            }
+        }
+    }
+    if (folderTransfer) {
+        prepareIncomingFolderTransferRootForResume(payloadPath,
+                                                   resumeInterrupted);
+    } else if (!resumeInterrupted) {
+        createIncomingPayloadFile(payloadPath);
+    }
+
+    PendingIncomingTransfer transfer;
+    transfer.SetSenderDeviceId(peerDeviceId);
+    transfer.SetMessageId(record.GetMessageId());
+    transfer.SetPartId(part->GetPartId());
+    transfer.SetTransferId(part->GetTransferId().value());
+    transfer.SetFileName(part->GetFileName().value());
+    transfer.SetExpectedSize(expectedSize);
+    transfer.SetReceivedSize(resumeOffset);
+    transfer.SetTempFilePath(payloadPath);
+    transfer.SetFinalFilePath(finalPath);
+    transfer.SetImageTransfer(false);
+    transfer.SetFolderTransfer(folderTransfer);
+    {
+        std::lock_guard lock(pendingTransferMutex_);
+        pendingIncomingTransfers_[transfer.GetTransferId()] = transfer;
+    }
+
+    part->SetTransferState(relaydesk::storage::TransferState::Transferring);
+    part->SetTransferredSize(resumeOffset);
+    part->SetLocalPath(makeWorkRelativePath(appPaths, finalPath));
+    record.SetParts(std::move(parts));
+
+    const relaydesk::net::PeerFrame frame =
+        relaydesk::net::makeTransferAcceptFrame(
+            makeTransferAcceptMessage(record,
+                                      *std::find_if(
+                                          record.GetParts().begin(),
+                                          record.GetParts().end(),
+                                          [&partId](const auto& candidate) {
+                                              return candidate.GetPartId()
+                                                  == partId;
+                                          }),
+                                      localUser_.GetDeviceId(),
+                                      overwriteExisting,
+                                      resumeOffset));
+    const std::string acceptTaskKey =
+        "relaydesk.transfer.auto_accept." + transfer.GetTransferId();
+    const bool accepted = ::core::async::restart(
+        acceptTaskKey,
+        [this, peer = peer.value(), frame] {
+            try {
+                if (!tcpPeerTransport_) {
+                    return ::core::async::failure(
+                        "TCP peer transport is not available.");
+                }
+                tcpPeerTransport_->sendFrameTo(peer.GetAddress(),
+                                               peer.GetTcpPort(),
+                                               frame);
+                return ::core::async::success();
+            } catch (const std::exception& error) {
+                return ::core::async::failure(error.what());
+            }
+        },
+        [this,
+         peerDeviceId,
+         messageId = record.GetMessageId(),
+         partId,
+         transferId = transfer.GetTransferId(),
+         recoverable = resumeInterrupted](
+            const ::core::async::Result<void>& result) {
+            if (result.ok) {
+                return;
+            }
+            logDiagnostic("runtime.transfer.auto_accept_failed message="
+                          + result.error);
+            PendingTransferStateUpdate update;
+            update.SetPeerDeviceId(peerDeviceId);
+            update.SetMessageId(messageId);
+            update.SetPartId(partId);
+            update.SetTransferId(transferId);
+            update.SetTransferState(
+                recoverable
+                    ? relaydesk::storage::TransferState::Interrupted
+                    : relaydesk::storage::TransferState::Failed);
+            enqueueTransferStateUpdate(std::move(update));
+        });
+    if (!accepted) {
+        PendingTransferStateUpdate update;
+        update.SetPeerDeviceId(peerDeviceId);
+        update.SetMessageId(record.GetMessageId());
+        update.SetPartId(partId);
+        update.SetTransferId(transfer.GetTransferId());
+        update.SetTransferState(
+            resumeInterrupted
+                ? relaydesk::storage::TransferState::Interrupted
+                : relaydesk::storage::TransferState::Failed);
+        enqueueTransferStateUpdate(std::move(update));
+    }
+    return true;
+#else
+    (void)peerDeviceId;
+    (void)record;
+    (void)partId;
+    (void)overwriteExisting;
+    return false;
+#endif
+}
+
 void RelayDeskRuntime::sendSelectedPeerFileTransfer(const std::string& messageId,
                                                     const std::string& partId)
 {
@@ -4229,6 +4435,30 @@ void RelayDeskRuntime::enqueueIncomingChatMessage(
 {
     const std::string peerDeviceId =
         peerDeviceIdForRecord(record, localUser_.GetDeviceId());
+    if (autoReceiveFilesEnabled_.load()) {
+        std::vector<std::string> partIds;
+        for (const auto& part : record.GetParts()) {
+            if (isManualTransferInvitePart(part)
+                && part.GetTransferState().has_value()
+                && part.GetTransferState().value()
+                    == relaydesk::storage::TransferState::Offered) {
+                partIds.push_back(part.GetPartId());
+            }
+        }
+        for (const auto& partId : partIds) {
+            try {
+                (void)acceptIncomingFileTransferForRecord(peerDeviceId,
+                                                          record,
+                                                          partId,
+                                                          false);
+            } catch (const std::exception& error) {
+                logDiagnostic(
+                    "runtime.transfer.auto_accept_prepare_failed message="
+                    + std::string(error.what()));
+            }
+        }
+    }
+
     bool persisted = false;
     bool unreadCounted = false;
     if (storageAvailable_) {

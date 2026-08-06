@@ -560,6 +560,14 @@ public:
     bool GetStorageAvailable() const { return storageAvailable_; }
     bool GetDiscoveryStarted() const { return discoveryStarted_; }
     std::uint16_t GetDiscoveryUdpPort() const { return discoveryUdpPort_; }
+    bool GetAutoReceiveFilesEnabled() const
+    {
+        return autoReceiveFilesEnabled_.load();
+    }
+    void SetAutoReceiveFilesEnabled(bool enabled)
+    {
+        autoReceiveFilesEnabled_.store(enabled);
+    }
     std::optional<AppUpdatePrompt> GetAppUpdatePrompt();
     bool GetAppUpdateExitRequested() const
     {
@@ -659,6 +667,11 @@ protected:
         const std::string& partId,
         std::filesystem::path finalPath,
         bool overwriteExisting);
+    bool acceptIncomingFileTransferForRecord(
+        const std::string& peerDeviceId,
+        relaydesk::storage::ChatMessageRecord& record,
+        const std::string& partId,
+        bool overwriteExisting);
     void enqueueTransferUpdate(PendingTransferUpdate update);
     void drainPendingTransferUpdates();
     bool updateChatMessageTransferPart(
@@ -735,6 +748,7 @@ protected:
     std::atomic_bool appUpdateExitRequested_ = false;
     std::atomic<std::uint64_t> pendingUserNotificationCount_ = 0;
     bool storageAvailable_ = false;
+    std::atomic_bool autoReceiveFilesEnabled_ = false;
     bool discoveryStarted_ = false;
     bool selectedPeerHasMoreMessages_ = false;
     std::uint16_t discoveryUdpPort_ = 0;

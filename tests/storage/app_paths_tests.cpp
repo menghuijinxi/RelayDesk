@@ -2,6 +2,13 @@
 
 #include <filesystem>
 #include <iostream>
+#include <optional>
+#include <stdexcept>
+#include <string>
+
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 namespace {
 
@@ -10,6 +17,123 @@ int fail(const char* message)
     std::cerr << message << '\n';
     return 1;
 }
+
+#if defined(_WIN32)
+constexpr wchar_t kTestModeEnvironment[] = L"RELAYDESK_TEST_MODE";
+constexpr wchar_t kTestRootEnvironment[] = L"RELAYDESK_TEST_ROOT";
+constexpr wchar_t kTestDataDirectoryEnvironment[] =
+    L"RELAYDESK_TEST_DATA_DIRECTORY";
+
+std::optional<std::wstring> readEnvironmentVariable(const wchar_t* name)
+{
+    SetLastError(ERROR_SUCCESS);
+    const DWORD requiredSize = GetEnvironmentVariableW(name, nullptr, 0);
+    if (requiredSize == 0) {
+        if (GetLastError() == ERROR_ENVVAR_NOT_FOUND) {
+            return std::nullopt;
+        }
+        return std::wstring{};
+    }
+
+    std::wstring value(requiredSize, L'\0');
+    const DWORD copiedSize =
+        GetEnvironmentVariableW(name, value.data(), requiredSize);
+    if (copiedSize == 0 || copiedSize >= requiredSize) {
+        throw std::runtime_error("Failed to read environment variable.");
+    }
+    value.resize(copiedSize);
+    return value;
+}
+
+class ScopedEnvironmentVariable {
+public:
+    ScopedEnvironmentVariable(const wchar_t* name,
+                              std::optional<std::wstring> value)
+        : name_(name), previousValue_(readEnvironmentVariable(name))
+    {
+        set(value);
+    }
+
+    ~ScopedEnvironmentVariable()
+    {
+        set(previousValue_);
+    }
+
+    ScopedEnvironmentVariable(const ScopedEnvironmentVariable&) = delete;
+    ScopedEnvironmentVariable& operator=(const ScopedEnvironmentVariable&) =
+        delete;
+
+protected:
+    void set(const std::optional<std::wstring>& value) const
+    {
+        if (!SetEnvironmentVariableW(
+                name_.c_str(), value.has_value() ? value->c_str() : nullptr)) {
+            std::terminate();
+        }
+    }
+
+    std::wstring name_;
+    std::optional<std::wstring> previousValue_;
+};
+
+bool createAppPathsThrows()
+{
+    try {
+        (void)relaydesk::storage::createAppPaths();
+    } catch (const std::runtime_error&) {
+        return true;
+    }
+    return false;
+}
+
+int verifiesTestDataSandbox()
+{
+    const std::filesystem::path sandboxParent =
+        std::filesystem::path(RELAYDESK_TEST_SANDBOX_PARENT);
+    const std::filesystem::path testRoot = sandboxParent / "app_paths";
+    const std::filesystem::path testDataDirectory = testRoot / "case" / "data";
+
+    const ScopedEnvironmentVariable testMode(kTestModeEnvironment, L"1");
+    const ScopedEnvironmentVariable testRootVariable(
+        kTestRootEnvironment, testRoot.wstring());
+    const ScopedEnvironmentVariable testDataDirectoryVariable(
+        kTestDataDirectoryEnvironment, testDataDirectory.wstring());
+
+    const relaydesk::storage::AppPaths appPaths =
+        relaydesk::storage::createAppPaths();
+    if (appPaths.GetDataDirectory() != testDataDirectory) {
+        return fail("Test data directory override was ignored.");
+    }
+    return 0;
+}
+
+int rejectsPortableUserDataInTestMode()
+{
+    const std::filesystem::path sandboxParent =
+        std::filesystem::path(RELAYDESK_TEST_SANDBOX_PARENT);
+    const std::filesystem::path testRoot = sandboxParent / "app_paths";
+
+    const ScopedEnvironmentVariable clearedMode(kTestModeEnvironment,
+                                                 std::nullopt);
+    const ScopedEnvironmentVariable clearedRoot(kTestRootEnvironment,
+                                                 std::nullopt);
+    const ScopedEnvironmentVariable clearedData(
+        kTestDataDirectoryEnvironment, std::nullopt);
+    const relaydesk::storage::AppPaths portablePaths =
+        relaydesk::storage::createAppPaths();
+
+    const ScopedEnvironmentVariable testMode(kTestModeEnvironment, L"1");
+    const ScopedEnvironmentVariable testRootVariable(
+        kTestRootEnvironment, testRoot.wstring());
+    const ScopedEnvironmentVariable testDataDirectoryVariable(
+        kTestDataDirectoryEnvironment,
+        portablePaths.GetDataDirectory().wstring());
+
+    return createAppPathsThrows()
+        ? 0
+        : fail("Test mode accepted the portable user data directory.");
+}
+#endif
 
 }
 
@@ -77,6 +201,15 @@ int main()
         != LR"(C:\RelayDesk\bin\data\images\thumbnails)") {
         return fail("Image thumbnails directory mismatch.");
     }
+
+#if defined(_WIN32)
+    if (const int result = verifiesTestDataSandbox(); result != 0) {
+        return result;
+    }
+    if (const int result = rejectsPortableUserDataInTestMode(); result != 0) {
+        return result;
+    }
+#endif
 
     return 0;
 }

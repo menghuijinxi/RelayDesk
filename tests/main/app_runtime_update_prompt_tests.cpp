@@ -295,6 +295,10 @@ bool isStrictDescendantOfProcessTestRoot(
 
 void requireTestProcessIsolation()
 {
+    if (!relaydesk::storage::isTestDataSandboxEnabled()) {
+        throw std::runtime_error(
+            "Refusing to run without an explicit test data sandbox.");
+    }
     const relaydesk::storage::AppPaths appPaths =
         relaydesk::storage::createAppPaths();
     if (!isStrictDescendantOfProcessTestRoot(
@@ -1135,6 +1139,38 @@ relaydesk::storage::ChatMessageRecord makeIncomingFolderTransferRecord(
     return record;
 }
 
+relaydesk::storage::ChatMessageRecord makeIncomingFileTransferRecord(
+    const relaydesk::runtime::LocalUserSummary& localUser,
+    const std::string& messageId,
+    const std::string& partId,
+    const std::string& transferId)
+{
+    relaydesk::storage::ChatMessagePart part;
+    part.SetPartId(partId);
+    part.SetType(relaydesk::storage::MessagePartType::File);
+    part.SetTransferId(transferId);
+    part.SetTransferState(relaydesk::storage::TransferState::Offered);
+    part.SetFileName("auto-received.bin");
+    part.SetFileSize(4);
+    part.SetTransferredSize(0);
+    part.SetLocalPath("auto-received.bin");
+
+    relaydesk::storage::ChatMessageRecord record;
+    record.SetMessageId(messageId);
+    record.SetConversationId(
+        relaydesk::storage::makeDirectConversationId(localUser.GetDeviceId(),
+                                                     "runtime-transfer-peer"));
+    record.SetDirection(relaydesk::storage::MessageDirection::Incoming);
+    record.SetSenderDeviceId("runtime-transfer-peer");
+    record.SetReceiverDeviceId(localUser.GetDeviceId());
+    record.SetSenderDisplayNameSnapshot("Runtime Transfer Peer");
+    record.SetReceiverDisplayNameSnapshot(localUser.GetDisplayName());
+    record.SetCreatedAt("2026-06-22T11:00:00Z");
+    record.SetDeliveryState(relaydesk::storage::DeliveryState::Received);
+    record.SetParts({part});
+    return record;
+}
+
 relaydesk::storage::ChatMessageRecord makeOutgoingFolderTransferRecord(
     const relaydesk::storage::AppPaths& appPaths,
     const relaydesk::runtime::LocalUserSummary& localUser,
@@ -1577,6 +1613,86 @@ bool waitForCondition(TestableRelayDeskRuntime& runtime, Predicate&& predicate)
     return waitForRuntimeCondition(runtime,
                                    std::forward<Predicate>(predicate),
                                    std::chrono::seconds(3));
+}
+
+int autoAcceptsIncomingFileTransferWhenEnabled()
+{
+    const relaydesk::storage::AppPaths appPaths =
+        relaydesk::storage::createAppPaths();
+    removeTestDataDirectory(appPaths);
+    relaydesk::storage::ensureAppDirectories(appPaths);
+
+    struct ReceivedTransferFrames {
+        std::mutex mutex;
+        std::vector<relaydesk::net::PeerFrame> frames;
+    } received;
+    relaydesk::net::BoostAsioTcpPeerTransport sender(0);
+    sender.SetFrameCallback(
+        [&received](relaydesk::net::PeerFrame frame,
+                    std::string,
+                    std::uint16_t) {
+            std::lock_guard lock(received.mutex);
+            received.frames.push_back(std::move(frame));
+        });
+    sender.start();
+
+    struct SenderStopper {
+        relaydesk::net::BoostAsioTcpPeerTransport& sender;
+        ~SenderStopper() { sender.stop(); }
+    } senderStopper{sender};
+
+    {
+        TestableRelayDeskRuntime runtime(makeTransferRuntimeOptions());
+        if (!runtime.GetStartupErrorMessage().empty()) {
+            return fail("Runtime startup failed: "
+                        + runtime.GetStartupErrorMessage());
+        }
+        runtime.receivePeerProfile(
+            makeTransferPeerProfile(sender.GetLocalPort()),
+            true);
+        runtime.SetAutoReceiveFilesEnabled(true);
+
+        const std::string messageId = "auto-receive-message";
+        const std::string partId = "auto-receive-part";
+        const std::string transferId = "auto-receive-transfer";
+        runtime.receivePeerFrame(relaydesk::net::makeChatMessageFrame(
+            makeIncomingFileTransferRecord(runtime.GetLocalUser(),
+                                            messageId,
+                                            partId,
+                                            transferId)));
+
+        if (!waitForCondition(runtime, [&received] {
+                std::lock_guard lock(received.mutex);
+                return !received.frames.empty();
+            })) {
+            return fail("Enabled auto receive did not send transfer accept.");
+        }
+
+        std::lock_guard lock(received.mutex);
+        const relaydesk::net::TransferAcceptMessage accept =
+            relaydesk::net::parseTransferAcceptFrame(received.frames.front());
+        if (const int result =
+                expect(accept.GetMessageId() == messageId,
+                       "Auto receive accept message id mismatch.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(accept.GetPartId() == partId,
+                       "Auto receive accept part id mismatch.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(accept.GetTransferId() == transferId,
+                       "Auto receive accept transfer id mismatch.");
+            result != 0) {
+            return result;
+        }
+    }
+
+    removeTestDataDirectory(appPaths);
+    return 0;
 }
 
 int queuesUserNotificationForIncomingChatMessage()
@@ -4017,8 +4133,13 @@ int skiaUiUpdateHelperRestartsUpdatedAppVisible()
     const std::filesystem::path payloadPath = currentExecutablePath();
     const std::filesystem::path helperPath =
         std::filesystem::path(RELAYDESK_SKIAUI_EXECUTABLE_PATH);
+    const std::filesystem::path dataSentinelPath =
+        scenarioRoot / "data" / "peers" / "messages.jsonl";
+    const std::vector<std::uint8_t> dataSentinel{
+        'c', 'h', 'a', 't', '-', 'h', 'i', 's', 't', 'o', 'r', 'y'};
     std::filesystem::create_directories(scenarioRoot);
     writeBytes(targetPath, {'s', 't', 'a', 'l', 'e'});
+    writeBytes(dataSentinelPath, dataSentinel);
 
     relaydesk::runtime::AppUpdateApplyOptions options;
     options.SetTargetPath(targetPath);
@@ -4061,6 +4182,12 @@ int skiaUiUpdateHelperRestartsUpdatedAppVisible()
         return result;
     }
     if (const int result = expect(
+            readBytes(dataSentinelPath) == dataSentinel,
+            "SkiaUI update helper modified the portable data directory.");
+        result != 0) {
+        return result;
+    }
+    if (const int result = expect(
             helperLog.find("copy succeeded") != std::string::npos
                 && helperLog.find("restart requested") != std::string::npos
                 && helperLog.find("update helper finished")
@@ -4096,6 +4223,47 @@ int skiaUiUpdateHelperRestartsUpdatedAppVisible()
     }
     removeScenarioRoot(scenarioRoot);
 #endif
+    return 0;
+}
+
+int rejectsAppUpdateTargetInsideDataDirectory()
+{
+    const std::filesystem::path scenarioRoot =
+        makeUniqueProcessScenarioRoot("update-data-guard");
+    const std::filesystem::path targetPath =
+        scenarioRoot / "data" / "peers" / "messages.jsonl";
+    const std::filesystem::path payloadPath = scenarioRoot / "payload.exe";
+    const std::filesystem::path logPath = scenarioRoot / "apply-update.log";
+    const std::vector<std::uint8_t> originalData{
+        'u', 's', 'e', 'r', '-', 'h', 'i', 's', 't', 'o', 'r', 'y'};
+    writeBytes(targetPath, originalData);
+    writeBytes(payloadPath, {'u', 'p', 'd', 'a', 't', 'e'});
+
+    relaydesk::runtime::AppUpdateApplyOptions options;
+    options.SetTargetPath(targetPath);
+    options.SetPayloadPath(payloadPath);
+    options.SetStartDirectory(scenarioRoot);
+    options.SetLogPath(logPath);
+    options.SetTargetProcessId(0);
+    options.SetRestartAfterApply(false);
+
+    const int applyResult = relaydesk::runtime::runAppUpdateApplyMode(options);
+    if (const int result = expect(
+            applyResult != 0,
+            "App update helper accepted a target inside the data directory.");
+        result != 0) {
+        removeScenarioRoot(scenarioRoot);
+        return result;
+    }
+    if (const int result = expect(
+            readBytes(targetPath) == originalData,
+            "Rejected app update modified the data directory target.");
+        result != 0) {
+        removeScenarioRoot(scenarioRoot);
+        return result;
+    }
+
+    removeScenarioRoot(scenarioRoot);
     return 0;
 }
 
@@ -5354,6 +5522,11 @@ int main(int argc, char** argv)
             incomingFolderResult != 0) {
             return incomingFolderResult;
         }
+        if (const int autoReceiveResult =
+                autoAcceptsIncomingFileTransferWhenEnabled();
+            autoReceiveResult != 0) {
+            return autoReceiveResult;
+        }
         if (const int resumeIncomingFolderResult =
                 resumesInterruptedIncomingFolderTransferFromExistingFiles();
             resumeIncomingFolderResult != 0) {
@@ -5373,6 +5546,11 @@ int main(int argc, char** argv)
                 runsAppUpdateAcrossProcesses();
             appUpdateProcessResult != 0) {
             return appUpdateProcessResult;
+        }
+        if (const int updateDataGuardResult =
+                rejectsAppUpdateTargetInsideDataDirectory();
+            updateDataGuardResult != 0) {
+            return updateDataGuardResult;
         }
         if (const int appUpdateRestartResult =
                 skiaUiUpdateHelperRestartsUpdatedAppVisible();

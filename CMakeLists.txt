@@ -24,6 +24,7 @@ set(EUI_ENABLE_MARKDOWN OFF CACHE BOOL "RelayDesk does not need markdown yet" FO
 option(RELAYDESK_ENABLE_BOOST_ASIO "Enable Boost.Asio network backend" ON)
 option(RELAYDESK_USE_SKIA_EUI_BACKEND "Use the experimental Skia-backed EUI renderer" OFF)
 option(RELAYDESK_BUILD_SKIAUI "Build the standalone SkiaUI RelayDesk executable" OFF)
+set(RELAYDESK_TEST_SANDBOX_PARENT "${CMAKE_SOURCE_DIR}/tmp/tests")
 
 set(RELAYDESK_EUI_NEO_GIT_REPOSITORY
     "https://github.com/sudoevolve/EUI-NEO.git"
@@ -323,6 +324,7 @@ if(RELAYDESK_BUILD_SKIAUI)
             PROPERTIES OBJECT_DEPENDS "${RELAYDESK_SKIAUI_EMBEDDED_ASSETS}")
 
         target_compile_definitions(relaydesk_skiaui PRIVATE
+            "RELAYDESK_TEST_SANDBOX_PARENT=\"${CMAKE_SOURCE_DIR}/tmp/tests\""
             NOMINMAX
             UNICODE
             _UNICODE
@@ -482,6 +484,33 @@ if(RELAYDESK_BUILD_SKIAUI)
             --capture-dpi-scale 1.0
             --capture-test-dark-chat-tabs
     )
+
+    set(RELAYDESK_SKIAUI_CAPTURE_TESTS
+        relaydesk_skiaui_render_to_bgra_pixels_capture
+        relaydesk_skiaui_image_message_capture
+        relaydesk_skiaui_file_card_capture
+        relaydesk_skiaui_composer_attachments_capture
+        relaydesk_skiaui_composer_keyboard_capture
+        relaydesk_skiaui_history_pagination_capture
+        relaydesk_skiaui_unread_badge_capture
+        relaydesk_skiaui_app_update_available_capture
+        relaydesk_skiaui_app_update_downloading_capture
+        relaydesk_skiaui_app_update_failed_capture
+        relaydesk_skiaui_settings_capture
+        relaydesk_skiaui_settings_dark_capture
+        relaydesk_skiaui_dark_chat_tabs_capture
+    )
+    foreach(capture_test IN LISTS RELAYDESK_SKIAUI_CAPTURE_TESTS)
+        set(capture_test_root
+            "${RELAYDESK_TEST_SANDBOX_PARENT}/skiaui_capture/${capture_test}")
+        set(capture_test_environment
+            "RELAYDESK_TEST_MODE=1"
+            "RELAYDESK_TEST_ROOT=${capture_test_root}"
+            "RELAYDESK_TEST_DATA_DIRECTORY=${capture_test_root}/data")
+        set_tests_properties(${capture_test} PROPERTIES
+            ENVIRONMENT "${capture_test_environment}"
+        )
+    endforeach()
 endif()
 
 add_test(NAME relaydesk_patch_eui_neo_app_shortcuts_tests
@@ -495,6 +524,13 @@ add_executable(relaydesk_storage_tests
     tests/storage/app_paths_tests.cpp
     src/storage/app_paths.cpp
 )
+
+if(WIN32)
+    target_sources(relaydesk_storage_tests PRIVATE
+        src/storage/app_paths_win.cpp)
+    target_compile_definitions(relaydesk_storage_tests PRIVATE
+        "RELAYDESK_TEST_SANDBOX_PARENT=\"${RELAYDESK_TEST_SANDBOX_PARENT}\"")
+endif()
 
 target_include_directories(relaydesk_storage_tests PRIVATE src)
 target_compile_features(relaydesk_storage_tests PRIVATE cxx_std_23)
@@ -593,6 +629,7 @@ if(WIN32 AND RELAYDESK_HAS_EUI_NEO AND RELAYDESK_HAS_BOOST_ASIO)
         PRIVATE cxx_std_23)
     target_compile_definitions(relaydesk_app_runtime_update_prompt_tests PRIVATE
         "RELAYDESK_APP_RUNTIME_PROCESS_TEST_WORK_DIR=\"${RELAYDESK_APP_RUNTIME_PROCESS_TEST_WORK_DIR}\""
+        "RELAYDESK_TEST_SANDBOX_PARENT=\"${RELAYDESK_TEST_SANDBOX_PARENT}\""
         RELAYDESK_HAS_BOOST_ASIO
         NOMINMAX
         UNICODE
@@ -625,6 +662,12 @@ if(WIN32 AND RELAYDESK_HAS_EUI_NEO AND RELAYDESK_HAS_BOOST_ASIO)
 
     add_test(NAME relaydesk_app_runtime_update_prompt_tests
         COMMAND relaydesk_app_runtime_update_prompt_tests)
+    set(app_runtime_test_environment
+        "RELAYDESK_TEST_MODE=1"
+        "RELAYDESK_TEST_ROOT=${RELAYDESK_APP_RUNTIME_PROCESS_TEST_WORK_DIR}")
+    set_tests_properties(relaydesk_app_runtime_update_prompt_tests PROPERTIES
+        ENVIRONMENT "${app_runtime_test_environment}"
+    )
 endif()
 
 add_executable(relaydesk_identity_tests

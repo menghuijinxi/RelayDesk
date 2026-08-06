@@ -94,6 +94,20 @@ bool readDarkModeEnabled(const nlohmann::json& value)
     return value["dark_mode"].get<bool>();
 }
 
+bool readAutoReceiveFilesEnabled(const nlohmann::json& value)
+{
+    if (!value.contains("auto_receive_files")) {
+        return false;
+    }
+
+    if (!value["auto_receive_files"].is_boolean()) {
+        throw std::runtime_error(
+            "UI config auto receive files field is invalid.");
+    }
+
+    return value["auto_receive_files"].get<bool>();
+}
+
 void writeConfigJson(const std::filesystem::path& filePath,
                      const nlohmann::json& value)
 {
@@ -157,6 +171,22 @@ void saveDarkModeEnabled(const AppPaths& appPaths, bool enabled)
     validateSchemaVersion(value);
     value["schema_version"] = kSchemaVersion;
     value["dark_mode"] = enabled;
+    writeConfigJson(appPaths.GetConfigFilePath(), value);
+}
+
+bool loadAutoReceiveFilesEnabled(const AppPaths& appPaths)
+{
+    const nlohmann::json value = readConfigJson(appPaths.GetConfigFilePath());
+    validateSchemaVersion(value);
+    return readAutoReceiveFilesEnabled(value);
+}
+
+void saveAutoReceiveFilesEnabled(const AppPaths& appPaths, bool enabled)
+{
+    nlohmann::json value = readConfigJson(appPaths.GetConfigFilePath());
+    validateSchemaVersion(value);
+    value["schema_version"] = kSchemaVersion;
+    value["auto_receive_files"] = enabled;
     writeConfigJson(appPaths.GetConfigFilePath(), value);
 }
 
