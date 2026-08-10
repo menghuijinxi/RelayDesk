@@ -216,7 +216,15 @@ struct TransferPartActionTarget {
     std::string partId;
 };
 
+struct ImagePreviewItem {
+    std::filesystem::path path;
+    std::string messageId;
+    std::string partId;
+};
+
 struct ImagePreviewState {
+    std::vector<ImagePreviewItem> items;
+    std::size_t currentIndex = 0;
     float originalWidth = 1.0f;
     float originalHeight = 1.0f;
     float fittedScale = 1.0f;
@@ -3445,6 +3453,129 @@ void resetImagePreviewView(skui::Runtime& runtime)
     applyImagePreviewView(runtime);
 }
 
+bool imagePreviewPathsMatch(const std::filesystem::path& left,
+                            const std::filesystem::path& right)
+{
+    if (left.lexically_normal() == right.lexically_normal()) {
+        return true;
+    }
+
+    std::error_code error;
+    const bool equivalent = std::filesystem::equivalent(left, right, error);
+    return !error && equivalent;
+}
+
+std::vector<ImagePreviewItem> collectLoadedImagePreviewItems(
+    const relaydesk::runtime::RelayDeskRuntime& relayRuntime)
+{
+    std::vector<ImagePreviewItem> items;
+    for (const auto& message : relayRuntime.GetSelectedPeerMessages()) {
+        for (const auto& part : message.GetParts()) {
+            const std::optional<MessageImageAsset> asset =
+                resolveMessageImageAsset(part);
+            if (!asset.has_value()) {
+                continue;
+            }
+            items.push_back({asset->sourcePath,
+                             message.GetMessageId(),
+                             part.GetPartId()});
+        }
+    }
+    return items;
+}
+
+void applyImagePreviewNavigation(skui::Runtime& runtime)
+{
+    const std::size_t itemCount = gImagePreviewState.items.size();
+    const bool hasMultipleImages = itemCount > 1u;
+    const bool canShowPrevious =
+        hasMultipleImages && gImagePreviewState.currentIndex > 0u;
+    const bool canShowNext =
+        hasMultipleImages && gImagePreviewState.currentIndex + 1u < itemCount;
+
+    const auto navigationStyle = [hasMultipleImages](bool enabled) {
+        if (!hasMultipleImages) {
+            return std::string("display: none;");
+        }
+        return enabled
+            ? std::string("display: flex; opacity: 1; cursor: pointer;")
+            : std::string("display: flex; opacity: 0.28; cursor: default;");
+    };
+    (void)runtime.setStyleById(
+        "image-preview-previous", navigationStyle(canShowPrevious));
+    (void)runtime.setStyleById(
+        "image-preview-next", navigationStyle(canShowNext));
+    (void)runtime.setStyleById(
+        "image-preview-position",
+        hasMultipleImages ? "display: flex;" : "display: none;");
+    if (hasMultipleImages) {
+        (void)runtime.setTextById(
+            "image-preview-position",
+            std::to_string(gImagePreviewState.currentIndex + 1u) + " / " +
+                std::to_string(itemCount));
+    }
+}
+
+bool showImagePreviewItem(skui::Runtime& runtime, std::size_t index)
+{
+    if (index >= gImagePreviewState.items.size()) {
+        return false;
+    }
+
+    const std::filesystem::path& imagePath =
+        gImagePreviewState.items[index].path;
+    const std::optional<relaydesk::platform::ImageSize> imageSize =
+        relaydesk::platform::probeImageSize(imagePath);
+    if (!imageSize.has_value() || imageSize->width == 0u ||
+        imageSize->height == 0u) {
+        return false;
+    }
+
+    const float width = static_cast<float>(imageSize->width);
+    const float height = static_cast<float>(imageSize->height);
+    const float fittedScale = std::min(
+        1.0f,
+        std::min(imagePreviewViewportWidth(runtime) / width,
+                 imagePreviewViewportHeight(runtime) / height));
+    gImagePreviewState.currentIndex = index;
+    gImagePreviewState.originalWidth = width;
+    gImagePreviewState.originalHeight = height;
+    gImagePreviewState.fittedScale = fittedScale;
+    gImagePreviewState.scale = fittedScale;
+    gImagePreviewState.panX = 0.0f;
+    gImagePreviewState.panY = 0.0f;
+    gImagePreviewState.dragging = false;
+    (void)runtime.setAttributeById(
+        "image-preview-image",
+        "src",
+        filesystemPathToGenericUtf8(imagePath));
+    applyImagePreviewView(runtime);
+    applyImagePreviewNavigation(runtime);
+    return true;
+}
+
+bool showAdjacentImagePreview(skui::Runtime& runtime, int direction)
+{
+    if (!gImagePreviewVisible || direction == 0 ||
+        gImagePreviewState.items.empty()) {
+        return false;
+    }
+
+    if (direction < 0) {
+        if (gImagePreviewState.currentIndex == 0u) {
+            return false;
+        }
+        return showImagePreviewItem(
+            runtime, gImagePreviewState.currentIndex - 1u);
+    }
+    if (gImagePreviewState.currentIndex + 1u >=
+        gImagePreviewState.items.size()) {
+        return false;
+    }
+    return showImagePreviewItem(
+        runtime, gImagePreviewState.currentIndex + 1u);
+}
+
 bool handleImagePreviewPointerEvent(skui::Runtime& runtime,
                                     const skui::ElementEvent& event)
 {
@@ -3493,35 +3624,49 @@ bool handleImagePreviewPointerEvent(skui::Runtime& runtime,
     return event.type == skui::ElementEventType::MouseMove;
 }
 
-void showImagePreview(skui::Runtime& runtime,
-                      const std::filesystem::path& imagePath)
+void showImagePreview(
+    skui::Runtime& runtime,
+    const relaydesk::runtime::RelayDeskRuntime& relayRuntime,
+    const MessageContextPathTarget& target)
 {
-    const std::optional<relaydesk::platform::ImageSize> imageSize =
-        relaydesk::platform::probeImageSize(imagePath);
-    if (!imageSize.has_value() || imageSize->width == 0u ||
-        imageSize->height == 0u) {
+    if (!target.path.has_value()) {
         return;
     }
 
-    const float availableWidth = imagePreviewViewportWidth(runtime);
-    const float availableHeight = imagePreviewViewportHeight(runtime);
-    const float width = static_cast<float>(imageSize->width);
-    const float height = static_cast<float>(imageSize->height);
-    const float fittedScale = std::min(
-        1.0f,
-        std::min(availableWidth / width, availableHeight / height));
+    std::vector<ImagePreviewItem> items =
+        collectLoadedImagePreviewItems(relayRuntime);
+    std::size_t currentIndex = items.size();
+    for (std::size_t index = 0; index < items.size(); ++index) {
+        const bool messageMatches = target.messageId.empty() ||
+            items[index].messageId == target.messageId;
+        if (messageMatches &&
+            imagePreviewPathsMatch(items[index].path, target.path.value())) {
+            currentIndex = index;
+            break;
+        }
+    }
+    if (currentIndex == items.size()) {
+        for (std::size_t index = 0; index < items.size(); ++index) {
+            if (imagePreviewPathsMatch(items[index].path,
+                                       target.path.value())) {
+                currentIndex = index;
+                break;
+            }
+        }
+    }
+    if (currentIndex == items.size()) {
+        items.push_back({target.path.value(), target.messageId, {}});
+        currentIndex = items.size() - 1u;
+    }
+
     gImagePreviewState = {};
-    gImagePreviewState.originalWidth = width;
-    gImagePreviewState.originalHeight = height;
-    gImagePreviewState.fittedScale = fittedScale;
-    gImagePreviewState.scale = fittedScale;
-    (void)runtime.setAttributeById(
-        "image-preview-image",
-        "src",
-        filesystemPathToGenericUtf8(imagePath));
+    gImagePreviewState.items = std::move(items);
+    if (!showImagePreviewItem(runtime, currentIndex)) {
+        gImagePreviewState = {};
+        return;
+    }
     (void)runtime.setStyleById("image-preview-overlay", "display: flex;");
     gImagePreviewVisible = true;
-    applyImagePreviewView(runtime);
 }
 
 void hideImagePreview(skui::Runtime& runtime)
@@ -4424,8 +4569,24 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
             const skui::ElementEvent& event) {
             constexpr unsigned kEnterKey = VK_RETURN;
             constexpr unsigned kPasteKey = 'V';
-            if (event.type != skui::ElementEventType::KeyDown ||
-                event.id != kComposerDocumentId) {
+            if (event.type != skui::ElementEventType::KeyDown) {
+                return false;
+            }
+            if (gImagePreviewVisible) {
+                if (event.key == VK_LEFT) {
+                    (void)showAdjacentImagePreview(runtime, -1);
+                    return true;
+                }
+                if (event.key == VK_RIGHT) {
+                    (void)showAdjacentImagePreview(runtime, 1);
+                    return true;
+                }
+                if (event.key == VK_ESCAPE) {
+                    hideImagePreview(runtime);
+                    return true;
+                }
+            }
+            if (event.id != kComposerDocumentId) {
                 return false;
             }
             if (event.ctrlKey && event.key == kPasteKey) {
@@ -4652,7 +4813,7 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
                 std::error_code error;
                 if (std::filesystem::is_regular_file(target.path.value(), error) &&
                     !error) {
-                    showImagePreview(runtime, target.path.value());
+                    showImagePreview(runtime, relayRuntime, target);
                 }
             }
         } else if (action.starts_with(devicePrefix)) {
@@ -4879,6 +5040,10 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
                             L"RelayDesk",
                             MB_OK | MB_ICONERROR);
             }
+        } else if (action == "image-preview-previous") {
+            (void)showAdjacentImagePreview(runtime, -1);
+        } else if (action == "image-preview-next") {
+            (void)showAdjacentImagePreview(runtime, 1);
         } else if (action == "image-preview-zoom-out") {
             zoomImagePreviewFromCenter(
                 runtime,
@@ -5642,7 +5807,7 @@ public:
         selectedPeerHasMoreMessages_ = firstLoadedIndex > loadCount;
     }
 
-    void showImageConversation()
+    void showImageConversation(const std::string& secondImagePath)
     {
         std::vector<relaydesk::storage::ChatMessageRecord> messages =
             makeCaptureChatMessages(imagePath_);
@@ -5659,6 +5824,14 @@ public:
             0,
             relaydesk::storage::TransferState::Cancelled,
             "capture"));
+        parts.push_back(makeCaptureFilePart(
+            "compound-image-2",
+            relaydesk::storage::MessagePartType::Image,
+            "second-image.png",
+            4096,
+            4096,
+            relaydesk::storage::TransferState::Completed,
+            secondImagePath));
         compoundMessage.SetParts(std::move(parts));
         relaydesk::storage::ChatMessageQuote quote;
         quote.SetMessageId("capture-original-message");
@@ -5856,32 +6029,37 @@ bool writePngFile(const std::filesystem::path& outputPath,
     return output.good();
 }
 
-bool writeCaptureImageFixture(const std::filesystem::path& outputPath)
+bool writeCaptureImageFixture(const std::filesystem::path& outputPath,
+                              int width = 1920,
+                              int height = 1080,
+                              std::uint32_t borderColor = 0xFFFF00FFu)
 {
-    constexpr int kWidth = 1920;
-    constexpr int kHeight = 1080;
-    constexpr int kOpaqueBorderWidth = 12;
+    if (width <= 0 || height <= 0) {
+        return false;
+    }
+    const int opaqueBorderWidth =
+        std::max(1, std::min({12, width / 4, height / 4}));
     std::vector<std::uint32_t> pixels(
-        static_cast<std::size_t>(kWidth) * static_cast<std::size_t>(kHeight),
+        static_cast<std::size_t>(width) * static_cast<std::size_t>(height),
         0x00000000u);
-    for (int y = 0; y < kHeight; ++y) {
-        for (int x = 0; x < kWidth; ++x) {
-            const bool isOpaqueBorder = x < kOpaqueBorderWidth ||
-                x >= kWidth - kOpaqueBorderWidth ||
-                y < kOpaqueBorderWidth || y >= kHeight - kOpaqueBorderWidth;
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const bool isOpaqueBorder = x < opaqueBorderWidth ||
+                x >= width - opaqueBorderWidth ||
+                y < opaqueBorderWidth || y >= height - opaqueBorderWidth;
             if (!isOpaqueBorder) {
                 continue;
             }
             pixels[static_cast<std::size_t>(y) *
-                       static_cast<std::size_t>(kWidth) +
-                   static_cast<std::size_t>(x)] = 0xFFFF00FFu;
+                       static_cast<std::size_t>(width) +
+                   static_cast<std::size_t>(x)] = borderColor;
         }
     }
     return writePngFile(outputPath,
                         pixels,
-                        kWidth,
-                        kHeight,
-                        static_cast<std::size_t>(kWidth) *
+                        width,
+                        height,
+                        static_cast<std::size_t>(width) *
                             sizeof(std::uint32_t));
 }
 
@@ -6030,10 +6208,19 @@ int captureSkiaUiPng(const CaptureOptions& options)
     runtimeOptions.clearColor = kDemoClearColor;
 
     std::filesystem::path captureImagePath;
+    std::filesystem::path captureSecondImagePath;
     if (options.testImageMessage || options.testComposerAttachments) {
         captureImagePath = outputPath.parent_path() /
             "relaydesk_skiaui_capture_message.png";
         if (!writeCaptureImageFixture(captureImagePath)) {
+            return 9;
+        }
+    }
+    if (options.testImageMessage) {
+        captureSecondImagePath = outputPath.parent_path() /
+            "relaydesk_skiaui_capture_message_second.png";
+        if (!writeCaptureImageFixture(
+                captureSecondImagePath, 64, 96, 0xFF00FFFFu)) {
             return 9;
         }
     }
@@ -6057,7 +6244,8 @@ int captureSkiaUiPng(const CaptureOptions& options)
             relaydesk::runtime::AppUpdatePromptState::Failed);
     }
     if (options.testImageMessage) {
-        relayRuntime.showImageConversation();
+        relayRuntime.showImageConversation(
+            filesystemPathToGenericUtf8(captureSecondImagePath));
     }
     if (options.testComposerAttachments) {
         relayRuntime.showShortConversation();
@@ -6169,8 +6357,16 @@ int captureSkiaUiPng(const CaptureOptions& options)
             html.find(
                 R"(data-action="image-preview-zoom-in")") ==
                 std::string::npos ||
-         html.find(
+            html.find(
                 R"(data-action="image-preview-reset")") ==
+                std::string::npos ||
+            html.find(
+                R"(data-action="image-preview-previous")") ==
+                std::string::npos ||
+            html.find(
+                R"(data-action="image-preview-next")") ==
+                std::string::npos ||
+            html.find(R"(id="image-preview-position")") ==
                 std::string::npos ||
             html.find(R"(data-action="quote-message-context")") ==
                 std::string::npos) {
@@ -6993,6 +7189,12 @@ int captureSkiaUiPng(const CaptureOptions& options)
         if (!gImagePreviewVisible) {
             return 11;
         }
+        if (gImagePreviewState.items.size() != 2u ||
+            gImagePreviewState.currentIndex != 0u ||
+            runtime.textContentById("image-preview-position") !=
+                std::optional<std::string>{"1 / 2"}) {
+            return 97;
+        }
 
         constexpr float kFixtureWidth = 1920.0f;
         constexpr float kFixtureHeight = 1080.0f;
@@ -7063,6 +7265,50 @@ int captureSkiaUiPng(const CaptureOptions& options)
             std::fabs(gImagePreviewState.panX) > 0.0001f ||
             std::fabs(gImagePreviewState.panY) > 0.0001f) {
             return 93;
+        }
+
+        gImagePreviewState.scale = 1.0f;
+        gImagePreviewState.panX = 25.0f;
+        gImagePreviewState.panY = -15.0f;
+        skui::Event nextImageMouseDown;
+        nextImageMouseDown.type = skui::EventType::MouseDown;
+        nextImageMouseDown.x =
+            static_cast<float>(options.width - 48) * options.dpiScale;
+        nextImageMouseDown.y =
+            static_cast<float>(options.height / 2) * options.dpiScale;
+        nextImageMouseDown.button = skui::MouseButton::Left;
+        (void)runtime.handleEvent(nextImageMouseDown);
+        skui::Event nextImageMouseUp = nextImageMouseDown;
+        nextImageMouseUp.type = skui::EventType::MouseUp;
+        (void)runtime.handleEvent(nextImageMouseUp);
+        if (gImagePreviewState.currentIndex != 1u ||
+            gImagePreviewState.originalWidth != 64.0f ||
+            gImagePreviewState.originalHeight != 96.0f ||
+            gImagePreviewState.scale != 1.0f ||
+            gImagePreviewState.panX != 0.0f ||
+            gImagePreviewState.panY != 0.0f ||
+            runtime.textContentById("image-preview-position") !=
+                std::optional<std::string>{"2 / 2"}) {
+            return 98;
+        }
+        (void)runtime.handleEvent(nextImageMouseDown);
+        (void)runtime.handleEvent(nextImageMouseUp);
+        if (gImagePreviewState.currentIndex != 1u) {
+            return 99;
+        }
+
+        skui::Event previousImageMouseDown = nextImageMouseDown;
+        previousImageMouseDown.x =
+            static_cast<float>(kChatMessagePaneLeft + 48) *
+            options.dpiScale;
+        (void)runtime.handleEvent(previousImageMouseDown);
+        skui::Event previousImageMouseUp = previousImageMouseDown;
+        previousImageMouseUp.type = skui::EventType::MouseUp;
+        (void)runtime.handleEvent(previousImageMouseUp);
+        if (gImagePreviewState.currentIndex != 0u ||
+            runtime.textContentById("image-preview-position") !=
+                std::optional<std::string>{"1 / 2"}) {
+            return 101;
         }
 
         const std::size_t previewCenterPixelIndex =

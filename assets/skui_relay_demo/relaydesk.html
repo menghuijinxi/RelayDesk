@@ -541,6 +541,49 @@
       border-radius: 6px;
       background-color: #ffffff;
     }
+    .image-preview-navigation {
+      position: absolute;
+      display: none;
+      top: 50%;
+      width: 52px;
+      height: 64px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      background-color: rgba(255, 255, 255, 0.92);
+      color: #17202a;
+      cursor: pointer;
+      font-size: 38px;
+      transform: translateY(-50%);
+      z-index: 2;
+    }
+    .image-preview-navigation:hover {
+      background-color: #dff8f6;
+    }
+    .image-preview-previous {
+      left: 22px;
+    }
+    .image-preview-next {
+      right: 22px;
+    }
+    .image-preview-position {
+      position: absolute;
+      display: none;
+      left: 50%;
+      top: 22px;
+      min-width: 64px;
+      height: 34px;
+      padding: 0 12px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      background-color: rgba(255, 255, 255, 0.92);
+      color: #17202a;
+      font-size: 14px;
+      font-weight: bold;
+      transform: translateX(-50%);
+      z-index: 2;
+    }
     .image-preview-toolbar {
       position: absolute;
       display: flex;
@@ -2506,6 +2549,9 @@
       </div>
       <div id="image-preview-overlay" class="image-preview-overlay" data-action="image-preview-viewport">
         <img id="image-preview-image" class="image-preview-image" src="">
+        <div id="image-preview-previous" class="image-preview-navigation image-preview-previous" title="上一张" data-action="image-preview-previous">&#8249;</div>
+        <div id="image-preview-next" class="image-preview-navigation image-preview-next" title="下一张" data-action="image-preview-next">&#8250;</div>
+        <div id="image-preview-position" class="image-preview-position">1 / 1</div>
         <div class="image-preview-toolbar" data-action="image-preview-toolbar">
           <div class="image-preview-control" title="缩小" data-action="image-preview-zoom-out">−</div>
           <div id="image-preview-percent" class="image-preview-percent">100%</div>
