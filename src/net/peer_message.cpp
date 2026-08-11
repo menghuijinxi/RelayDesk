@@ -466,6 +466,46 @@ relaydesk::storage::ChatMessageRecord parseChatMessageFrame(
     return parsePeerChatMessageHeader(frame.GetHeader());
 }
 
+bool isScreenShakeChatMessage(
+    const relaydesk::storage::ChatMessageRecord& record)
+{
+    if (record.GetSchemaVersion() != 2
+        || !record.GetMessageId().starts_with(
+            kScreenShakeEventMessageIdPrefix)
+        || record.GetMessageId() == kScreenShakeEventMessageIdPrefix
+        || record.GetDirection()
+            != relaydesk::storage::MessageDirection::Outgoing
+        || record.GetSenderDeviceId().empty()
+        || record.GetReceiverDeviceId().empty()
+        || record.GetSenderDeviceId() == record.GetReceiverDeviceId()
+        || record.GetConversationId()
+            != relaydesk::storage::makeDirectConversationId(
+                record.GetSenderDeviceId(),
+                record.GetReceiverDeviceId())
+        || record.GetCreatedAt().empty()
+        || record.GetDeliveryState()
+            != relaydesk::storage::DeliveryState::Pending
+        || record.GetQuote().has_value()
+        || record.GetParts().size() != 1u) {
+        return false;
+    }
+
+    const relaydesk::storage::ChatMessagePart& part = record.GetParts().front();
+    return part.GetPartId() == kScreenShakeEventMarker
+        && part.GetType() == relaydesk::storage::MessagePartType::Text
+        && part.GetText().has_value()
+        && part.GetText().value() == kScreenShakeEventMarker
+        && !part.GetEmoji().has_value()
+        && !part.GetTransferId().has_value()
+        && !part.GetTransferState().has_value()
+        && !part.GetFileName().has_value()
+        && !part.GetFileSize().has_value()
+        && !part.GetTransferredSize().has_value()
+        && !part.GetSha256().has_value()
+        && !part.GetLocalPath().has_value()
+        && !part.GetManifestPath().has_value();
+}
+
 std::string serializeTransferOfferHeader(const TransferOfferMessage& message)
 {
     return makeEnvelope(

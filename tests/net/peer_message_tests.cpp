@@ -79,6 +79,52 @@ relaydesk::storage::ChatMessageRecord makeMixedTextEmojiRecord()
     return record;
 }
 
+relaydesk::storage::ChatMessageRecord makeScreenShakeRecord()
+{
+    relaydesk::storage::ChatMessageRecord record;
+    record.SetMessageId("relaydesk-event:screen-shake:v1:event-1");
+    record.SetConversationId(
+        relaydesk::storage::makeDirectConversationId("local-device", "peer-device"));
+    record.SetDirection(relaydesk::storage::MessageDirection::Outgoing);
+    record.SetSenderDeviceId("local-device");
+    record.SetReceiverDeviceId("peer-device");
+    record.SetSenderDisplayNameSnapshot("Local");
+    record.SetReceiverDisplayNameSnapshot("Peer");
+    record.SetCreatedAt("2026-08-10T00:00:00Z");
+    record.SetDeliveryState(relaydesk::storage::DeliveryState::Pending);
+    record.AddPart(makeTextPart("relaydesk-event:screen-shake:v1",
+                                "relaydesk-event:screen-shake:v1"));
+    return record;
+}
+
+int recognizesOnlyStrictScreenShakeChatMessages()
+{
+    const relaydesk::storage::ChatMessageRecord decoded =
+        relaydesk::net::parseChatMessageFrame(
+            relaydesk::net::makeChatMessageFrame(makeScreenShakeRecord()));
+    if (const int check = expect(
+            relaydesk::net::isScreenShakeChatMessage(decoded),
+            "Strict screen shake chat message was not recognized.");
+        check != 0) {
+        return check;
+    }
+
+    relaydesk::storage::ChatMessageRecord ordinary = decoded;
+    ordinary.SetMessageId("ordinary-message");
+    if (const int check = expect(
+            !relaydesk::net::isScreenShakeChatMessage(ordinary),
+            "Ordinary chat message was recognized as a screen shake event.");
+        check != 0) {
+        return check;
+    }
+
+    relaydesk::storage::ChatMessageRecord malformed = decoded;
+    malformed.SetParts({makeTextPart("relaydesk-event:screen-shake:v1",
+                                     "different-event")});
+    return expect(!relaydesk::net::isScreenShakeChatMessage(malformed),
+                  "Malformed screen shake chat message was recognized.");
+}
+
 int roundTripsChatMessageFrame()
 {
     const relaydesk::net::PeerFrame frame =
@@ -650,6 +696,10 @@ int roundTripsAppUpdateCompleteFrame()
 int main()
 {
     if (const int result = roundTripsChatMessageFrame(); result != 0) {
+        return result;
+    }
+    if (const int result = recognizesOnlyStrictScreenShakeChatMessages();
+        result != 0) {
         return result;
     }
     if (const int result = rejectsNonChatFrame(); result != 0) {

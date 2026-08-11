@@ -57,6 +57,14 @@ constexpr auto kPeerStatusRefreshInterval = 5s;
 constexpr auto kDiscoveryBroadcastInterval = 60s;
 constexpr auto kDiscoveryStartupBroadcastInterval = 500ms;
 constexpr int kDiscoveryStartupBroadcastCount = 8;
+constexpr auto kScreenShakeCooldown = 10s;
+constexpr std::size_t kMaximumScreenShakeCooldownEntries = 256u;
+constexpr std::size_t kMaximumPendingScreenShakeRequests = 32u;
+constexpr const char* kTransientChatNoticeMessageIdPrefix =
+    "relaydesk-local:chat-notice:";
+constexpr const char* kTransientChatNoticePartId =
+    "relaydesk-local:chat-notice";
+constexpr std::size_t kMaximumTransientChatNoticeCount = 64u;
 #if defined(RELAYDESK_HAS_BOOST_ASIO)
 constexpr std::uintmax_t kTransferChunkSize = 1024u * 1024u;
 constexpr const char* kAppUpdateTempDirectoryName = "updates";
@@ -474,6 +482,49 @@ relaydesk::storage::ChatMessageRecord makeOutgoingMessageRecord(
         record.SetQuote(std::move(quote.value()));
     }
     record.SetParts(std::move(parts));
+    return record;
+}
+
+#if defined(RELAYDESK_HAS_BOOST_ASIO)
+relaydesk::storage::ChatMessageRecord makeScreenShakeMessageRecord(
+    const LocalUserSummary& localUser,
+    const PeerListItem& peer)
+{
+    relaydesk::storage::ChatMessagePart part;
+    part.SetPartId(relaydesk::net::kScreenShakeEventMarker);
+    part.SetType(relaydesk::storage::MessagePartType::Text);
+    part.SetText(relaydesk::net::kScreenShakeEventMarker);
+
+    relaydesk::storage::ChatMessageRecord record =
+        makeOutgoingMessageRecord(localUser,
+                                  peer,
+                                  {std::move(part)},
+                                  std::nullopt);
+    record.SetMessageId(
+        std::string(relaydesk::net::kScreenShakeEventMessageIdPrefix)
+        + relaydesk::core::createUuidV4());
+    return record;
+}
+#endif
+
+relaydesk::storage::ChatMessageRecord makeTransientChatNoticeRecord(
+    const LocalUserSummary& localUser,
+    const PeerListItem& peer,
+    std::string text)
+{
+    relaydesk::storage::ChatMessagePart part;
+    part.SetPartId(kTransientChatNoticePartId);
+    part.SetType(relaydesk::storage::MessagePartType::Text);
+    part.SetText(std::move(text));
+
+    relaydesk::storage::ChatMessageRecord record =
+        makeOutgoingMessageRecord(localUser,
+                                  peer,
+                                  {std::move(part)},
+                                  std::nullopt);
+    record.SetMessageId(
+        std::string(kTransientChatNoticeMessageIdPrefix)
+        + relaydesk::core::createUuidV4());
     return record;
 }
 
@@ -4091,6 +4142,135 @@ void RelayDeskRuntime::sendTextMessageToSelectedPeer(std::string text)
     sendMessagePartsToSelectedPeer(std::move(parts), std::nullopt);
 }
 
+void RelayDeskRuntime::appendSelectedPeerTransientNotice(
+    const PeerListItem& peer,
+    std::string text)
+{
+    if (text.empty() || peer.GetDeviceId() != selectedPeerDeviceId_) {
+        return;
+    }
+
+    while (transientSelectedPeerMessageIds_.size()
+           >= kMaximumTransientChatNoticeCount) {
+        const auto transientMessage = std::find_if(
+            selectedPeerMessages_.begin(),
+            selectedPeerMessages_.end(),
+            [this](const relaydesk::storage::ChatMessageRecord& message) {
+                return transientSelectedPeerMessageIds_.contains(
+                    message.GetMessageId());
+            });
+        if (transientMessage == selectedPeerMessages_.end()) {
+            transientSelectedPeerMessageIds_.clear();
+            break;
+        }
+        transientSelectedPeerMessageIds_.erase(
+            transientMessage->GetMessageId());
+        selectedPeerMessages_.erase(transientMessage);
+    }
+
+    relaydesk::storage::ChatMessageRecord record =
+        makeTransientChatNoticeRecord(localUser_, peer, std::move(text));
+    transientSelectedPeerMessageIds_.insert(record.GetMessageId());
+    selectedPeerMessages_.push_back(std::move(record));
+    requestUiRefresh();
+}
+
+ScreenShakeSendResult RelayDeskRuntime::sendScreenShakeToSelectedPeer()
+{
+#if defined(RELAYDESK_HAS_BOOST_ASIO)
+    const std::optional<PeerListItem> selectedPeer = GetSelectedPeer();
+    if (!selectedPeer.has_value()) {
+        return ScreenShakeSendResult::Unavailable;
+    }
+    if (!tcpPeerTransport_
+        || selectedPeer->GetAddress().empty()
+        || selectedPeer->GetAddress() == "unknown"
+        || selectedPeer->GetTcpPort() == 0) {
+        appendSelectedPeerTransientNotice(
+            selectedPeer.value(),
+            "震屏发送失败，请确认对方设备可连接");
+        return ScreenShakeSendResult::Unavailable;
+    }
+
+    const std::string peerDeviceId = selectedPeer->GetDeviceId();
+    if (!tryStartScreenShakeCooldown(outgoingScreenShakeCooldowns_,
+                                     outgoingScreenShakeCooldownMutex_,
+                                     peerDeviceId)) {
+        appendSelectedPeerTransientNotice(selectedPeer.value(),
+                                          "震屏发送得太频繁");
+        return ScreenShakeSendResult::RateLimited;
+    }
+
+    const relaydesk::storage::ChatMessageRecord record =
+        makeScreenShakeMessageRecord(localUser_, selectedPeer.value());
+    const relaydesk::net::PeerFrame frame =
+        relaydesk::net::makeChatMessageFrame(record);
+    const bool accepted = ::core::async::runOnce(
+        "relaydesk.screen_shake.send." + record.GetMessageId(),
+        [this, peer = selectedPeer.value(), frame] {
+            try {
+                if (!tcpPeerTransport_) {
+                    return ::core::async::failure(
+                        "TCP peer transport is not available.");
+                }
+                tcpPeerTransport_->sendFrameTo(peer.GetAddress(),
+                                               peer.GetTcpPort(),
+                                               frame);
+                return ::core::async::success();
+            } catch (const std::exception& error) {
+                return ::core::async::failure(error.what());
+            }
+        },
+        [this, peerDeviceId](const ::core::async::Result<void>& result) {
+            if (!result.ok) {
+                logDiagnostic("runtime.screen_shake.send_failed device_id="
+                              + peerDeviceId + " message=" + result.error);
+            }
+        });
+    if (!accepted) {
+        std::lock_guard lock(outgoingScreenShakeCooldownMutex_);
+        outgoingScreenShakeCooldowns_.erase(peerDeviceId);
+        appendSelectedPeerTransientNotice(
+            selectedPeer.value(),
+            "震屏发送失败，请确认对方设备可连接");
+        return ScreenShakeSendResult::Unavailable;
+    }
+
+    appendSelectedPeerTransientNotice(selectedPeer.value(), "已发送震屏");
+    return ScreenShakeSendResult::Queued;
+#else
+    return ScreenShakeSendResult::Unavailable;
+#endif
+}
+
+bool RelayDeskRuntime::applyNextPendingScreenShakeRequest()
+{
+    while (true) {
+        std::string senderDeviceId;
+        {
+            std::lock_guard lock(pendingScreenShakeMutex_);
+            if (pendingScreenShakeDeviceIds_.empty()) {
+                return false;
+            }
+            senderDeviceId = std::move(pendingScreenShakeDeviceIds_.front());
+            pendingScreenShakeDeviceIds_.erase(
+                pendingScreenShakeDeviceIds_.begin());
+        }
+
+        const std::optional<PeerListItem> senderPeer =
+            findPeerByDeviceId(senderDeviceId);
+        if (!senderPeer.has_value()) {
+            logDiagnostic("runtime.screen_shake.ignored device_id="
+                          + senderDeviceId + " reason=unknown_peer");
+            continue;
+        }
+
+        selectPeer(senderDeviceId);
+        appendSelectedPeerTransientNotice(senderPeer.value(), "收到震屏");
+        return true;
+    }
+}
+
 void RelayDeskRuntime::startAppUpdate(AppUpdateInstallMode installMode)
 {
     std::optional<AppUpdatePrompt> prompt;
@@ -4284,6 +4464,7 @@ void RelayDeskRuntime::setSelectedPeerDeviceId(std::string deviceId)
 
 void RelayDeskRuntime::loadSelectedPeerMessages()
 {
+    transientSelectedPeerMessageIds_.clear();
     if (selectedPeerDeviceId_.empty() || !storageAvailable_) {
         selectedPeerMessages_.clear();
         selectedPeerHasMoreMessages_ = false;
@@ -4419,6 +4600,7 @@ bool RelayDeskRuntime::loadSelectedPeerMessagesAround(const std::string& message
             targetIndex > halfPage ? targetIndex - halfPage : 0u;
         const std::size_t lastIndex =
             std::min(records.size(), firstIndex + kSelectedPeerMessagePageSize);
+        transientSelectedPeerMessageIds_.clear();
         selectedPeerMessages_.assign(records.begin() + firstIndex,
                                      records.begin() + lastIndex);
         selectedPeerHasMoreMessages_ = firstIndex > 0u;
@@ -4648,10 +4830,23 @@ void RelayDeskRuntime::notifyIncomingTransferFailed(
 void RelayDeskRuntime::handleIncomingPeerFrame(relaydesk::net::PeerFrame frame)
 {
     switch (frame.GetType()) {
-    case relaydesk::net::PeerFrameType::ChatMessage:
-        enqueueIncomingChatMessage(makeIncomingRecordForLocalDevice(
-            relaydesk::net::parseChatMessageFrame(frame)));
+    case relaydesk::net::PeerFrameType::ChatMessage: {
+        relaydesk::storage::ChatMessageRecord record =
+            relaydesk::net::parseChatMessageFrame(frame);
+        if (relaydesk::net::isScreenShakeChatMessage(record)) {
+            if (record.GetReceiverDeviceId() != localUser_.GetDeviceId()) {
+                logDiagnostic("runtime.screen_shake.ignored device_id="
+                              + record.GetSenderDeviceId()
+                              + " reason=wrong_receiver");
+                return;
+            }
+            enqueueIncomingScreenShake(record.GetSenderDeviceId());
+            return;
+        }
+        enqueueIncomingChatMessage(
+            makeIncomingRecordForLocalDevice(std::move(record)));
         return;
+    }
     case relaydesk::net::PeerFrameType::AppUpdateRequest: {
         const relaydesk::net::AppUpdateRequestMessage request =
             relaydesk::net::parseAppUpdateRequestFrame(frame);
@@ -6178,6 +6373,58 @@ void RelayDeskRuntime::setStartupError(std::string errorMessage)
 {
     logDiagnostic("runtime.error message=" + errorMessage);
     startupErrorMessage_ = std::move(errorMessage);
+}
+
+bool RelayDeskRuntime::tryStartScreenShakeCooldown(
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point>&
+        cooldowns,
+    std::mutex& cooldownMutex,
+    const std::string& deviceId)
+{
+    if (deviceId.empty()) {
+        return false;
+    }
+
+    const std::chrono::steady_clock::time_point now = screenShakeClock_();
+    std::lock_guard lock(cooldownMutex);
+    for (auto cooldown = cooldowns.begin(); cooldown != cooldowns.end();) {
+        if (now >= cooldown->second + kScreenShakeCooldown) {
+            cooldown = cooldowns.erase(cooldown);
+        } else {
+            ++cooldown;
+        }
+    }
+
+    if (cooldowns.contains(deviceId)
+        || cooldowns.size() >= kMaximumScreenShakeCooldownEntries) {
+        return false;
+    }
+
+    cooldowns.emplace(deviceId, now);
+    return true;
+}
+
+void RelayDeskRuntime::enqueueIncomingScreenShake(std::string senderDeviceId)
+{
+    if (!tryStartScreenShakeCooldown(incomingScreenShakeCooldowns_,
+                                     incomingScreenShakeCooldownMutex_,
+                                     senderDeviceId)) {
+        logDiagnostic("runtime.screen_shake.ignored device_id="
+                      + senderDeviceId + " reason=rate_limited");
+        return;
+    }
+
+    {
+        std::lock_guard lock(pendingScreenShakeMutex_);
+        if (pendingScreenShakeDeviceIds_.size()
+            >= kMaximumPendingScreenShakeRequests) {
+            logDiagnostic("runtime.screen_shake.ignored device_id="
+                          + senderDeviceId + " reason=pending_queue_full");
+            return;
+        }
+        pendingScreenShakeDeviceIds_.push_back(std::move(senderDeviceId));
+    }
+    requestUiRefresh();
 }
 
 void RelayDeskRuntime::notifyUserNotification()

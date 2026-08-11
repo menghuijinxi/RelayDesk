@@ -378,6 +378,34 @@
       font-weight: bold;
       font-size: 13px;
     }
+    .chat-notice-row {
+      position: relative;
+      display: flex;
+      flex-shrink: 0;
+      width: 100%;
+      height: auto;
+      align-items: center;
+      justify-content: center;
+    }
+    .chat-notice-pill {
+      position: relative;
+      display: flex;
+      width: auto;
+      max-width: 80%;
+      height: auto;
+      padding: 5px 10px;
+      box-sizing: border-box;
+      border-radius: 6px;
+      background-color: #eef2f4;
+      color: #6b7785;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      line-height: 20px;
+      text-align: center;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
     .bubble {
       position: relative;
       flex-shrink: 1;
@@ -1527,6 +1555,9 @@
     .emoji-icon {
       right: 192px;
     }
+    .shake-icon {
+      right: 234px;
+    }
     .attach-icon {
       right: 150px;
     }
@@ -2164,6 +2195,10 @@
     .screen.dark .settings-profile-separator {
       background-color: #2e373c;
     }
+    .screen.dark .chat-notice-pill {
+      background-color: #252c31;
+      color: #aab4bc;
+    }
     .screen.dark .bubble-left,
     .screen.dark .message-document-left,
     .screen.dark .transfer-card,
@@ -2394,6 +2429,7 @@
       <div id="composer-wrap" class="composer-wrap">
         <div id="composer-document" class="composer-document" contenteditable="true" contenteditable-flow="inline"><p id="composer-text-initial" class="composer-document-paragraph"><br></p></div>
         <div id="composer-placeholder" class="composer-placeholder">选择设备后发送消息</div>
+        <svg id="composer-shake" class="compose-icon shake-icon" title="震屏" data-action="send-screen-shake" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m2 8 2 2-2 2 2 2-2 2"></path><path d="m22 8-2 2 2 2-2 2 2 2"></path><rect width="8" height="14" x="8" y="5" rx="1"></rect></svg>
         <svg id="composer-emoji" class="compose-icon emoji-icon" title="表情" data-action="toggle-composer-emoji-picker" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M8 14s1.5 2 4 2 4-2 4-2"></path><path d="M9 9h.01"></path><path d="M15 9h.01"></path></svg>
         <svg id="composer-attach" class="compose-icon attach-icon" title="添加文件" data-action="select-attachment-files" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.1-8.9 8.9a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"></path></svg>
         <svg id="composer-folder" class="compose-icon folder-icon" title="添加文件夹" data-action="select-attachment-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"></path></svg>

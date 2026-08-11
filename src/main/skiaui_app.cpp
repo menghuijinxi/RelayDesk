@@ -2853,6 +2853,21 @@ std::string makeTextMessageMarkup(
     return html;
 }
 
+std::string makeTransientChatNoticeMarkup(
+    const relaydesk::storage::ChatMessageRecord& message)
+{
+    const std::string text = message.GetParts().empty()
+        ? std::string{}
+        : trimMessageWhitespace(partDisplayText(message.GetParts().front()));
+    std::string html;
+    html.reserve(text.size() + 120u);
+    html +=
+        R"(<div class="chat-notice-row" contenteditable="false"><div class="chat-notice-pill">)";
+    html += escapeHtml(text);
+    html += R"(</div></div>)";
+    return html;
+}
+
 std::string makeMessageAction(std::string_view messageId)
 {
     std::string action(kMessageContextActionPrefix);
@@ -3305,6 +3320,11 @@ std::string makeChatContentMarkup(
         html += makeTextMessageMarkup(placeholder, part);
     } else {
         for (const auto& message : messages) {
+            if (relayRuntime.IsSelectedPeerMessageTransient(
+                    message.GetMessageId())) {
+                html += makeTransientChatNoticeMarkup(message);
+                continue;
+            }
             if (message.GetParts().size() > 1u) {
                 html += makeCompoundMessageMarkup(message);
                 continue;
@@ -4298,6 +4318,10 @@ void applyComposerDocumentPanel(
     if (narrow) {
         skiaRuntime.setStyleById("composer-emoji", "display: none;");
         skiaRuntime.setStyleById(
+            "composer-shake",
+            "display: block; left: 100px; right: auto; top: " +
+                std::to_string(toolbarTop) + "px;");
+        skiaRuntime.setStyleById(
             "composer-attach",
             "left: 16px; right: auto; top: " +
                 std::to_string(toolbarTop) + "px;");
@@ -4309,6 +4333,10 @@ void applyComposerDocumentPanel(
             "composer-send",
             "top: " + std::to_string(sendTop) + "px;");
     } else {
+        skiaRuntime.setStyleById(
+            "composer-shake",
+            "display: block; left: auto; right: 234px; top: " +
+                std::to_string(toolbarTop) + "px;");
         skiaRuntime.setStyleById(
             "composer-emoji",
             "display: block; top: " +
@@ -5088,6 +5116,10 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
                     runtime, binding, {folderPath.value()})) {
                 applyComposerDocumentPanel(runtime, relayRuntime);
             }
+        } else if (action == "send-screen-shake") {
+            hideMessageContextMenu(runtime);
+            setComposerEmojiPickerOpen(runtime, binding, false);
+            (void)relayRuntime.sendScreenShakeToSelectedPeer();
         } else if (action == "send-message") {
             hideMessageContextMenu(runtime);
             setComposerEmojiPickerOpen(runtime, binding, false);
@@ -5236,11 +5268,11 @@ void CALLBACK refreshRelayDeskSkiaUiTimer(HWND, UINT, UINT_PTR, DWORD)
     if (gRuntimeBinding == nullptr) {
         return;
     }
-    if (refreshRelayDeskDevicePanelIfChanged(*gRuntimeBinding, false)) {
-        requestSkiaUiWindowRedraw(*gRuntimeBinding);
-    }
     if (gRuntimeBinding->backgroundController != nullptr) {
         gRuntimeBinding->backgroundController->processRuntimeState();
+    }
+    if (refreshRelayDeskDevicePanelIfChanged(*gRuntimeBinding, false)) {
+        requestSkiaUiWindowRedraw(*gRuntimeBinding);
     }
 }
 
@@ -5779,6 +5811,15 @@ public:
         selectedPeerMessages_ = makeCaptureChatMessages(imagePath_);
     }
 
+    void showTransientNoticeConversation()
+    {
+        selectedPeerMessages_.clear();
+        appendSelectedPeerTransientNotice(peers_.front(), "已发送震屏");
+        appendSelectedPeerTransientNotice(peers_.front(),
+                                          "震屏发送得太频繁");
+        appendSelectedPeerTransientNotice(peers_.front(), "收到震屏");
+    }
+
     void showPagedConversation()
     {
         pagedMessages_ = makeCapturePagedChatMessages();
@@ -6249,6 +6290,9 @@ int captureSkiaUiPng(const CaptureOptions& options)
     }
     if (options.testComposerAttachments) {
         relayRuntime.showShortConversation();
+    }
+    if (options.testComposerKeyboard) {
+        relayRuntime.showTransientNoticeConversation();
     }
     if (options.testHistoryPagination) {
         relayRuntime.showPagedConversation();
@@ -6909,9 +6953,17 @@ int captureSkiaUiPng(const CaptureOptions& options)
     if (options.testComposerKeyboard) {
         const std::size_t messageCountBefore =
             relayRuntime.GetSelectedPeerMessages().size();
+        const std::optional<std::string> chatContent =
+            runtime.textContentById("chat-content");
         constexpr std::string_view kSelectionFixture = "abc";
         if (html.find(R"(data-action="toggle-composer-emoji-picker")") ==
                 std::string::npos ||
+            html.find(R"(data-action="send-screen-shake")") ==
+                std::string::npos ||
+            !chatContent.has_value() ||
+            chatContent->find("已发送震屏") == std::string::npos ||
+            chatContent->find("震屏发送得太频繁") == std::string::npos ||
+            chatContent->find("收到震屏") == std::string::npos ||
             html.find("insert-composer-emoji:19") == std::string::npos ||
             !runtime.setTextById(kComposerInitialParagraphId,
                                  kSelectionFixture) ||

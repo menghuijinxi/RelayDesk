@@ -25,6 +25,19 @@ constexpr wchar_t kMainWindowTitle[] = L"RelayDesk";
 constexpr UINT kTrayCallbackMessage = WM_APP + 0x532;
 constexpr UINT kIncomingNotificationMessage = WM_APP + 0x533;
 constexpr UINT_PTR kTrayAttentionTimerId = 1;
+constexpr UINT_PTR kScreenShakeTimerId = 2;
+constexpr UINT kScreenShakeTimerIntervalMs = 35;
+constexpr std::array<POINT, 9> kScreenShakeOffsets{{
+    {10, 0},
+    {-10, 0},
+    {9, 3},
+    {-9, -3},
+    {7, -2},
+    {-7, 2},
+    {4, 0},
+    {-4, 0},
+    {0, 0},
+}};
 constexpr UINT kTrayShowCommand = 1000;
 constexpr UINT kTrayExitCommand = 1002;
 constexpr int kApplicationIconResourceId = 1;
@@ -301,7 +314,14 @@ public:
                 clearAttention();
             }
             return false;
+        case WM_TIMER:
+            if (wParam == kScreenShakeTimerId) {
+                advanceScreenShake();
+                return true;
+            }
+            return false;
         case WM_DESTROY:
+            stopScreenShake();
             mainWindow_ = nullptr;
             return false;
         default:
@@ -318,6 +338,9 @@ public:
         if (runtime_->GetAppUpdateExitRequested()) {
             requestExit();
             return;
+        }
+        if (runtime_->applyNextPendingScreenShakeRequest()) {
+            startScreenShake();
         }
         if (isMainWindowActive(mainWindow_)) {
             clearAttention();
@@ -338,6 +361,84 @@ public:
     }
 
 private:
+    void startScreenShake()
+    {
+        if (mainWindow_ == nullptr) {
+            return;
+        }
+
+        stopScreenShake();
+        ShowWindow(mainWindow_, SW_RESTORE);
+        (void)SetWindowPos(mainWindow_,
+                           HWND_TOPMOST,
+                           0,
+                           0,
+                           0,
+                           0,
+                           SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        (void)SetWindowPos(mainWindow_,
+                           HWND_NOTOPMOST,
+                           0,
+                           0,
+                           0,
+                           0,
+                           SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        (void)SetForegroundWindow(mainWindow_);
+        (void)BringWindowToTop(mainWindow_);
+        if (!GetWindowRect(mainWindow_, &screenShakeOriginalRect_)) {
+            return;
+        }
+
+        screenShakeStep_ = 0;
+        screenShakeActive_ = true;
+        advanceScreenShake();
+        if (SetTimer(mainWindow_,
+                     kScreenShakeTimerId,
+                     kScreenShakeTimerIntervalMs,
+                     nullptr) == 0) {
+            stopScreenShake();
+        }
+    }
+
+    void advanceScreenShake()
+    {
+        if (!screenShakeActive_ || mainWindow_ == nullptr) {
+            return;
+        }
+        if (screenShakeStep_ >= kScreenShakeOffsets.size()) {
+            stopScreenShake();
+            return;
+        }
+
+        const POINT offset = kScreenShakeOffsets[screenShakeStep_++];
+        (void)SetWindowPos(mainWindow_,
+                           nullptr,
+                           screenShakeOriginalRect_.left + offset.x,
+                           screenShakeOriginalRect_.top + offset.y,
+                           0,
+                           0,
+                           SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    void stopScreenShake()
+    {
+        if (!screenShakeActive_) {
+            return;
+        }
+        if (mainWindow_ != nullptr) {
+            KillTimer(mainWindow_, kScreenShakeTimerId);
+            (void)SetWindowPos(mainWindow_,
+                               nullptr,
+                               screenShakeOriginalRect_.left,
+                               screenShakeOriginalRect_.top,
+                               0,
+                               0,
+                               SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        screenShakeActive_ = false;
+        screenShakeStep_ = 0;
+    }
+
     void applyTitleBarTheme()
     {
         if (mainWindow_ == nullptr) {
@@ -662,6 +763,9 @@ private:
     bool trayAttentionEnabled_ = false;
     bool transparentIconVisible_ = false;
     bool darkModeEnabled_ = false;
+    bool screenShakeActive_ = false;
+    std::size_t screenShakeStep_ = 0;
+    RECT screenShakeOriginalRect_{};
 };
 
 BackgroundController::BackgroundController(HINSTANCE instance)

@@ -21,6 +21,10 @@ constexpr const char* kPeerMessageTypeTransferComplete = "transfer_complete";
 constexpr const char* kPeerMessageTypeAppUpdateRequest = "app_update_request";
 constexpr const char* kPeerMessageTypeAppUpdateChunk = "app_update_chunk";
 constexpr const char* kPeerMessageTypeAppUpdateComplete = "app_update_complete";
+constexpr const char* kScreenShakeEventMarker =
+    "relaydesk-event:screen-shake:v1";
+constexpr const char* kScreenShakeEventMessageIdPrefix =
+    "relaydesk-event:screen-shake:v1:";
 
 enum class TransferSaveStrategy {
     Unique,
@@ -284,6 +288,8 @@ PeerFrame makeChatMessageFrame(
     const relaydesk::storage::ChatMessageRecord& record);
 relaydesk::storage::ChatMessageRecord parseChatMessageFrame(
     const PeerFrame& frame);
+bool isScreenShakeChatMessage(
+    const relaydesk::storage::ChatMessageRecord& record);
 std::string serializeTransferOfferHeader(const TransferOfferMessage& message);
 TransferOfferMessage parseTransferOfferHeader(const std::string& payload);
 PeerFrame makeTransferOfferFrame(const TransferOfferMessage& message);

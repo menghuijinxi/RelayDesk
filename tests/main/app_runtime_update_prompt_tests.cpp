@@ -141,6 +141,28 @@ relaydesk::storage::ChatMessageRecord makeIncomingChatRecord(
     return record;
 }
 
+relaydesk::storage::ChatMessageRecord makeIncomingScreenShakeRecord(
+    const relaydesk::runtime::LocalUserSummary& localUser,
+    const std::string& senderDeviceId,
+    const std::string& eventId)
+{
+    relaydesk::storage::ChatMessageRecord record;
+    record.SetMessageId("relaydesk-event:screen-shake:v1:" + eventId);
+    record.SetConversationId(
+        relaydesk::storage::makeDirectConversationId(localUser.GetDeviceId(),
+                                                     senderDeviceId));
+    record.SetDirection(relaydesk::storage::MessageDirection::Outgoing);
+    record.SetSenderDeviceId(senderDeviceId);
+    record.SetReceiverDeviceId(localUser.GetDeviceId());
+    record.SetSenderDisplayNameSnapshot("Runtime Transfer Peer");
+    record.SetReceiverDisplayNameSnapshot(localUser.GetDisplayName());
+    record.SetCreatedAt("2026-08-10T00:00:00Z");
+    record.SetDeliveryState(relaydesk::storage::DeliveryState::Pending);
+    record.AddPart(makeRuntimeTextPart("relaydesk-event:screen-shake:v1",
+                                       "relaydesk-event:screen-shake:v1"));
+    return record;
+}
+
 std::string makeIndexedMessageId(int index)
 {
     std::ostringstream output;
@@ -1562,6 +1584,44 @@ public:
         handleIncomingPeerFrame(std::move(frame));
     }
 
+    void setScreenShakeNow(std::chrono::steady_clock::time_point now)
+    {
+        screenShakeNow_ = now;
+        SetScreenShakeClockForTest([this] { return screenShakeNow_; });
+    }
+
+    bool applyPendingScreenShake()
+    {
+        return applyNextPendingScreenShakeRequest();
+    }
+
+    bool reserveOutgoingScreenShake(const std::string& deviceId)
+    {
+        return tryStartScreenShakeCooldown(outgoingScreenShakeCooldowns_,
+                                           outgoingScreenShakeCooldownMutex_,
+                                           deviceId);
+    }
+
+    void appendTransientNotice(std::string text)
+    {
+        const std::optional<relaydesk::runtime::PeerListItem> selectedPeer =
+            GetSelectedPeer();
+        if (selectedPeer.has_value()) {
+            appendSelectedPeerTransientNotice(selectedPeer.value(),
+                                              std::move(text));
+        }
+    }
+
+    void selectPeerForTest(std::string deviceId)
+    {
+        selectPeer(std::move(deviceId));
+    }
+
+    void reloadSelectedPeerMessages()
+    {
+        loadSelectedPeerMessages();
+    }
+
     void drainTransferStateAndProgress()
     {
         drainPendingTransferStateUpdates();
@@ -1586,6 +1646,7 @@ protected:
 
     bool helperLaunchCalled_ = false;
     relaydesk::runtime::AppUpdateApplyOptions lastHelperLaunchOptions_;
+    std::chrono::steady_clock::time_point screenShakeNow_{};
 };
 
 template <typename Predicate>
@@ -1785,6 +1846,184 @@ int persistsIncomingChatMessageBeforeUiDrain()
         if (const int result =
                 expect(runtime.GetSelectedPeerMessages().empty(),
                        "Unselected incoming chat message was rendered immediately.");
+            result != 0) {
+            return result;
+        }
+    }
+
+    removeTestDataDirectory(appPaths);
+    return 0;
+}
+
+int rateLimitsIncomingScreenShakeBeforeUiAndPersistence()
+{
+    const relaydesk::storage::AppPaths appPaths =
+        relaydesk::storage::createAppPaths();
+    removeTestDataDirectory(appPaths);
+    relaydesk::storage::ensureAppDirectories(appPaths);
+    relaydesk::storage::savePeerProfile(appPaths, makeTransferPeerProfile(39171));
+
+    {
+        TestableRelayDeskRuntime runtime(makeTransferRuntimeOptions());
+        if (!runtime.GetStartupErrorMessage().empty()) {
+            return fail("Runtime startup failed: "
+                        + runtime.GetStartupErrorMessage());
+        }
+        runtime.receivePeerProfile(makeTransferPeerProfile(39171), true);
+        runtime.selectPeerForTest("runtime-transfer-peer");
+
+        runtime.appendTransientNotice("已发送震屏");
+        runtime.appendTransientNotice("震屏发送得太频繁");
+        if (const int result = expect(
+                runtime.GetSelectedPeerMessages().size() == 2u,
+                "Transient screen shake notices were not added to the chat flow.");
+            result != 0) {
+            return result;
+        }
+        for (const auto& message : runtime.GetSelectedPeerMessages()) {
+            if (const int result = expect(
+                    runtime.IsSelectedPeerMessageTransient(
+                        message.GetMessageId()),
+                    "Screen shake notice was not marked as transient.");
+                result != 0) {
+                return result;
+            }
+        }
+
+        const auto noticeHistory = relaydesk::storage::loadChatHistory(
+            appPaths,
+            "runtime-transfer-peer");
+        if (const int result = expect(
+                noticeHistory.GetRecords().empty(),
+                "Transient screen shake notices were persisted.");
+            result != 0) {
+            return result;
+        }
+        runtime.reloadSelectedPeerMessages();
+        if (const int result = expect(
+                runtime.GetSelectedPeerMessages().empty(),
+                "Transient screen shake notices survived a conversation reload.");
+            result != 0) {
+            return result;
+        }
+
+        const auto start = std::chrono::steady_clock::time_point{}
+            + std::chrono::seconds(100);
+        runtime.setScreenShakeNow(start);
+        if (const int result = expect(
+                runtime.reserveOutgoingScreenShake("runtime-transfer-peer"),
+                "First outgoing screen shake cooldown reservation failed.");
+            result != 0) {
+            return result;
+        }
+        if (const int result = expect(
+                runtime.sendScreenShakeToSelectedPeer()
+                    == relaydesk::runtime::ScreenShakeSendResult::RateLimited,
+                "Outgoing screen shake cooldown accepted a repeated request.");
+            result != 0) {
+            return result;
+        }
+        const auto& rateLimitedNotice =
+            runtime.GetSelectedPeerMessages().back();
+        if (const int result = expect(
+                runtime.IsSelectedPeerMessageTransient(
+                    rateLimitedNotice.GetMessageId())
+                    && rateLimitedNotice.GetParts().front().GetText()
+                        == std::optional<std::string>{"震屏发送得太频繁"},
+                "Rate-limited screen shake did not add a transient notice.");
+            result != 0) {
+            return result;
+        }
+        runtime.receivePeerFrame(relaydesk::net::makeChatMessageFrame(
+            makeIncomingScreenShakeRecord(runtime.GetLocalUser(),
+                                          "runtime-transfer-peer",
+                                          "first")));
+        runtime.receivePeerFrame(relaydesk::net::makeChatMessageFrame(
+            makeIncomingScreenShakeRecord(runtime.GetLocalUser(),
+                                          "runtime-transfer-peer",
+                                          "second")));
+
+        if (const int result = expect(runtime.applyPendingScreenShake(),
+                                      "First incoming screen shake was not queued.");
+            result != 0) {
+            return result;
+        }
+        if (const int result = expect(!runtime.applyPendingScreenShake(),
+                                      "Receiver accepted a repeated screen shake inside cooldown.");
+            result != 0) {
+            return result;
+        }
+        const auto& receivedNotice =
+            runtime.GetSelectedPeerMessages().back();
+        if (const int result = expect(
+                runtime.GetSelectedPeerMessages().size() == 2u
+                    && runtime.IsSelectedPeerMessageTransient(
+                        receivedNotice.GetMessageId())
+                    && receivedNotice.GetParts().front().GetText()
+                        == std::optional<std::string>{"收到震屏"},
+                "Accepted screen shake did not add a transient received notice.");
+            result != 0) {
+            return result;
+        }
+        if (const int result = expect(
+                runtime.GetSelectedPeerDeviceId() == "runtime-transfer-peer",
+                "Incoming screen shake did not select its sender conversation.");
+            result != 0) {
+            return result;
+        }
+        if (const int result = expect(
+                runtime.ConsumePendingUserNotificationCount() == 0,
+                "Screen shake event was treated as a normal user notification.");
+            result != 0) {
+            return result;
+        }
+
+        const auto history = relaydesk::storage::loadChatHistory(
+            appPaths,
+            "runtime-transfer-peer");
+        if (const int result = expect(
+                history.GetRecords().empty(),
+                "Screen shake event was persisted to chat history.");
+            result != 0) {
+            return result;
+        }
+
+        runtime.setScreenShakeNow(start + std::chrono::seconds(10));
+        if (const int result = expect(
+                runtime.sendScreenShakeToSelectedPeer()
+                    == relaydesk::runtime::ScreenShakeSendResult::Queued,
+                "Outgoing screen shake cooldown did not expire independently.");
+            result != 0) {
+            return result;
+        }
+        const auto& sentNotice = runtime.GetSelectedPeerMessages().back();
+        if (const int result = expect(
+                runtime.IsSelectedPeerMessageTransient(
+                    sentNotice.GetMessageId())
+                    && sentNotice.GetParts().front().GetText()
+                        == std::optional<std::string>{"已发送震屏"},
+                "Queued screen shake did not add a transient sent notice.");
+            result != 0) {
+            return result;
+        }
+        runtime.receivePeerFrame(relaydesk::net::makeChatMessageFrame(
+            makeIncomingScreenShakeRecord(runtime.GetLocalUser(),
+                                          "runtime-transfer-peer",
+                                          "third")));
+        if (const int result = expect(
+                runtime.applyPendingScreenShake(),
+                "Receiver did not accept screen shake after cooldown expired.");
+            result != 0) {
+            return result;
+        }
+        const auto& repeatedReceivedNotice =
+            runtime.GetSelectedPeerMessages().back();
+        if (const int result = expect(
+                runtime.IsSelectedPeerMessageTransient(
+                    repeatedReceivedNotice.GetMessageId())
+                    && repeatedReceivedNotice.GetParts().front().GetText()
+                        == std::optional<std::string>{"收到震屏"},
+                "Receiver did not show the accepted screen shake after cooldown.");
             result != 0) {
             return result;
         }
@@ -5462,6 +5701,11 @@ int main(int argc, char** argv)
                 persistsIncomingChatMessageBeforeUiDrain();
             persistedIncomingResult != 0) {
             return persistedIncomingResult;
+        }
+        if (const int screenShakeResult =
+                rateLimitsIncomingScreenShakeBeforeUiAndPersistence();
+            screenShakeResult != 0) {
+            return screenShakeResult;
         }
         if (const int pagedHistoryResult = selectsPeerWithPagedHistory();
             pagedHistoryResult != 0) {

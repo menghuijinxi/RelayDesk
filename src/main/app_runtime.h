@@ -13,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -91,6 +92,12 @@ enum class AppUpdatePromptState {
     Available,
     Downloading,
     Failed,
+};
+
+enum class ScreenShakeSendResult {
+    Queued,
+    RateLimited,
+    Unavailable,
 };
 
 class LocalUserSummary {
@@ -556,6 +563,10 @@ public:
     }
     std::optional<PeerListItem> GetSelectedPeer() const;
     const std::string& GetSelectedPeerDeviceId() const { return selectedPeerDeviceId_; }
+    bool IsSelectedPeerMessageTransient(const std::string& messageId) const
+    {
+        return transientSelectedPeerMessageIds_.contains(messageId);
+    }
     const std::string& GetStartupErrorMessage() const { return startupErrorMessage_; }
     bool GetStorageAvailable() const { return storageAvailable_; }
     bool GetDiscoveryStarted() const { return discoveryStarted_; }
@@ -604,6 +615,8 @@ public:
     void cancelSelectedPeerFileTransfer(const std::string& messageId,
                                         const std::string& partId);
     void sendTextMessageToSelectedPeer(std::string text);
+    ScreenShakeSendResult sendScreenShakeToSelectedPeer();
+    bool applyNextPendingScreenShakeRequest();
     void startAppUpdate(AppUpdateInstallMode installMode);
     void dismissAppUpdatePrompt();
 
@@ -702,6 +715,19 @@ protected:
         bool replaceExistingRecord);
     void updateSelectedPeerMessageRecord(
         const relaydesk::storage::ChatMessageRecord& record);
+    void appendSelectedPeerTransientNotice(const PeerListItem& peer,
+                                           std::string text);
+    bool tryStartScreenShakeCooldown(
+        std::unordered_map<std::string,
+                           std::chrono::steady_clock::time_point>& cooldowns,
+        std::mutex& cooldownMutex,
+        const std::string& deviceId);
+    void enqueueIncomingScreenShake(std::string senderDeviceId);
+    void SetScreenShakeClockForTest(
+        std::function<std::chrono::steady_clock::time_point()> clock)
+    {
+        screenShakeClock_ = std::move(clock);
+    }
     void notifyUserNotification();
     void setStartupError(std::string errorMessage);
     void requestUiRefresh();
@@ -717,15 +743,21 @@ protected:
     std::vector<PendingOutgoingTransferRequest> pendingOutgoingTransferRequests_;
     std::vector<PendingTransferStateUpdate> pendingTransferStateUpdates_;
     std::vector<PendingTransferProgressUpdate> pendingTransferProgressUpdates_;
+    std::vector<std::string> pendingScreenShakeDeviceIds_;
     std::unordered_map<std::string, PendingIncomingTransfer>
         pendingIncomingTransfers_;
     std::unordered_map<std::string, PendingIncomingAppUpdate>
         pendingIncomingAppUpdates_;
     std::unordered_map<std::string, int> requestedAppUpdateVersions_;
     std::unordered_map<std::string, int> dismissedAppUpdateVersions_;
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point>
+        outgoingScreenShakeCooldowns_;
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point>
+        incomingScreenShakeCooldowns_;
     std::optional<AppUpdatePrompt> appUpdatePrompt_;
     std::optional<PendingIncomingAppUpdate> scheduledAppUpdate_;
     std::vector<relaydesk::storage::ChatMessageRecord> selectedPeerMessages_;
+    std::unordered_set<std::string> transientSelectedPeerMessageIds_;
     std::string selectedPeerDeviceId_;
     std::string startupErrorMessage_;
     std::chrono::steady_clock::time_point nextPeerStatusRefreshAt_{};
@@ -733,12 +765,17 @@ protected:
     std::function<void()> userNotificationHandler_;
     std::function<bool(const AppUpdateApplyOptions&)>
         appUpdateHelperLauncherForTest_;
+    std::function<std::chrono::steady_clock::time_point()> screenShakeClock_ =
+        [] { return std::chrono::steady_clock::now(); };
     std::mutex pendingPeerMutex_;
     std::mutex pendingChatMutex_;
     std::mutex pendingTransferUpdateMutex_;
     std::mutex pendingOutgoingTransferRequestMutex_;
     std::mutex pendingTransferStateUpdateMutex_;
     std::mutex pendingTransferProgressUpdateMutex_;
+    std::mutex pendingScreenShakeMutex_;
+    std::mutex outgoingScreenShakeCooldownMutex_;
+    std::mutex incomingScreenShakeCooldownMutex_;
     std::mutex pendingTransferMutex_;
     std::mutex pendingAppUpdateMutex_;
     std::mutex userNotificationMutex_;
