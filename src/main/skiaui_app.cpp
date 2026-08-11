@@ -808,7 +808,7 @@ std::vector<std::pair<std::size_t, std::size_t>> findUrlRanges(std::string_view 
     return ranges;
 }
 
-std::string makeUrlLinkAttributes(std::string_view text)
+std::string makeUrlLinkAttributeValue(std::string_view text)
 {
     const std::vector<std::pair<std::size_t, std::size_t>> ranges =
         findUrlRanges(text);
@@ -816,20 +816,32 @@ std::string makeUrlLinkAttributes(std::string_view text)
         return {};
     }
 
-    std::string attributes;
-    attributes += R"( data-links=")";
+    std::string value;
     bool first = true;
     for (const auto& [start, end] : ranges) {
         if (!first) {
-            attributes += "\n";
+            value += "\n";
         }
         first = false;
-        attributes += std::to_string(start);
-        attributes += ':';
-        attributes += std::to_string(end);
-        attributes += ":open-url:";
-        attributes += escapeHtml(text.substr(start, end - start));
+        value += std::to_string(start);
+        value += ':';
+        value += std::to_string(end);
+        value += ":open-url:";
+        value += text.substr(start, end - start);
     }
+    return value;
+}
+
+std::string makeUrlLinkAttributes(std::string_view text)
+{
+    const std::string value = makeUrlLinkAttributeValue(text);
+    if (value.empty()) {
+        return {};
+    }
+
+    std::string attributes;
+    attributes += R"( data-links=")";
+    attributes += escapeHtml(value);
     attributes += R"(")";
     return attributes;
 }
@@ -1555,7 +1567,9 @@ std::string makeComposerClipboardTextMarkup(std::string_view text)
         }
         markup += R"(<p id="composer-clipboard-text-)";
         markup += relaydesk::core::createUuidV4();
-        markup += R"(" class="composer-document-paragraph">)";
+        markup += R"(" class="composer-document-paragraph")";
+        markup += makeUrlLinkAttributes(line);
+        markup += ">";
         markup += line.empty() ? "<br>" : escapeHtml(line);
         markup += "</p>";
         if (lineEnd == std::string_view::npos) {
@@ -4298,6 +4312,28 @@ bool composerDocumentHasContent(const skui::Runtime& runtime)
     return false;
 }
 
+void refreshComposerUrlLinks(skui::Runtime& runtime)
+{
+    for (const std::string& elementId :
+         runtime.childElementIdsById(kComposerDocumentId)) {
+        if (elementId == kComposerQuoteElementId ||
+            composerAttachmentIdFromElementId(elementId).has_value()) {
+            continue;
+        }
+
+        const std::optional<std::string> text =
+            runtime.textContentById(elementId);
+        const std::string links =
+            text.has_value() ? makeUrlLinkAttributeValue(text.value())
+                             : std::string{};
+        if (links.empty()) {
+            (void)runtime.removeAttributeById(elementId, "data-links");
+        } else {
+            (void)runtime.setAttributeById(elementId, "data-links", links);
+        }
+    }
+}
+
 void applyComposerPlaceholder(
     skui::Runtime& runtime,
     const relaydesk::runtime::RelayDeskRuntime& relayRuntime)
@@ -4740,6 +4776,7 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
             event.id == kComposerDocumentId) {
             rememberComposerSelection(runtime, binding);
             discardComposerAttachmentsMissingFromDocument(runtime, binding);
+            refreshComposerUrlLinks(runtime);
             applyComposerDocumentPanel(runtime, relayRuntime);
             const skui::Selection selection = runtime.selection();
             if (selection.rangeCount > 0) {
@@ -7057,9 +7094,97 @@ int captureSkiaUiPng(const CaptureOptions& options)
             return 84;
         }
 
+        constexpr std::string_view kWrappedUrlInput =
+            "【UI设计软件vs敲代码的】 "
+            "https://www.bilibili.com/video/BV1Pm4y127ui/?share_source="
+            "copy_web&vd_source=eab9a93ad11792ced9853cdf23c6d5f5&payload="
+            "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwx"
+            "yz0123456789";
+        if (!runtime.setTextById(kComposerInitialParagraphId, "") ||
+            !runtime.collapseSelection(kComposerInitialParagraphId, 0u)) {
+            return 98;
+        }
+        rememberComposerSelection(runtime, binding);
+        skui::ClipboardContent wrappedUrlClipboard;
+        wrappedUrlClipboard.items.push_back(skui::ClipboardItem{
+            skui::ClipboardItemType::Text,
+            std::string(kWrappedUrlInput),
+            {},
+        });
+        if (!pasteComposerClipboardContent(
+                runtime, binding, wrappedUrlClipboard)) {
+            return 98;
+        }
+        std::string wrappedUrlParagraphId;
+        for (const std::string& elementId :
+             runtime.childElementIdsById(kComposerDocumentId)) {
+            if (runtime.textContentById(elementId) ==
+                std::optional<std::string>{kWrappedUrlInput}) {
+                wrappedUrlParagraphId = elementId;
+                break;
+            }
+        }
+        if (wrappedUrlParagraphId.empty() ||
+            !runtime.collapseSelection(wrappedUrlParagraphId, 0u)) {
+            return 98;
+        }
+        const std::optional<skui::LayoutRect> wrappedUrlStartCaret =
+            runtime.editingCaretRect();
+        if (!runtime.collapseSelection(wrappedUrlParagraphId,
+                                       kWrappedUrlInput.size())) {
+            return 98;
+        }
+        const std::optional<skui::LayoutRect> wrappedUrlEndCaret =
+            runtime.editingCaretRect();
+        if (!wrappedUrlStartCaret.has_value() ||
+            !wrappedUrlEndCaret.has_value() ||
+            wrappedUrlEndCaret->y <= wrappedUrlStartCaret->y + 10.0f) {
+            return 98;
+        }
+        const std::size_t wrappedUrlRowBytes =
+            static_cast<std::size_t>(options.width) * sizeof(std::uint32_t);
+        std::vector<std::uint32_t> wrappedUrlPixels(
+            static_cast<std::size_t>(options.width) *
+            static_cast<std::size_t>(options.height));
+        if (!runtime.renderToBgraPixels(wrappedUrlPixels.data(),
+                                        options.width,
+                                        options.height,
+                                        wrappedUrlRowBytes,
+                                        options.dpiScale)) {
+            return 99;
+        }
+        constexpr std::uint32_t kLinkColor = 0xFF0B69B7u;
+        const int composerDocumentTop = std::max(0, options.height - 240);
+        const int composerDocumentBottom = std::max(
+            composerDocumentTop, options.height - 64);
+        std::size_t linkPixelCount = 0u;
+        for (int y = composerDocumentTop;
+             y < composerDocumentBottom;
+             ++y) {
+            const std::size_t row =
+                static_cast<std::size_t>(y) *
+                static_cast<std::size_t>(options.width);
+            for (int x = kChatMessagePaneLeft + 12;
+                 x < options.width - 12;
+                 ++x) {
+                if (wrappedUrlPixels[row + static_cast<std::size_t>(x)] ==
+                    kLinkColor) {
+                    ++linkPixelCount;
+                }
+            }
+        }
+        if (linkPixelCount == 0u) {
+            return 99;
+        }
+
         constexpr std::string_view kFirstLine = "line one";
-        if (!runtime.setTextById(kComposerInitialParagraphId, kFirstLine) ||
-            !runtime.collapseSelection(kComposerInitialParagraphId,
+        if (!runtime.replaceHtmlById(
+                kComposerDocumentId, makeEmptyComposerDocumentMarkup()) ||
+            !runtime.setTextById(kComposerInitialParagraphId, kFirstLine)) {
+            return 38;
+        }
+        refreshComposerUrlLinks(runtime);
+        if (!runtime.collapseSelection(kComposerInitialParagraphId,
                                        kFirstLine.size())) {
             return 38;
         }
@@ -7682,12 +7807,16 @@ int runSkiaUiApp(HINSTANCE instance, int showCmd)
         return result;
     }
 
-    relaydesk::skiaui::SingleInstanceGuard singleInstance;
-    if (singleInstance.alreadyRunning()) {
-        relaydesk::skiaui::activateExistingInstance();
-        return 0;
+    std::unique_ptr<relaydesk::skiaui::SingleInstanceGuard> singleInstance;
+    if (!relaydesk::storage::isTestDataSandboxEnabled()) {
+        singleInstance =
+            std::make_unique<relaydesk::skiaui::SingleInstanceGuard>();
+        if (singleInstance->alreadyRunning()) {
+            relaydesk::skiaui::activateExistingInstance();
+            return 0;
+        }
+        relaydesk::skiaui::syncLaunchAtStartupOnAppStart();
     }
-    relaydesk::skiaui::syncLaunchAtStartupOnAppStart();
 
     const auto html =
         std::make_shared<const std::string>(makeEmbeddedDocument());
@@ -7741,7 +7870,6 @@ int runSkiaUiApp(HINSTANCE instance, int showCmd)
         }
         (void)refreshRelayDeskDevicePanelIfChanged(*binding, true);
     };
-
     skui::win32::Dx12WindowApp app(std::move(options));
     const int result = app.run(instance, showCmd);
     if (binding->timerId != 0) {
