@@ -82,6 +82,7 @@ int preservesOtherConfigFields()
 
     const std::vector<std::string> recentEmojis{"😎", "🥳"};
     relaydesk::storage::saveRecentEmojis(appPaths, recentEmojis);
+    relaydesk::storage::saveScreenShakeCooldownMilliseconds(appPaths, 17000);
 
     std::ifstream input(appPaths.GetConfigFilePath(), std::ios::binary);
     const nlohmann::json value = nlohmann::json::parse(input);
@@ -97,8 +98,16 @@ int preservesOtherConfigFields()
         return result;
     }
 
-    return expect(value.at("recent_emojis").get<std::vector<std::string>>() == recentEmojis,
-                  "Recent emojis were not saved.");
+    if (const int result = expect(
+            value.at("recent_emojis").get<std::vector<std::string>>()
+                == recentEmojis,
+            "Recent emojis were not saved.");
+        result != 0) {
+        return result;
+    }
+
+    return expect(value.value("screen_shake_cooldown_seconds", 0) == 17,
+                  "Screen shake cooldown was not saved.");
 }
 
 int defaultsLaunchAtStartupToEnabled()
@@ -170,6 +179,75 @@ int roundTripsAutoReceiveFiles()
                   "Disabled auto receive preference did not round-trip.");
 }
 
+int defaultsScreenShakeCooldownToTenSeconds()
+{
+    const auto appPaths = makeAppPaths("screen-shake-default");
+    return expect(
+        relaydesk::storage::loadScreenShakeCooldownMilliseconds(appPaths)
+            == 10000,
+        "Missing screen shake cooldown should default to ten seconds.");
+}
+
+int roundTripsScreenShakeCooldown()
+{
+    const auto appPaths = makeAppPaths("screen-shake-round-trip");
+    relaydesk::storage::saveScreenShakeCooldownMilliseconds(appPaths, 0);
+    if (const int result = expect(
+            relaydesk::storage::loadScreenShakeCooldownMilliseconds(appPaths)
+                == 0,
+            "Minimum screen shake cooldown did not round-trip.");
+        result != 0) {
+        return result;
+    }
+
+    relaydesk::storage::saveScreenShakeCooldownMilliseconds(appPaths, 500);
+    if (const int result = expect(
+            relaydesk::storage::loadScreenShakeCooldownMilliseconds(appPaths)
+                == 500,
+            "Half-second screen shake cooldown did not round-trip.");
+        result != 0) {
+        return result;
+    }
+
+    relaydesk::storage::saveScreenShakeCooldownMilliseconds(appPaths, 1500);
+    if (const int result = expect(
+            relaydesk::storage::loadScreenShakeCooldownMilliseconds(appPaths)
+                == 1500,
+            "One-and-a-half-second screen shake cooldown did not round-trip.");
+        result != 0) {
+        return result;
+    }
+
+    relaydesk::storage::saveScreenShakeCooldownMilliseconds(appPaths, 60000);
+    const int loadedMaximum =
+        relaydesk::storage::loadScreenShakeCooldownMilliseconds(appPaths);
+    return expect(loadedMaximum == 60000,
+                  "Maximum screen shake cooldown did not round-trip.");
+}
+
+int rejectsInvalidScreenShakeCooldown()
+{
+    const auto appPaths = makeAppPaths("screen-shake-invalid");
+    try {
+        relaydesk::storage::saveScreenShakeCooldownMilliseconds(appPaths, -500);
+        return fail("Invalid screen shake cooldown was saved.");
+    } catch (const std::invalid_argument&) {
+    }
+
+    writeJsonFile(appPaths.GetConfigFilePath(),
+                  nlohmann::json{
+                      {"schema_version", 1},
+                      {"screen_shake_cooldown_seconds", 1.25},
+                  });
+    try {
+        (void)relaydesk::storage::loadScreenShakeCooldownMilliseconds(appPaths);
+        return fail("Invalid screen shake cooldown step was accepted.");
+    } catch (const std::runtime_error&) {
+    }
+
+    return 0;
+}
+
 } // namespace
 
 int main()
@@ -209,6 +287,19 @@ int main()
     }
 
     if (const int result = roundTripsAutoReceiveFiles(); result != 0) {
+        return result;
+    }
+
+    if (const int result = defaultsScreenShakeCooldownToTenSeconds();
+        result != 0) {
+        return result;
+    }
+
+    if (const int result = roundTripsScreenShakeCooldown(); result != 0) {
+        return result;
+    }
+
+    if (const int result = rejectsInvalidScreenShakeCooldown(); result != 0) {
         return result;
     }
 

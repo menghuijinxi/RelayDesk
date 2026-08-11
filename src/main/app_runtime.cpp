@@ -13,6 +13,7 @@
 #include "storage/history_store.h"
 #include "storage/local_identity.h"
 #include "storage/peer_profile.h"
+#include "storage/ui_preferences.h"
 
 #if defined(RELAYDESK_HAS_BOOST_ASIO)
 #include "net/boost_asio_tcp_peer_transport.h"
@@ -57,7 +58,7 @@ constexpr auto kPeerStatusRefreshInterval = 5s;
 constexpr auto kDiscoveryBroadcastInterval = 60s;
 constexpr auto kDiscoveryStartupBroadcastInterval = 500ms;
 constexpr int kDiscoveryStartupBroadcastCount = 8;
-constexpr auto kScreenShakeCooldown = 10s;
+constexpr auto kIncomingScreenShakeCooldownTolerance = 500ms;
 constexpr std::size_t kMaximumScreenShakeCooldownEntries = 256u;
 constexpr std::size_t kMaximumPendingScreenShakeRequests = 32u;
 constexpr const char* kTransientChatNoticeMessageIdPrefix =
@@ -2685,7 +2686,9 @@ RelayDeskRuntime::RelayDeskRuntime()
 }
 
 RelayDeskRuntime::RelayDeskRuntime(RelayDeskRuntimeOptions options)
-    : runtimeOptions_(std::move(options))
+    : runtimeOptions_(std::move(options)),
+      screenShakeCooldownMilliseconds_(
+          relaydesk::storage::kDefaultScreenShakeCooldownMilliseconds)
 {
     initialize();
 }
@@ -2725,6 +2728,20 @@ void RelayDeskRuntime::SetUserNotificationHandler(std::function<void()> handler)
 {
     std::lock_guard lock(userNotificationMutex_);
     userNotificationHandler_ = std::move(handler);
+}
+
+void RelayDeskRuntime::SetScreenShakeCooldownMilliseconds(int milliseconds)
+{
+    if (milliseconds
+            < relaydesk::storage::kMinimumScreenShakeCooldownMilliseconds
+        || milliseconds
+            > relaydesk::storage::kMaximumScreenShakeCooldownMilliseconds
+        || milliseconds
+                % relaydesk::storage::kScreenShakeCooldownStepMilliseconds
+            != 0) {
+        throw std::invalid_argument("Screen shake cooldown is out of range.");
+    }
+    screenShakeCooldownMilliseconds_.store(milliseconds);
 }
 
 void RelayDeskRuntime::updateLocalDisplayName(std::string displayName)
@@ -4193,9 +4210,7 @@ ScreenShakeSendResult RelayDeskRuntime::sendScreenShakeToSelectedPeer()
     }
 
     const std::string peerDeviceId = selectedPeer->GetDeviceId();
-    if (!tryStartScreenShakeCooldown(outgoingScreenShakeCooldowns_,
-                                     outgoingScreenShakeCooldownMutex_,
-                                     peerDeviceId)) {
+    if (!tryStartOutgoingScreenShakeCooldown(peerDeviceId)) {
         appendSelectedPeerTransientNotice(selectedPeer.value(),
                                           "震屏发送得太频繁");
         return ScreenShakeSendResult::RateLimited;
@@ -4333,6 +4348,14 @@ void RelayDeskRuntime::initialize()
         relaydesk::storage::ensureAppDirectories(appPaths);
         diagnosticLogFilePath_ = makeDiscoveryLogFilePath(appPaths);
         logDiagnostic("runtime.initialize.begin");
+        try {
+            SetScreenShakeCooldownMilliseconds(
+                relaydesk::storage::loadScreenShakeCooldownMilliseconds(
+                    appPaths));
+        } catch (const std::exception& error) {
+            logDiagnostic("runtime.screen_shake.cooldown_load_failed message="
+                          + std::string(error.what()));
+        }
         std::error_code currentPathError;
         std::filesystem::current_path(appPaths.GetWorkDirectory(),
                                       currentPathError);
@@ -6379,7 +6402,8 @@ bool RelayDeskRuntime::tryStartScreenShakeCooldown(
     std::unordered_map<std::string, std::chrono::steady_clock::time_point>&
         cooldowns,
     std::mutex& cooldownMutex,
-    const std::string& deviceId)
+    const std::string& deviceId,
+    std::chrono::steady_clock::duration minimumInterval)
 {
     if (deviceId.empty()) {
         return false;
@@ -6388,7 +6412,7 @@ bool RelayDeskRuntime::tryStartScreenShakeCooldown(
     const std::chrono::steady_clock::time_point now = screenShakeClock_();
     std::lock_guard lock(cooldownMutex);
     for (auto cooldown = cooldowns.begin(); cooldown != cooldowns.end();) {
-        if (now >= cooldown->second + kScreenShakeCooldown) {
+        if (now >= cooldown->second + minimumInterval) {
             cooldown = cooldowns.erase(cooldown);
         } else {
             ++cooldown;
@@ -6404,11 +6428,38 @@ bool RelayDeskRuntime::tryStartScreenShakeCooldown(
     return true;
 }
 
+std::chrono::milliseconds RelayDeskRuntime::screenShakeCooldownInterval() const
+{
+    return std::chrono::milliseconds(GetScreenShakeCooldownMilliseconds());
+}
+
+bool RelayDeskRuntime::tryStartOutgoingScreenShakeCooldown(
+    const std::string& deviceId)
+{
+    return tryStartScreenShakeCooldown(outgoingScreenShakeCooldowns_,
+                                       outgoingScreenShakeCooldownMutex_,
+                                       deviceId,
+                                       screenShakeCooldownInterval());
+}
+
+bool RelayDeskRuntime::tryStartIncomingScreenShakeCooldown(
+    const std::string& deviceId)
+{
+    const std::chrono::milliseconds configuredInterval =
+        screenShakeCooldownInterval();
+    const std::chrono::milliseconds minimumInterval =
+        configuredInterval > kIncomingScreenShakeCooldownTolerance
+        ? configuredInterval - kIncomingScreenShakeCooldownTolerance
+        : std::chrono::milliseconds::zero();
+    return tryStartScreenShakeCooldown(incomingScreenShakeCooldowns_,
+                                       incomingScreenShakeCooldownMutex_,
+                                       deviceId,
+                                       minimumInterval);
+}
+
 void RelayDeskRuntime::enqueueIncomingScreenShake(std::string senderDeviceId)
 {
-    if (!tryStartScreenShakeCooldown(incomingScreenShakeCooldowns_,
-                                     incomingScreenShakeCooldownMutex_,
-                                     senderDeviceId)) {
+    if (!tryStartIncomingScreenShakeCooldown(senderDeviceId)) {
         logDiagnostic("runtime.screen_shake.ignored device_id="
                       + senderDeviceId + " reason=rate_limited");
         return;

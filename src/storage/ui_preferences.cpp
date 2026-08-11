@@ -1,5 +1,6 @@
 #include "storage/ui_preferences.h"
 
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
@@ -108,6 +109,38 @@ bool readAutoReceiveFilesEnabled(const nlohmann::json& value)
     return value["auto_receive_files"].get<bool>();
 }
 
+int readScreenShakeCooldownMilliseconds(const nlohmann::json& value)
+{
+    if (!value.contains("screen_shake_cooldown_seconds")) {
+        return kDefaultScreenShakeCooldownMilliseconds;
+    }
+
+    if (!value["screen_shake_cooldown_seconds"].is_number()) {
+        throw std::runtime_error(
+            "UI config screen shake cooldown field is invalid.");
+    }
+
+    const double seconds =
+        value["screen_shake_cooldown_seconds"].get<double>();
+    const double minimumSeconds =
+        static_cast<double>(kMinimumScreenShakeCooldownMilliseconds) / 1000.0;
+    const double maximumSeconds =
+        static_cast<double>(kMaximumScreenShakeCooldownMilliseconds) / 1000.0;
+    if (!std::isfinite(seconds) || seconds < minimumSeconds
+        || seconds > maximumSeconds) {
+        throw std::runtime_error(
+            "UI config screen shake cooldown field is out of range.");
+    }
+
+    const double halfSecondSteps = seconds * 2.0;
+    if (std::abs(halfSecondSteps - std::round(halfSecondSteps)) > 1e-9) {
+        throw std::runtime_error(
+            "UI config screen shake cooldown field has an invalid step.");
+    }
+
+    return static_cast<int>(std::lround(seconds * 1000.0));
+}
+
 void writeConfigJson(const std::filesystem::path& filePath,
                      const nlohmann::json& value)
 {
@@ -187,6 +220,35 @@ void saveAutoReceiveFilesEnabled(const AppPaths& appPaths, bool enabled)
     validateSchemaVersion(value);
     value["schema_version"] = kSchemaVersion;
     value["auto_receive_files"] = enabled;
+    writeConfigJson(appPaths.GetConfigFilePath(), value);
+}
+
+int loadScreenShakeCooldownMilliseconds(const AppPaths& appPaths)
+{
+    const nlohmann::json value = readConfigJson(appPaths.GetConfigFilePath());
+    validateSchemaVersion(value);
+    return readScreenShakeCooldownMilliseconds(value);
+}
+
+void saveScreenShakeCooldownMilliseconds(const AppPaths& appPaths,
+                                         int milliseconds)
+{
+    if (milliseconds < kMinimumScreenShakeCooldownMilliseconds
+        || milliseconds > kMaximumScreenShakeCooldownMilliseconds
+        || milliseconds % kScreenShakeCooldownStepMilliseconds != 0) {
+        throw std::invalid_argument(
+            "Screen shake cooldown preference is out of range.");
+    }
+
+    nlohmann::json value = readConfigJson(appPaths.GetConfigFilePath());
+    validateSchemaVersion(value);
+    value["schema_version"] = kSchemaVersion;
+    if (milliseconds % 1000 == 0) {
+        value["screen_shake_cooldown_seconds"] = milliseconds / 1000;
+    } else {
+        value["screen_shake_cooldown_seconds"] =
+            static_cast<double>(milliseconds) / 1000.0;
+    }
     writeConfigJson(appPaths.GetConfigFilePath(), value);
 }
 

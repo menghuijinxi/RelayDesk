@@ -6,6 +6,7 @@
 #include "storage/app_paths.h"
 #include "storage/history_store.h"
 #include "storage/peer_profile.h"
+#include "storage/ui_preferences.h"
 
 #include <algorithm>
 #include <array>
@@ -1597,9 +1598,12 @@ public:
 
     bool reserveOutgoingScreenShake(const std::string& deviceId)
     {
-        return tryStartScreenShakeCooldown(outgoingScreenShakeCooldowns_,
-                                           outgoingScreenShakeCooldownMutex_,
-                                           deviceId);
+        return tryStartOutgoingScreenShakeCooldown(deviceId);
+    }
+
+    bool reserveIncomingScreenShake(const std::string& deviceId)
+    {
+        return tryStartIncomingScreenShakeCooldown(deviceId);
     }
 
     void appendTransientNotice(std::string text)
@@ -2024,6 +2028,105 @@ int rateLimitsIncomingScreenShakeBeforeUiAndPersistence()
                     && repeatedReceivedNotice.GetParts().front().GetText()
                         == std::optional<std::string>{"收到震屏"},
                 "Receiver did not show the accepted screen shake after cooldown.");
+            result != 0) {
+            return result;
+        }
+    }
+
+    removeTestDataDirectory(appPaths);
+    return 0;
+}
+
+int appliesScreenShakeCooldownUsingEachDeviceLocalSetting()
+{
+    const relaydesk::storage::AppPaths appPaths =
+        relaydesk::storage::createAppPaths();
+    removeTestDataDirectory(appPaths);
+    relaydesk::storage::ensureAppDirectories(appPaths);
+    relaydesk::storage::saveScreenShakeCooldownMilliseconds(appPaths, 7000);
+
+    {
+        TestableRelayDeskRuntime runtime(makeTransferRuntimeOptions());
+        if (!runtime.GetStartupErrorMessage().empty()) {
+            return fail("Runtime startup failed: "
+                        + runtime.GetStartupErrorMessage());
+        }
+        if (const int result = expect(
+                runtime.GetScreenShakeCooldownMilliseconds() == 7000,
+                "Runtime did not load the local screen shake cooldown.");
+            result != 0) {
+            return result;
+        }
+
+        const auto start = std::chrono::steady_clock::time_point{}
+            + std::chrono::seconds(100);
+        runtime.SetScreenShakeCooldownMilliseconds(0);
+        runtime.setScreenShakeNow(start);
+        if (const int result = expect(
+                runtime.reserveOutgoingScreenShake("zero-outgoing-peer")
+                    && runtime.reserveOutgoingScreenShake(
+                        "zero-outgoing-peer"),
+                "Zero-second outgoing cooldown still rate limited requests.");
+            result != 0) {
+            return result;
+        }
+        if (const int result = expect(
+                runtime.reserveIncomingScreenShake("zero-incoming-peer")
+                    && runtime.reserveIncomingScreenShake(
+                        "zero-incoming-peer"),
+                "Zero-second incoming cooldown still rate limited requests.");
+            result != 0) {
+            return result;
+        }
+
+        runtime.SetScreenShakeCooldownMilliseconds(1000);
+        runtime.setScreenShakeNow(start);
+        if (const int result = expect(
+                runtime.reserveOutgoingScreenShake("outgoing-peer"),
+                "First one-second outgoing screen shake was rejected.");
+            result != 0) {
+            return result;
+        }
+
+        runtime.setScreenShakeNow(start + std::chrono::milliseconds(999));
+        if (const int result = expect(
+                !runtime.reserveOutgoingScreenShake("outgoing-peer"),
+                "Outgoing screen shake used the receiver tolerance.");
+            result != 0) {
+            return result;
+        }
+
+        runtime.setScreenShakeNow(start + std::chrono::seconds(1));
+        if (const int result = expect(
+                runtime.reserveOutgoingScreenShake("outgoing-peer"),
+                "Outgoing screen shake did not use the local one-second setting.");
+            result != 0) {
+            return result;
+        }
+
+        runtime.SetScreenShakeCooldownMilliseconds(10000);
+        runtime.setScreenShakeNow(start + std::chrono::seconds(20));
+        if (const int result = expect(
+                runtime.reserveIncomingScreenShake("incoming-peer"),
+                "First incoming screen shake was rejected.");
+            result != 0) {
+            return result;
+        }
+
+        runtime.setScreenShakeNow(start + std::chrono::seconds(29)
+                                  + std::chrono::milliseconds(499));
+        if (const int result = expect(
+                !runtime.reserveIncomingScreenShake("incoming-peer"),
+                "Receiver accepted screen shake before its local cooldown boundary.");
+            result != 0) {
+            return result;
+        }
+
+        runtime.setScreenShakeNow(start + std::chrono::seconds(29)
+                                  + std::chrono::milliseconds(500));
+        if (const int result = expect(
+                runtime.reserveIncomingScreenShake("incoming-peer"),
+                "Receiver did not apply the local cooldown tolerance boundary.");
             result != 0) {
             return result;
         }
@@ -5706,6 +5809,11 @@ int main(int argc, char** argv)
                 rateLimitsIncomingScreenShakeBeforeUiAndPersistence();
             screenShakeResult != 0) {
             return screenShakeResult;
+        }
+        if (const int screenShakeCooldownResult =
+                appliesScreenShakeCooldownUsingEachDeviceLocalSetting();
+            screenShakeCooldownResult != 0) {
+            return screenShakeCooldownResult;
         }
         if (const int pagedHistoryResult = selectsPeerWithPagedHistory();
             pagedHistoryResult != 0) {

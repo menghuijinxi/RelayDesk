@@ -278,6 +278,8 @@ struct SkiaUiRuntimeBinding {
     bool notificationSoundEnabled = true;
     bool launchAtStartupEnabled = true;
     bool autoReceiveFilesEnabled = false;
+    int screenShakeCooldownMilliseconds =
+        relaydesk::storage::kDefaultScreenShakeCooldownMilliseconds;
     bool sendModeDropdownOpen = false;
     bool composerEmojiPickerOpen = false;
     int settingsCategory = 0;
@@ -594,6 +596,27 @@ bool saveStoredAutoReceiveFilesEnabled(bool enabled)
     } catch (const std::exception&) {
         return false;
     }
+}
+
+bool saveStoredScreenShakeCooldownMilliseconds(int milliseconds)
+{
+    try {
+        const auto paths = relaydesk::storage::createAppPaths();
+        relaydesk::storage::saveScreenShakeCooldownMilliseconds(paths,
+                                                                milliseconds);
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+std::string formatScreenShakeCooldown(int milliseconds)
+{
+    const int wholeSeconds = milliseconds / 1000;
+    if (milliseconds % 1000 == 0) {
+        return std::to_string(wholeSeconds) + " 秒";
+    }
+    return std::to_string(wholeSeconds) + ".5 秒";
 }
 
 bool loadStoredLaunchAtStartupEnabled()
@@ -3889,6 +3912,9 @@ void applySettingsView(skui::Runtime& runtime,
     (void)runtime.setTextById(
         "settings-auto-receive-label",
         binding.autoReceiveFilesEnabled ? "已启用" : "已关闭");
+    (void)runtime.setTextById(
+        "settings-screen-shake-cooldown-value",
+        formatScreenShakeCooldown(binding.screenShakeCooldownMilliseconds));
     (void)runtime.setTextById("settings-startup-status",
                               binding.startupStatus);
     (void)runtime.setStyleById(
@@ -3916,6 +3942,8 @@ void initializeSettingsState(skui::Runtime& runtime,
         ? localUser.GetHostName()
         : localUser.GetDisplayName();
     binding.settingsSavedProfileName = binding.settingsProfileName;
+    binding.screenShakeCooldownMilliseconds =
+        relayRuntime.GetScreenShakeCooldownMilliseconds();
     if (binding.backgroundController != nullptr) {
         binding.darkModeEnabled = loadStoredDarkModeEnabled();
         binding.launchAtStartupEnabled = loadSystemLaunchAtStartupEnabled()
@@ -3925,6 +3953,8 @@ void initializeSettingsState(skui::Runtime& runtime,
             binding.notificationSoundEnabled);
     }
     relayRuntime.SetAutoReceiveFilesEnabled(binding.autoReceiveFilesEnabled);
+    relayRuntime.SetScreenShakeCooldownMilliseconds(
+        binding.screenShakeCooldownMilliseconds);
     binding.settingsInitialized = true;
     (void)runtime.setValueById("settings-profile-name-input",
                                binding.settingsProfileName);
@@ -5004,6 +5034,30 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
             relayRuntime.SetAutoReceiveFilesEnabled(binding.autoReceiveFilesEnabled);
             (void)saveStoredAutoReceiveFilesEnabled(
                 binding.autoReceiveFilesEnabled);
+            applySettingsView(runtime, binding);
+        } else if (action == "settings-screen-shake-cooldown-minus") {
+            const int decreasedCooldown =
+                binding.screenShakeCooldownMilliseconds
+                - relaydesk::storage::kScreenShakeCooldownStepMilliseconds;
+            binding.screenShakeCooldownMilliseconds = std::max(
+                relaydesk::storage::kMinimumScreenShakeCooldownMilliseconds,
+                decreasedCooldown);
+            relayRuntime.SetScreenShakeCooldownMilliseconds(
+                binding.screenShakeCooldownMilliseconds);
+            (void)saveStoredScreenShakeCooldownMilliseconds(
+                binding.screenShakeCooldownMilliseconds);
+            applySettingsView(runtime, binding);
+        } else if (action == "settings-screen-shake-cooldown-plus") {
+            const int increasedCooldown =
+                binding.screenShakeCooldownMilliseconds
+                + relaydesk::storage::kScreenShakeCooldownStepMilliseconds;
+            binding.screenShakeCooldownMilliseconds = std::min(
+                relaydesk::storage::kMaximumScreenShakeCooldownMilliseconds,
+                increasedCooldown);
+            relayRuntime.SetScreenShakeCooldownMilliseconds(
+                binding.screenShakeCooldownMilliseconds);
+            (void)saveStoredScreenShakeCooldownMilliseconds(
+                binding.screenShakeCooldownMilliseconds);
             applySettingsView(runtime, binding);
         } else if (action == "settings-check-update") {
             binding.updateStatus = "检查更新功能占位，等待接入更新服务";
@@ -6621,6 +6675,12 @@ int captureSkiaUiPng(const CaptureOptions& options)
             html.find(R"(data-action="settings-startup-toggle")") ==
                 std::string::npos ||
             html.find(R"(data-action="settings-auto-receive-toggle")") ==
+                std::string::npos ||
+            html.find(R"(data-action="settings-screen-shake-cooldown-minus")") ==
+                std::string::npos ||
+            html.find(R"(data-action="settings-screen-shake-cooldown-plus")") ==
+                std::string::npos ||
+            html.find(R"(id="settings-screen-shake-cooldown-value")") ==
                 std::string::npos) {
             return 75;
         }

@@ -579,6 +579,11 @@ public:
     {
         autoReceiveFilesEnabled_.store(enabled);
     }
+    int GetScreenShakeCooldownMilliseconds() const
+    {
+        return screenShakeCooldownMilliseconds_.load();
+    }
+    void SetScreenShakeCooldownMilliseconds(int milliseconds);
     std::optional<AppUpdatePrompt> GetAppUpdatePrompt();
     bool GetAppUpdateExitRequested() const
     {
@@ -717,11 +722,15 @@ protected:
         const relaydesk::storage::ChatMessageRecord& record);
     void appendSelectedPeerTransientNotice(const PeerListItem& peer,
                                            std::string text);
+    bool tryStartOutgoingScreenShakeCooldown(const std::string& deviceId);
+    bool tryStartIncomingScreenShakeCooldown(const std::string& deviceId);
     bool tryStartScreenShakeCooldown(
         std::unordered_map<std::string,
                            std::chrono::steady_clock::time_point>& cooldowns,
         std::mutex& cooldownMutex,
-        const std::string& deviceId);
+        const std::string& deviceId,
+        std::chrono::steady_clock::duration minimumInterval);
+    std::chrono::milliseconds screenShakeCooldownInterval() const;
     void enqueueIncomingScreenShake(std::string senderDeviceId);
     void SetScreenShakeClockForTest(
         std::function<std::chrono::steady_clock::time_point()> clock)
@@ -786,6 +795,7 @@ protected:
     std::atomic<std::uint64_t> pendingUserNotificationCount_ = 0;
     bool storageAvailable_ = false;
     std::atomic_bool autoReceiveFilesEnabled_ = false;
+    std::atomic_int screenShakeCooldownMilliseconds_;
     bool discoveryStarted_ = false;
     bool selectedPeerHasMoreMessages_ = false;
     std::uint16_t discoveryUdpPort_ = 0;
