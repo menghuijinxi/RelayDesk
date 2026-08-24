@@ -1632,6 +1632,19 @@ public:
         drainPendingTransferProgressUpdates();
     }
 
+    void enqueueTransferProgressForTest(
+        relaydesk::runtime::PendingTransferProgressUpdate update)
+    {
+        enqueueTransferProgressUpdate(std::move(update));
+    }
+
+    std::vector<relaydesk::runtime::PendingTransferProgressUpdate>
+    pendingTransferProgressUpdatesForTest()
+    {
+        std::lock_guard lock(pendingTransferProgressUpdateMutex_);
+        return pendingTransferProgressUpdates_;
+    }
+
     void drainTransferCompletion()
     {
         drainPendingTransferUpdates();
@@ -3708,6 +3721,111 @@ int interruptsIncomingTransferWhenTcpStreamBreaksMidFrame()
 
     removeTestDataDirectory(appPaths);
     return 0;
+}
+
+int keepsActiveTransferStateWhenSwitchingBackToConversation()
+{
+    const relaydesk::storage::AppPaths appPaths =
+        relaydesk::storage::createAppPaths();
+    removeTestDataDirectory(appPaths);
+    relaydesk::storage::ensureAppDirectories(appPaths);
+
+    const std::string messageId = "active-switch-message";
+    const std::string partId = "active-switch-part";
+    const std::string transferId = "active-switch-transfer";
+    const std::filesystem::path payloadPath =
+        appPaths.GetTempTransfersDirectory() / "active-switch.bin";
+    writeBytes(payloadPath, {'A', 'B'});
+
+    {
+        TestableRelayDeskRuntime runtime(makeTransferRuntimeOptions());
+        if (!runtime.GetStartupErrorMessage().empty()) {
+            return fail("Runtime startup failed: "
+                        + runtime.GetStartupErrorMessage());
+        }
+
+        runtime.receivePeerProfile(makeTransferPeerProfile(0), true);
+        runtime.receivePeerProfile(
+            makeTransferPeerProfileForDevice("runtime-other-peer",
+                                             "Runtime Other Peer",
+                                             0),
+            true);
+
+        relaydesk::storage::ChatMessageRecord record =
+            makeIncomingFileTransferRecord(runtime.GetLocalUser(),
+                                           messageId,
+                                           partId,
+                                           transferId);
+        std::vector<relaydesk::storage::ChatMessagePart> parts =
+            record.GetParts();
+        parts.front().SetTransferState(
+            relaydesk::storage::TransferState::Transferring);
+        parts.front().SetTransferredSize(2);
+        record.SetParts(std::move(parts));
+        relaydesk::storage::appendChatMessage(appPaths,
+                                              "runtime-transfer-peer",
+                                              record);
+        runtime.seedAcceptedIncomingTransfer(messageId,
+                                             partId,
+                                             transferId,
+                                             payloadPath,
+                                             2);
+
+        runtime.selectPeerForTest("runtime-other-peer");
+        runtime.selectPeerForTest("runtime-transfer-peer");
+
+        const auto& messages = runtime.GetSelectedPeerMessages();
+        if (const int result = expect(!messages.empty(),
+                                      "Active transfer conversation did not load.");
+            result != 0) {
+            return result;
+        }
+        const auto& part = messages.front().GetParts().front();
+        if (const int result =
+                expect(part.GetTransferState().has_value()
+                           && part.GetTransferState().value()
+                               == relaydesk::storage::TransferState::Transferring,
+                       "Active transfer was incorrectly recovered as interrupted.");
+            result != 0) {
+            return result;
+        }
+        if (const int result = expect(part.GetTransferredSize().has_value()
+                                          && part.GetTransferredSize().value() == 2,
+                                      "Active transfer progress was not kept.");
+            result != 0) {
+            return result;
+        }
+    }
+
+    removeTestDataDirectory(appPaths);
+    return 0;
+}
+
+int coalescesPendingTransferProgressUpdates()
+{
+    TestableRelayDeskRuntime runtime(makeTestRuntimeOptions());
+    relaydesk::runtime::PendingTransferProgressUpdate first;
+    first.SetMessageId("progress-message");
+    first.SetPartId("progress-part");
+    first.SetTransferId("progress-transfer");
+    first.SetTransferredSize(1);
+    runtime.enqueueTransferProgressForTest(first);
+
+    relaydesk::runtime::PendingTransferProgressUpdate second;
+    second.SetMessageId("progress-message");
+    second.SetPartId("progress-part");
+    second.SetTransferId("progress-transfer");
+    second.SetTransferredSize(3);
+    runtime.enqueueTransferProgressForTest(second);
+
+    const auto updates = runtime.pendingTransferProgressUpdatesForTest();
+    if (const int result = expect(updates.size() == 1u,
+                                  "Transfer progress updates were not coalesced.");
+        result != 0) {
+        return result;
+    }
+    return expect(updates.front().GetTransferredSize() == 3,
+                  "Coalesced transfer progress did not keep the latest size.");
 }
 
 int runProcessUpdateChild(std::uint16_t sourcePort,
@@ -5888,6 +6006,16 @@ int main(int argc, char** argv)
                 sendsOutgoingFolderTransferWithPackageProgressAndSourcePath();
             outgoingFolderResult != 0) {
             return outgoingFolderResult;
+        }
+        if (const int activeTransferSwitchResult =
+                keepsActiveTransferStateWhenSwitchingBackToConversation();
+            activeTransferSwitchResult != 0) {
+            return activeTransferSwitchResult;
+        }
+        if (const int coalescedProgressResult =
+                coalescesPendingTransferProgressUpdates();
+            coalescedProgressResult != 0) {
+            return coalescedProgressResult;
         }
         if (const int tcpBreakResult =
                 interruptsIncomingTransferWhenTcpStreamBreaksMidFrame();

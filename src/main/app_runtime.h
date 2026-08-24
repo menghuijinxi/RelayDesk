@@ -673,6 +673,7 @@ protected:
     void syncSelectedPeer();
     void setSelectedPeerDeviceId(std::string deviceId);
     void loadSelectedPeerMessages();
+    bool isTransferActive(const std::string& transferId);
     void enqueueIncomingChatMessage(
         relaydesk::storage::ChatMessageRecord record);
     void handleIncomingPeerFrame(relaydesk::net::PeerFrame frame);

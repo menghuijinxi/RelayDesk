@@ -539,7 +539,8 @@ relaydesk::storage::ChatMessageRecord makeRetryMessageRecord(
 }
 
 bool recoverInterruptedTransferParts(
-    relaydesk::storage::ChatMessageRecord& record)
+    relaydesk::storage::ChatMessageRecord& record,
+    const std::function<bool(const std::string&)>& isTransferActive)
 {
     std::vector<relaydesk::storage::ChatMessagePart> parts = record.GetParts();
     bool recovered = false;
@@ -548,6 +549,10 @@ bool recoverInterruptedTransferParts(
             || !part.GetTransferState().has_value()
             || part.GetTransferState().value()
                 != relaydesk::storage::TransferState::Transferring) {
+            continue;
+        }
+        if (part.GetTransferId().has_value()
+            && isTransferActive(part.GetTransferId().value())) {
             continue;
         }
 
@@ -748,6 +753,14 @@ bool hasSendableTransferPartState(
     }
 
     return false;
+}
+
+bool isSameTransferProgressTarget(const PendingTransferProgressUpdate& left,
+                                  const PendingTransferProgressUpdate& right)
+{
+    return left.GetTransferId() == right.GetTransferId()
+        && left.GetMessageId() == right.GetMessageId()
+        && left.GetPartId() == right.GetPartId();
 }
 
 relaydesk::storage::TransferState transferSendFailureState(
@@ -4506,7 +4519,11 @@ void RelayDeskRuntime::loadSelectedPeerMessages()
         selectedPeerHasMoreMessages_ = result.GetHasMoreRecords();
         bool recovered = false;
         for (auto& record : selectedPeerMessages_) {
-            if (recoverInterruptedTransferParts(record)) {
+            if (recoverInterruptedTransferParts(
+                    record,
+                    [this](const std::string& transferId) {
+                        return isTransferActive(transferId);
+                    })) {
                 (void)relaydesk::storage::replaceChatMessage(
                     appPaths,
                     selectedPeerDeviceId_,
@@ -4558,7 +4575,11 @@ void RelayDeskRuntime::loadMoreSelectedPeerMessages()
             result.GetRecords();
         bool recovered = false;
         for (auto& record : olderMessages) {
-            if (recoverInterruptedTransferParts(record)) {
+            if (recoverInterruptedTransferParts(
+                    record,
+                    [this](const std::string& transferId) {
+                        return isTransferActive(transferId);
+                    })) {
                 (void)relaydesk::storage::replaceChatMessage(
                     appPaths,
                     selectedPeerDeviceId_,
@@ -4590,6 +4611,25 @@ void RelayDeskRuntime::loadMoreSelectedPeerMessages()
     } catch (const std::exception& error) {
         setStartupError(error.what());
     }
+}
+
+bool RelayDeskRuntime::isTransferActive(const std::string& transferId)
+{
+    if (transferId.empty()) {
+        return false;
+    }
+
+#if defined(RELAYDESK_HAS_BOOST_ASIO)
+    {
+        std::lock_guard lock(pendingTransferMutex_);
+        if (pendingIncomingTransfers_.contains(transferId)) {
+            return true;
+        }
+    }
+    return ::core::async::running("relaydesk.transfer.send." + transferId);
+#else
+    return false;
+#endif
 }
 
 bool RelayDeskRuntime::loadSelectedPeerMessagesAround(const std::string& messageId)
@@ -5093,7 +5133,11 @@ void RelayDeskRuntime::handleIncomingPeerFrame(relaydesk::net::PeerFrame frame)
                             offer.GetMessageId());
                     }
                     if (record.has_value()) {
-                        if (recoverInterruptedTransferParts(record.value())) {
+                        if (recoverInterruptedTransferParts(
+                                record.value(),
+                                [this](const std::string& transferId) {
+                                    return isTransferActive(transferId);
+                                })) {
                             std::lock_guard lock(chatHistoryStorageMutex_);
                             (void)relaydesk::storage::replaceChatMessage(
                                 appPaths,
@@ -5787,11 +5831,25 @@ void RelayDeskRuntime::drainPendingTransferStateUpdates()
 void RelayDeskRuntime::enqueueTransferProgressUpdate(
     PendingTransferProgressUpdate update)
 {
+    bool needsRefresh = false;
     {
         std::lock_guard lock(pendingTransferProgressUpdateMutex_);
-        pendingTransferProgressUpdates_.push_back(std::move(update));
+        const auto existing = std::find_if(
+            pendingTransferProgressUpdates_.begin(),
+            pendingTransferProgressUpdates_.end(),
+            [&update](const PendingTransferProgressUpdate& pendingUpdate) {
+                return isSameTransferProgressTarget(pendingUpdate, update);
+            });
+        if (existing != pendingTransferProgressUpdates_.end()) {
+            existing->SetTransferredSize(update.GetTransferredSize());
+        } else {
+            pendingTransferProgressUpdates_.push_back(std::move(update));
+            needsRefresh = true;
+        }
     }
-    requestUiRefresh();
+    if (needsRefresh) {
+        requestUiRefresh();
+    }
 }
 
 void RelayDeskRuntime::drainPendingTransferProgressUpdates()

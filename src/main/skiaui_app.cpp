@@ -298,6 +298,7 @@ struct SkiaUiRuntimeBinding {
     std::optional<relaydesk::storage::ChatMessageQuote> composerQuote;
     skui::Selection composerSelection;
     std::string lastDeviceSignature;
+    std::string lastTransferProgressSignature;
 };
 
 SkiaUiRuntimeBinding* gRuntimeBinding = nullptr;
@@ -362,6 +363,36 @@ std::string indexedId(std::string_view prefix, int index)
 {
     std::string id(prefix);
     id += std::to_string(index);
+    return id;
+}
+
+std::string htmlIdFragment(std::string_view text)
+{
+    constexpr char kHexDigits[] = "0123456789abcdef";
+    std::string fragment;
+    fragment.reserve(text.size());
+    for (const unsigned char character : text) {
+        if (std::isalnum(character) || character == '-' || character == '_') {
+            fragment += static_cast<char>(character);
+        } else {
+            fragment += '_';
+            fragment += kHexDigits[(character >> 4u) & 0x0Fu];
+            fragment += kHexDigits[character & 0x0Fu];
+        }
+    }
+    return fragment;
+}
+
+std::string transferPartElementId(std::string_view messageId,
+                                  std::string_view partId,
+                                  std::string_view suffix)
+{
+    std::string id = "transfer-";
+    id += htmlIdFragment(messageId);
+    id += '-';
+    id += htmlIdFragment(partId);
+    id += '-';
+    id += suffix;
     return id;
 }
 
@@ -3004,15 +3035,23 @@ std::string makeTransferMessageMarkup(
     html += R"(<div class="file-icon doc-icon doc-icon-zip"><div class="doc-fold"></div></div>)";
     html += R"(<div class="transfer-content"><selectable class="file-name">)";
     html += escapeHtml(title);
+    const std::string progressPercentId =
+        transferPartElementId(message.GetMessageId(), part.GetPartId(), "percent");
+    const std::string progressBarId =
+        transferPartElementId(message.GetMessageId(), part.GetPartId(), "progress");
     html += R"(</selectable><div class="transfer-summary"><div class="file-size">)";
     html += escapeHtml(sizeText);
-    html += R"(</div><div class="transfer-percent)";
+    html += R"(</div><div id=")";
+    html += escapeHtml(progressPercentId);
+    html += R"(" class="transfer-percent)";
     if (progress == 100) {
         html += " done";
     }
     html += R"(">)";
     html += std::to_string(progress);
-    html += R"(%</div></div><progress class="progress-main)";
+    html += R"(%</div></div><progress id=")";
+    html += escapeHtml(progressBarId);
+    html += R"(" class="progress-main)";
     if (warning) {
         html += " warning";
     }
@@ -3258,9 +3297,17 @@ std::string makeDocumentTransferPartMarkup(
     html += escapeHtml(sizeText);
     html += " · ";
     html += escapeHtml(stateText);
-    html += R"(</div><div class="message-document-file-percent">)";
+    const std::string progressPercentId =
+        transferPartElementId(message.GetMessageId(), part.GetPartId(), "percent");
+    const std::string progressBarId =
+        transferPartElementId(message.GetMessageId(), part.GetPartId(), "progress");
+    html += R"(</div><div id=")";
+    html += escapeHtml(progressPercentId);
+    html += R"(" class="message-document-file-percent">)";
     html += std::to_string(progress);
-    html += R"(%</div></div><progress class="message-document-progress)";
+    html += R"(%</div></div><progress id=")";
+    html += escapeHtml(progressBarId);
+    html += R"(" class="message-document-progress)";
     if (warning) {
         html += " warning";
     }
@@ -4155,10 +4202,6 @@ std::string makeChatSignature(
                 signature += ':';
                 signature += std::to_string(part.GetFileSize().value());
             }
-            if (part.GetTransferredSize().has_value()) {
-                signature += ':';
-                signature += std::to_string(part.GetTransferredSize().value());
-            }
             if (part.GetTransferState().has_value()) {
                 signature += ':';
                 signature +=
@@ -4193,6 +4236,82 @@ std::string makeRelayDeskUiSignature(
     signature += "--app-update--\n";
     signature += makeAppUpdatePromptSignature(updatePrompt);
     return signature;
+}
+
+bool needsTransferProgressPatch(
+    const relaydesk::storage::ChatMessagePart& part)
+{
+    return part.GetTransferState().has_value()
+        && part.GetTransferState().value()
+            == relaydesk::storage::TransferState::Transferring
+        && part.GetTransferredSize().has_value();
+}
+
+std::string makeVisibleTransferProgressSignature(
+    const relaydesk::runtime::RelayDeskRuntime& relayRuntime)
+{
+    std::string signature;
+    for (const auto& message : relayRuntime.GetSelectedPeerMessages()) {
+        for (const auto& part : message.GetParts()) {
+            if (!needsTransferProgressPatch(part)) {
+                continue;
+            }
+            signature += message.GetMessageId();
+            signature += '|';
+            signature += part.GetPartId();
+            signature += '|';
+            signature += std::to_string(transferProgressPercent(part));
+            signature += '\n';
+        }
+    }
+    return signature;
+}
+
+void addVisibleTransferProgressUpdates(
+    skui::RuntimeUpdates& updates,
+    const relaydesk::storage::ChatMessageRecord& message,
+    const relaydesk::storage::ChatMessagePart& part)
+{
+    const std::string progressText =
+        std::to_string(transferProgressPercent(part)) + "%";
+    addTextUpdate(
+        updates,
+        transferPartElementId(message.GetMessageId(), part.GetPartId(), "percent"),
+        progressText);
+    addAttributeUpdate(
+        updates,
+        transferPartElementId(message.GetMessageId(), part.GetPartId(), "progress"),
+        "value",
+        std::to_string(transferProgressPercent(part)));
+}
+
+bool applyVisibleTransferProgressUpdates(SkiaUiRuntimeBinding& binding)
+{
+    if (binding.relayRuntime == nullptr || binding.skiaRuntime == nullptr) {
+        return false;
+    }
+
+    const std::string nextSignature =
+        makeVisibleTransferProgressSignature(*binding.relayRuntime);
+    if (nextSignature == binding.lastTransferProgressSignature) {
+        return false;
+    }
+    binding.lastTransferProgressSignature = nextSignature;
+
+    skui::RuntimeUpdates updates;
+    for (const auto& message : binding.relayRuntime->GetSelectedPeerMessages()) {
+        for (const auto& part : message.GetParts()) {
+            if (needsTransferProgressPatch(part)) {
+                addVisibleTransferProgressUpdates(updates, message, part);
+            }
+        }
+    }
+    if (updates.texts.empty() && updates.attributes.empty()) {
+        return false;
+    }
+
+    binding.skiaRuntime->applyUpdates(updates);
+    return true;
 }
 
 void hideDeviceRow(skui::RuntimeUpdates& updates, int rowIndex)
@@ -5317,7 +5436,7 @@ bool refreshRelayDeskDevicePanelIfChanged(SkiaUiRuntimeBinding& binding,
     if (!force && !scrollChatToLatest &&
         !binding.chatHistoryPrependPending &&
         nextSignature == binding.lastDeviceSignature) {
-        return false;
+        return applyVisibleTransferProgressUpdates(binding);
     }
 
     binding.lastDeviceSignature = nextSignature;
@@ -5330,6 +5449,7 @@ bool refreshRelayDeskDevicePanelIfChanged(SkiaUiRuntimeBinding& binding,
                               *binding.relayRuntime,
                               binding,
                               scrollUpdateMode);
+    (void)applyVisibleTransferProgressUpdates(binding);
     applyAppUpdatePrompt(*binding.skiaRuntime, updatePrompt);
     applySettingsView(*binding.skiaRuntime, binding);
     binding.chatInitialized = true;
