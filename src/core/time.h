@@ -7,6 +7,8 @@ namespace relaydesk::core {
 
 std::string formatUtcTimestamp(std::chrono::system_clock::time_point timePoint);
 std::chrono::system_clock::time_point parseUtcTimestamp(const std::string& timestamp);
+std::string formatLocalTimeOfDay(std::chrono::system_clock::time_point timePoint);
+std::string formatUtcTimestampAsLocalTimeOfDay(const std::string& timestamp);
 std::string currentUtcTimestamp();
 
 }

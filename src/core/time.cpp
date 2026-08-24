@@ -95,6 +95,31 @@ std::chrono::system_clock::time_point parseUtcTimestamp(const std::string& times
         timePoint);
 }
 
+std::string formatLocalTimeOfDay(std::chrono::system_clock::time_point timePoint)
+{
+    const std::time_t timestamp = std::chrono::system_clock::to_time_t(timePoint);
+    std::tm localTime{};
+
+#if defined(_WIN32)
+    if (localtime_s(&localTime, &timestamp) != 0) {
+        throw std::runtime_error("Failed to convert timestamp to local time.");
+    }
+#else
+    if (localtime_r(&timestamp, &localTime) == nullptr) {
+        throw std::runtime_error("Failed to convert timestamp to local time.");
+    }
+#endif
+
+    std::ostringstream output;
+    output << std::put_time(&localTime, "%H:%M");
+    return output.str();
+}
+
+std::string formatUtcTimestampAsLocalTimeOfDay(const std::string& timestamp)
+{
+    return formatLocalTimeOfDay(parseUtcTimestamp(timestamp));
+}
+
 std::string currentUtcTimestamp()
 {
     return formatUtcTimestamp(std::chrono::system_clock::now());

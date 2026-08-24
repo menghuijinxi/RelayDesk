@@ -3,7 +3,10 @@
 
 #include <chrono>
 #include <cctype>
+#include <ctime>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -52,6 +55,27 @@ bool hasUuidV4Shape(const std::string& value)
         && (variant == '8' || variant == '9' || variant == 'a' || variant == 'b');
 }
 
+std::string expectedLocalTimeOfDay(const std::string& timestamp)
+{
+    const std::chrono::system_clock::time_point timePoint =
+        relaydesk::core::parseUtcTimestamp(timestamp);
+    const std::time_t rawTime =
+        std::chrono::system_clock::to_time_t(timePoint);
+    std::tm localTime{};
+#if defined(_WIN32)
+    if (localtime_s(&localTime, &rawTime) != 0) {
+        throw std::runtime_error("Failed to convert timestamp to local time.");
+    }
+#else
+    if (localtime_r(&rawTime, &localTime) == nullptr) {
+        throw std::runtime_error("Failed to convert timestamp to local time.");
+    }
+#endif
+    std::ostringstream output;
+    output << std::put_time(&localTime, "%H:%M");
+    return output.str();
+}
+
 int formatsUnixEpochAsUtc()
 {
     const auto epoch = std::chrono::system_clock::from_time_t(0);
@@ -66,6 +90,14 @@ int parsesUtcTimestamp()
     return expect(relaydesk::core::formatUtcTimestamp(parsed)
                       == "1970-01-02T03:04:05Z",
                   "UTC timestamp parse mismatch.");
+}
+
+int formatsUtcTimestampAsLocalTimeOfDay()
+{
+    constexpr const char* kTimestamp = "2026-08-24T07:49:00Z";
+    return expect(relaydesk::core::formatUtcTimestampAsLocalTimeOfDay(kTimestamp)
+                      == expectedLocalTimeOfDay(kTimestamp),
+                  "UTC timestamp local time-of-day format mismatch.");
 }
 
 int rejectsInvalidUtcTimestamp()
@@ -107,6 +139,10 @@ int main()
     }
 
     if (const int result = parsesUtcTimestamp(); result != 0) {
+        return result;
+    }
+
+    if (const int result = formatsUtcTimestampAsLocalTimeOfDay(); result != 0) {
         return result;
     }
 

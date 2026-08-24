@@ -43,6 +43,7 @@
 
 #include "core/app_version.h"
 #include "core/platform/async.h"
+#include "core/time.h"
 #include "core/uuid.h"
 #include "main/app_runtime.h"
 #include "main/image_attachment_store.h"
@@ -2140,6 +2141,11 @@ bool isMessageContextMenuEvent(const skui::ElementEvent& event)
 std::string shortMessageTime(const relaydesk::storage::ChatMessageRecord& message)
 {
     const std::string& createdAt = message.GetCreatedAt();
+    try {
+        return relaydesk::core::formatUtcTimestampAsLocalTimeOfDay(createdAt);
+    } catch (const std::exception&) {
+    }
+
     if (createdAt.size() >= 16 && createdAt[10] == 'T') {
         return createdAt.substr(11, 5);
     }
