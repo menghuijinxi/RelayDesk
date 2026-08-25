@@ -220,11 +220,96 @@ void writeBytes(const std::filesystem::path& path,
                  static_cast<std::streamsize>(bytes.size()));
 }
 
+void appendLittleEndianU16(std::vector<std::uint8_t>& bytes,
+                           std::uint16_t value)
+{
+    bytes.push_back(static_cast<std::uint8_t>(value & 0xFFu));
+    bytes.push_back(static_cast<std::uint8_t>((value >> 8u) & 0xFFu));
+}
+
+void appendLittleEndianU32(std::vector<std::uint8_t>& bytes,
+                           std::uint32_t value)
+{
+    bytes.push_back(static_cast<std::uint8_t>(value & 0xFFu));
+    bytes.push_back(static_cast<std::uint8_t>((value >> 8u) & 0xFFu));
+    bytes.push_back(static_cast<std::uint8_t>((value >> 16u) & 0xFFu));
+    bytes.push_back(static_cast<std::uint8_t>((value >> 24u) & 0xFFu));
+}
+
+std::vector<std::uint8_t> makeTestBmpBytes(std::uint32_t width,
+                                           std::uint32_t height)
+{
+    constexpr std::uint32_t kFileHeaderSize = 14u;
+    constexpr std::uint32_t kInfoHeaderSize = 40u;
+    constexpr std::uint32_t kPixelDataOffset = kFileHeaderSize + kInfoHeaderSize;
+    const std::uint32_t rowStride = ((width * 3u + 3u) / 4u) * 4u;
+    const std::uint32_t pixelDataSize = rowStride * height;
+    const std::uint32_t fileSize = kPixelDataOffset + pixelDataSize;
+    const std::uint32_t widthDenominator = width > 1u ? width - 1u : 1u;
+    const std::uint32_t heightDenominator = height > 1u ? height - 1u : 1u;
+
+    std::vector<std::uint8_t> bytes;
+    bytes.reserve(fileSize);
+    appendLittleEndianU16(bytes, 0x4D42u);
+    appendLittleEndianU32(bytes, fileSize);
+    appendLittleEndianU16(bytes, 0u);
+    appendLittleEndianU16(bytes, 0u);
+    appendLittleEndianU32(bytes, kPixelDataOffset);
+
+    appendLittleEndianU32(bytes, kInfoHeaderSize);
+    appendLittleEndianU32(bytes, width);
+    appendLittleEndianU32(bytes, height);
+    appendLittleEndianU16(bytes, 1u);
+    appendLittleEndianU16(bytes, 24u);
+    appendLittleEndianU32(bytes, 0u);
+    appendLittleEndianU32(bytes, pixelDataSize);
+    appendLittleEndianU32(bytes, 2835u);
+    appendLittleEndianU32(bytes, 2835u);
+    appendLittleEndianU32(bytes, 0u);
+    appendLittleEndianU32(bytes, 0u);
+
+    for (std::uint32_t row = 0; row < height; ++row) {
+        const std::uint32_t y = height - 1u - row;
+        const std::size_t rowOffset = bytes.size();
+        for (std::uint32_t x = 0; x < width; ++x) {
+            bytes.push_back(
+                static_cast<std::uint8_t>((x * 255u) / widthDenominator));
+            bytes.push_back(
+                static_cast<std::uint8_t>((y * 255u) / heightDenominator));
+            bytes.push_back(
+                static_cast<std::uint8_t>(((x + y) * 127u)
+                                          / (width + height)));
+        }
+        bytes.resize(rowOffset + rowStride, 0u);
+    }
+    return bytes;
+}
+
 std::vector<std::uint8_t> readBytes(const std::filesystem::path& path)
 {
     std::ifstream input(path, std::ios::binary);
     return std::vector<std::uint8_t>(std::istreambuf_iterator<char>(input),
                                      std::istreambuf_iterator<char>());
+}
+
+bool directoryContainsRegularFile(const std::filesystem::path& directory)
+{
+    std::error_code error;
+    if (!std::filesystem::exists(directory, error) || error) {
+        return false;
+    }
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(
+             directory, std::filesystem::directory_options::skip_permission_denied,
+             error)) {
+        if (error) {
+            return false;
+        }
+        if (entry.is_regular_file(error) && !error) {
+            return true;
+        }
+        error.clear();
+    }
+    return false;
 }
 
 void writeTextFile(const std::filesystem::path& path, const std::string& text)
@@ -857,6 +942,28 @@ relaydesk::net::TransferOfferMessage makeTransferOffer(
     return message;
 }
 
+relaydesk::net::TransferOfferMessage makeImageTransferOffer(
+    const std::string& messageId,
+    const std::string& partId,
+    const std::string& transferId,
+    const std::string& fileName,
+    std::uintmax_t fileSize,
+    std::optional<std::string> sha256 = std::nullopt)
+{
+    relaydesk::net::TransferOfferMessage message;
+    message.SetMessageId(messageId);
+    message.SetPartId(partId);
+    message.SetTransferId(transferId);
+    message.SetSenderDeviceId("runtime-transfer-peer");
+    message.SetFileName(fileName);
+    message.SetFileSize(fileSize);
+    message.SetImageTransfer(true);
+    if (sha256.has_value()) {
+        message.SetSha256(std::move(sha256.value()));
+    }
+    return message;
+}
+
 relaydesk::net::TransferChunkMessage makeTransferChunk(
     const std::string& messageId,
     const std::string& partId,
@@ -898,6 +1005,24 @@ relaydesk::net::TransferCompleteMessage makeTransferComplete(
     message.SetPartId(partId);
     message.SetTransferId(transferId);
     message.SetFileSize(4);
+    return message;
+}
+
+relaydesk::net::TransferCompleteMessage makeSizedTransferComplete(
+    const std::string& messageId,
+    const std::string& partId,
+    const std::string& transferId,
+    std::uintmax_t fileSize,
+    std::optional<std::string> sha256 = std::nullopt)
+{
+    relaydesk::net::TransferCompleteMessage message;
+    message.SetMessageId(messageId);
+    message.SetPartId(partId);
+    message.SetTransferId(transferId);
+    message.SetFileSize(fileSize);
+    if (sha256.has_value()) {
+        message.SetSha256(std::move(sha256.value()));
+    }
     return message;
 }
 
@@ -1189,6 +1314,39 @@ relaydesk::storage::ChatMessageRecord makeIncomingFileTransferRecord(
     record.SetSenderDisplayNameSnapshot("Runtime Transfer Peer");
     record.SetReceiverDisplayNameSnapshot(localUser.GetDisplayName());
     record.SetCreatedAt("2026-06-22T11:00:00Z");
+    record.SetDeliveryState(relaydesk::storage::DeliveryState::Received);
+    record.SetParts({part});
+    return record;
+}
+
+relaydesk::storage::ChatMessageRecord makeIncomingImageTransferRecord(
+    const relaydesk::runtime::LocalUserSummary& localUser,
+    const std::string& messageId,
+    const std::string& partId,
+    const std::string& transferId,
+    const std::string& fileName,
+    std::uintmax_t fileSize)
+{
+    relaydesk::storage::ChatMessagePart part;
+    part.SetPartId(partId);
+    part.SetType(relaydesk::storage::MessagePartType::Image);
+    part.SetTransferId(transferId);
+    part.SetTransferState(relaydesk::storage::TransferState::Offered);
+    part.SetFileName(fileName);
+    part.SetFileSize(fileSize);
+    part.SetTransferredSize(0);
+
+    relaydesk::storage::ChatMessageRecord record;
+    record.SetMessageId(messageId);
+    record.SetConversationId(
+        relaydesk::storage::makeDirectConversationId(localUser.GetDeviceId(),
+                                                     "runtime-transfer-peer"));
+    record.SetDirection(relaydesk::storage::MessageDirection::Incoming);
+    record.SetSenderDeviceId("runtime-transfer-peer");
+    record.SetReceiverDeviceId(localUser.GetDeviceId());
+    record.SetSenderDisplayNameSnapshot("Runtime Transfer Peer");
+    record.SetReceiverDisplayNameSnapshot(localUser.GetDisplayName());
+    record.SetCreatedAt("2026-06-22T11:30:00Z");
     record.SetDeliveryState(relaydesk::storage::DeliveryState::Received);
     record.SetParts({part});
     return record;
@@ -3279,6 +3437,195 @@ int acceptsIncomingFolderTransferAndExtractsPayload()
                            && part.GetLocalPath().value()
                                == makeWorkRelativePath(appPaths, targetRoot),
                        "Incoming folder local path mismatch.");
+            result != 0) {
+            return result;
+        }
+    }
+
+    removeTestDataDirectory(appPaths);
+    return 0;
+}
+
+int receivesImageFileTransferIntoInboxWithoutImageCacheCopy()
+{
+    const relaydesk::storage::AppPaths appPaths =
+        relaydesk::storage::createAppPaths();
+    removeTestDataDirectory(appPaths);
+    relaydesk::storage::ensureAppDirectories(appPaths);
+
+    const std::string messageId = "incoming-image-message";
+    const std::string partId = "incoming-image-part";
+    const std::string transferId = "incoming-image-transfer";
+    const std::string fileName = "camera-photo.bmp";
+    const std::string sha256 = "sender-image-sha256";
+    const std::vector<std::uint8_t> payload = makeTestBmpBytes(8u, 6u);
+    const std::filesystem::path targetPath =
+        appPaths.GetInboxDirectory() / fileName;
+
+    {
+        TestableRelayDeskRuntime runtime;
+        if (!runtime.GetStartupErrorMessage().empty()) {
+            return fail("Runtime startup failed: "
+                        + runtime.GetStartupErrorMessage());
+        }
+
+        runtime.loadSelectedTransferRecord(
+            makeIncomingImageTransferRecord(runtime.GetLocalUser(),
+                                            messageId,
+                                            partId,
+                                            transferId,
+                                            fileName,
+                                            payload.size()));
+
+        runtime.receivePeerFrame(relaydesk::net::makeTransferOfferFrame(
+            makeImageTransferOffer(messageId,
+                                   partId,
+                                   transferId,
+                                   fileName,
+                                   payload.size())));
+        runtime.drainTransferStateAndProgress();
+        runtime.receivePeerFrame(relaydesk::net::makeTransferChunkFrame(
+            makeTransferChunk(messageId, partId, transferId, 0), payload));
+        runtime.receivePeerFrame(relaydesk::net::makeTransferCompleteFrame(
+            makeSizedTransferComplete(messageId,
+                                      partId,
+                                      transferId,
+                                      payload.size(),
+                                      sha256)));
+        runtime.drainTransferCompletion();
+
+        if (const int result = expect(readBytes(targetPath) == payload,
+                                      "Incoming image file was not saved to Inbox with its original name.");
+            result != 0) {
+            return result;
+        }
+
+        const auto& messages = runtime.GetSelectedPeerMessages();
+        if (const int result = expect(!messages.empty(),
+                                      "Incoming image message was not retained.");
+            result != 0) {
+            return result;
+        }
+        const auto& part = messages.front().GetParts().front();
+        if (const int result =
+                expect(part.GetTransferState().has_value()
+                           && part.GetTransferState().value()
+                                  == relaydesk::storage::TransferState::Completed,
+                       "Incoming image transfer did not complete.");
+            result != 0) {
+            return result;
+        }
+        if (const int result = expect(part.GetFileName().has_value()
+                                          && part.GetFileName().value() == fileName,
+                                      "Incoming image file name was changed.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(part.GetLocalPath().has_value()
+                           && part.GetLocalPath().value()
+                                  == makeWorkRelativePath(appPaths, targetPath),
+                       "Incoming image local path does not point to Inbox.");
+            result != 0) {
+            return result;
+        }
+        if (const int result = expect(part.GetSha256().has_value()
+                                          && part.GetSha256().value() == sha256,
+                                      "Incoming image SHA-256 was not preserved.");
+            result != 0) {
+            return result;
+        }
+        if (const int result = expect(
+                !directoryContainsRegularFile(appPaths.GetImageBlobsDirectory()),
+                "Incoming image was also copied to the image blob cache.");
+            result != 0) {
+            return result;
+        }
+    }
+
+    removeTestDataDirectory(appPaths);
+    return 0;
+}
+
+int receivesGeneratedClipboardImageTransferWithHashFileName()
+{
+    const relaydesk::storage::AppPaths appPaths =
+        relaydesk::storage::createAppPaths();
+    removeTestDataDirectory(appPaths);
+    relaydesk::storage::ensureAppDirectories(appPaths);
+
+    const std::string messageId = "incoming-clipboard-image-message";
+    const std::string partId = "incoming-clipboard-image-part";
+    const std::string transferId = "incoming-clipboard-image-transfer";
+    const std::string offeredFileName = "clipboard.bmp";
+    const std::string sha256 =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const std::string expectedFileName = sha256 + ".bmp";
+    const std::vector<std::uint8_t> payload = makeTestBmpBytes(4u, 4u);
+    const std::filesystem::path targetPath =
+        appPaths.GetInboxDirectory() / expectedFileName;
+
+    {
+        TestableRelayDeskRuntime runtime;
+        if (!runtime.GetStartupErrorMessage().empty()) {
+            return fail("Runtime startup failed: "
+                        + runtime.GetStartupErrorMessage());
+        }
+
+        runtime.loadSelectedTransferRecord(
+            makeIncomingImageTransferRecord(runtime.GetLocalUser(),
+                                            messageId,
+                                            partId,
+                                            transferId,
+                                            offeredFileName,
+                                            payload.size()));
+
+        runtime.receivePeerFrame(relaydesk::net::makeTransferOfferFrame(
+            makeImageTransferOffer(messageId,
+                                   partId,
+                                   transferId,
+                                   offeredFileName,
+                                   payload.size(),
+                                   sha256)));
+        runtime.drainTransferStateAndProgress();
+        runtime.receivePeerFrame(relaydesk::net::makeTransferChunkFrame(
+            makeTransferChunk(messageId, partId, transferId, 0), payload));
+        runtime.receivePeerFrame(relaydesk::net::makeTransferCompleteFrame(
+            makeSizedTransferComplete(messageId,
+                                      partId,
+                                      transferId,
+                                      payload.size(),
+                                      sha256)));
+        runtime.drainTransferCompletion();
+
+        if (const int result = expect(readBytes(targetPath) == payload,
+                                      "Clipboard image was not saved with its hash file name.");
+            result != 0) {
+            return result;
+        }
+
+        const auto& part = runtime.GetSelectedPeerMessages()
+                               .front()
+                               .GetParts()
+                               .front();
+        if (const int result = expect(part.GetFileName().has_value()
+                                          && part.GetFileName().value()
+                                                 == expectedFileName,
+                                      "Clipboard image file name did not use the hash.");
+            result != 0) {
+            return result;
+        }
+        if (const int result =
+                expect(part.GetLocalPath().has_value()
+                           && part.GetLocalPath().value()
+                                  == makeWorkRelativePath(appPaths, targetPath),
+                       "Clipboard image local path does not point to Inbox.");
+            result != 0) {
+            return result;
+        }
+        if (const int result = expect(
+                !directoryContainsRegularFile(appPaths.GetImageBlobsDirectory()),
+                "Clipboard image was also copied to the image blob cache.");
             result != 0) {
             return result;
         }
@@ -5991,6 +6338,16 @@ int main(int argc, char** argv)
                 acceptsIncomingFolderTransferAndExtractsPayload();
             incomingFolderResult != 0) {
             return incomingFolderResult;
+        }
+        if (const int incomingImageResult =
+                receivesImageFileTransferIntoInboxWithoutImageCacheCopy();
+            incomingImageResult != 0) {
+            return incomingImageResult;
+        }
+        if (const int clipboardImageResult =
+                receivesGeneratedClipboardImageTransferWithHashFileName();
+            clipboardImageResult != 0) {
+            return clipboardImageResult;
         }
         if (const int autoReceiveResult =
                 autoAcceptsIncomingFileTransferWhenEnabled();

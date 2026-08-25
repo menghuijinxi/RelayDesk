@@ -5,7 +5,6 @@
 #include "core/platform/async.h"
 #include "core/time.h"
 #include "core/uuid.h"
-#include "main/image_attachment_store.h"
 #include "platform/computer_name.h"
 #include "platform/text_encoding.h"
 #include "platform/windows_install_id.h"
@@ -849,6 +848,51 @@ std::string sanitizeFileName(std::string fileName)
     return fileName;
 }
 
+std::string lowerAscii(std::string value)
+{
+    std::transform(
+        value.begin(),
+        value.end(),
+        value.begin(),
+        [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+    return value;
+}
+
+bool isGeneratedClipboardImageFileName(const std::string& fileName)
+{
+    const std::string safeFileName = lowerAscii(sanitizeFileName(fileName));
+    return safeFileName == "clipboard.bmp" || safeFileName == "screenshot.bmp";
+}
+
+std::string extensionFromFileName(const std::string& fileName)
+{
+    const std::string safeFileName = sanitizeFileName(fileName);
+    const std::size_t position = safeFileName.find_last_of('.');
+    if (position == std::string::npos) {
+        return {};
+    }
+    return safeFileName.substr(position);
+}
+
+std::string incomingTransferFinalFileName(
+    const std::string& fileName,
+    bool imageTransfer,
+    const std::optional<std::string>& sha256)
+{
+    if (!imageTransfer || !sha256.has_value()
+        || !isGeneratedClipboardImageFileName(fileName)) {
+        return fileName;
+    }
+
+    std::string extension = extensionFromFileName(fileName);
+    if (extension.empty()) {
+        extension = ".bmp";
+    }
+    return sanitizeFileName(sha256.value()) + extension;
+}
+
 std::filesystem::path makeIncomingTempFilePath(
     const relaydesk::storage::AppPaths& appPaths,
     const std::string& transferId,
@@ -867,7 +911,9 @@ std::filesystem::path makeIncomingTransferPayloadPath(
     bool folderTransfer,
     bool imageTransfer)
 {
-    if (imageTransfer || finalPath.empty()) {
+    (void)folderTransfer;
+    (void)imageTransfer;
+    if (finalPath.empty()) {
         return makeIncomingTempFilePath(appPaths, transferId, fileName);
     }
 
@@ -5154,6 +5200,8 @@ void RelayDeskRuntime::handleIncomingPeerFrame(relaydesk::net::PeerFrame frame)
         }
 
         bool folderTransfer = offer.GetFolderTransfer();
+        const std::string finalFileName = incomingTransferFinalFileName(
+            offer.GetFileName(), offer.GetImageTransfer(), offer.GetSha256());
         std::filesystem::path finalFilePath;
         if (existingTransfer.has_value()) {
             finalFilePath = existingTransfer->GetFinalFilePath();
@@ -5162,15 +5210,15 @@ void RelayDeskRuntime::handleIncomingPeerFrame(relaydesk::net::PeerFrame frame)
         } else if (interruptedFinalPath.has_value()) {
             finalFilePath = interruptedFinalPath.value();
             folderTransfer = interruptedFolderTransfer || folderTransfer;
-        } else if (!offer.GetImageTransfer()) {
+        } else {
             finalFilePath = makeIncomingFinalFilePath(appPaths,
-                                                      offer.GetFileName());
+                                                      finalFileName);
         }
 
         const std::filesystem::path payloadPath =
             makeIncomingTransferPayloadPath(appPaths,
                                             offer.GetTransferId(),
-                                            offer.GetFileName(),
+                                            finalFileName,
                                             finalFilePath,
                                             folderTransfer,
                                             offer.GetImageTransfer());
@@ -5209,7 +5257,7 @@ void RelayDeskRuntime::handleIncomingPeerFrame(relaydesk::net::PeerFrame frame)
         transfer.SetMessageId(offer.GetMessageId());
         transfer.SetPartId(offer.GetPartId());
         transfer.SetTransferId(offer.GetTransferId());
-        transfer.SetFileName(offer.GetFileName());
+        transfer.SetFileName(finalFileName);
         transfer.SetExpectedSize(offer.GetFileSize());
         transfer.SetReceivedSize(receivedSize);
         transfer.SetTempFilePath(payloadPath);
@@ -5448,25 +5496,11 @@ void RelayDeskRuntime::handleIncomingPeerFrame(relaydesk::net::PeerFrame frame)
 
         const auto appPaths = relaydesk::storage::createAppPaths();
         std::filesystem::path finalFilePath = transfer.GetFinalFilePath();
-        std::optional<std::string> sha256;
+        std::optional<std::string> sha256 = complete.GetSha256();
         bool payloadConsumed = false;
         if (transfer.GetFolderTransfer()) {
             finalFilePath = transfer.GetTempFilePath();
             payloadConsumed = true;
-        } else if (transfer.GetImageTransfer()) {
-            try {
-                const std::optional<StoredImageAttachment> storedImage =
-                    storePreviewableImageAttachment(appPaths,
-                                                    transfer.GetTempFilePath(),
-                                                    transfer.GetFileName(),
-                                                    true);
-                if (storedImage.has_value()) {
-                    finalFilePath = storedImage->GetImagePath();
-                    sha256 = storedImage->GetSha256();
-                    payloadConsumed = true;
-                }
-            } catch (const std::exception&) {
-            }
         }
 
         if (!payloadConsumed) {

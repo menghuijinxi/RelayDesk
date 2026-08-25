@@ -2962,6 +2962,21 @@ std::string makePathContextAction(std::string_view prefix,
     return action;
 }
 
+void appendDataActionAttribute(std::string& html, std::string_view action)
+{
+    html += R"( data-action=")";
+    html += escapeHtml(action);
+    html += '"';
+}
+
+void appendFileContextActionAttribute(std::string& html,
+                                      const std::filesystem::path& path,
+                                      std::string_view messageId)
+{
+    appendDataActionAttribute(
+        html, makePathContextAction("file-context:", path, messageId));
+}
+
 bool isTransferWarning(
     const relaydesk::storage::ChatMessagePart& part)
 {
@@ -3006,13 +3021,8 @@ std::string makeTransferMessageMarkup(
 
     std::string html;
     html.reserve(760);
-    html += R"(<div class="message-row message-row-transfer" contenteditable="true" aria-readonly="true")";
-    if (!message.GetMessageId().empty()) {
-        html += R"( data-action=")";
-        html += escapeHtml(makeMessageAction(message.GetMessageId()));
-        html += '"';
-    }
-    html += R"(><div class="message-transfer-stack">)";
+    html += R"(<div class="message-row message-row-transfer">)";
+    html += R"(<div class="message-transfer-stack">)";
     html += makeMessageQuoteMarkup(message);
     html += R"(<div class="transfer-card)";
     if (warning) {
@@ -3026,20 +3036,20 @@ std::string makeTransferMessageMarkup(
                 : ComposerAttachmentKind::File,
             fileContextPath.value(),
             title);
-        html += R"( data-action=")";
-        html += escapeHtml(makePathContextAction(
-            "file-context:",
-            fileContextPath.value(),
-            message.GetMessageId()));
-        html += '"';
-    } else if (!message.GetMessageId().empty()) {
-        html += R"( data-action=")";
-        html += escapeHtml(makeMessageAction(message.GetMessageId()));
-        html += '"';
     }
     html += '>';
-    html += R"(<div class="file-icon doc-icon doc-icon-zip"><div class="doc-fold"></div></div>)";
-    html += R"(<div class="transfer-content"><selectable class="file-name">)";
+    html += R"(<div class="file-icon doc-icon doc-icon-zip")";
+    if (fileContextPath.has_value()) {
+        appendFileContextActionAttribute(
+            html, fileContextPath.value(), message.GetMessageId());
+    }
+    html += R"(><div class="doc-fold"></div></div>)";
+    html += R"(<div class="transfer-content"><selectable class="file-name")";
+    if (fileContextPath.has_value()) {
+        appendFileContextActionAttribute(
+            html, fileContextPath.value(), message.GetMessageId());
+    }
+    html += '>';
     html += escapeHtml(title);
     const std::string progressPercentId =
         transferPartElementId(message.GetMessageId(), part.GetPartId(), "percent");
@@ -3205,11 +3215,6 @@ std::string makeImageMessageMarkup(
         html += R"(</div>)";
     }
     html += R"(<div class="message-selection-document" contenteditable="true" aria-readonly="true")";
-    if (!message.GetMessageId().empty()) {
-        html += R"( data-action=")";
-        html += escapeHtml(makeMessageAction(message.GetMessageId()));
-        html += '"';
-    }
     html += '>';
     html += makeMessageQuoteMarkup(message);
     html += imageCardMarkup.value();
@@ -3284,22 +3289,22 @@ std::string makeDocumentTransferPartMarkup(
                 : ComposerAttachmentKind::File,
             fileContextPath.value(),
             title);
-        html += R"( data-action=")";
-        html += escapeHtml(makePathContextAction(
-            "file-context:",
-            fileContextPath.value(),
-            message.GetMessageId()));
-        html += '"';
-    } else if (!message.GetMessageId().empty()) {
-        html += R"( data-action=")";
-        html += escapeHtml(makeMessageAction(message.GetMessageId()));
-        html += '"';
     }
     html += '>';
-    html += R"(<div class="message-document-file-icon doc-icon doc-icon-zip"><div class="doc-fold"></div></div>)";
+    html += R"(<div class="message-document-file-icon doc-icon doc-icon-zip")";
+    if (fileContextPath.has_value()) {
+        appendFileContextActionAttribute(
+            html, fileContextPath.value(), message.GetMessageId());
+    }
+    html += R"(><div class="doc-fold"></div></div>)";
     html += R"(<div class="message-document-file-content"><selectable class="message-document-file-name" value=")";
     html += escapeHtml(title);
-    html += R"("></selectable><div class="message-document-file-summary"><div class="message-document-file-state">)";
+    html += '"';
+    if (fileContextPath.has_value()) {
+        appendFileContextActionAttribute(
+            html, fileContextPath.value(), message.GetMessageId());
+    }
+    html += R"(></selectable><div class="message-document-file-summary"><div class="message-document-file-state">)";
     html += escapeHtml(sizeText);
     html += " · ";
     html += escapeHtml(stateText);
@@ -3371,11 +3376,6 @@ std::string makeCompoundMessageMarkup(
     html += R"(<div class="message-document )";
     html += outgoing ? "message-document-right" : "message-document-left";
     html += R"(" contenteditable="true" aria-readonly="true")";
-    if (!message.GetMessageId().empty()) {
-        html += R"( data-action=")";
-        html += escapeHtml(makeMessageAction(message.GetMessageId()));
-        html += '"';
-    }
     html += '>';
     html += makeMessageQuoteMarkup(message);
     html += documentMarkup;
@@ -5665,6 +5665,21 @@ bool transferActionsMatch(
         (expectedActions.size() != 0u || markup.empty());
 }
 
+bool openingTagContains(const std::string& markup,
+                        std::string_view marker,
+                        std::string_view expected)
+{
+    const std::size_t start = markup.find(marker);
+    if (start == std::string::npos) {
+        return false;
+    }
+    const std::size_t end = markup.find('>', start);
+    if (end == std::string::npos) {
+        return false;
+    }
+    return markup.find(expected, start) < end;
+}
+
 bool captureTransferActionMatrixMatchesOriginal()
 {
     constexpr std::string_view kCleanedMarkup =
@@ -6550,6 +6565,19 @@ int captureSkiaUiPng(const CaptureOptions& options)
         if (fileCardMarkup.find(R"(data-action="file-context:)") ==
             std::string::npos) {
             return 27;
+        }
+        if (openingTagContains(
+                fileCardMarkup,
+                R"(<div class="message-row message-row-transfer")",
+                R"(data-action=")") ||
+            openingTagContains(
+                fileCardMarkup,
+                R"(<div class="message-row message-row-transfer")",
+                R"(contenteditable="true")") ||
+            openingTagContains(fileCardMarkup,
+                               R"(<div class="transfer-card")",
+                               R"(data-action=")")) {
+            return 61;
         }
         if (html.find(R"(data-action="reveal-file-context")") ==
                 std::string::npos ||
@@ -7445,17 +7473,26 @@ int captureSkiaUiPng(const CaptureOptions& options)
         }
         const CapturePixelBounds& targetCard =
             cardBounds[cardBounds.size() - 2u];
-        skui::Event mouseDown;
-        mouseDown.type = skui::EventType::MouseDown;
-        mouseDown.x = static_cast<float>(
-            (targetCard.left + targetCard.right) / 2);
-        mouseDown.y = static_cast<float>(
-            (targetCard.top + targetCard.bottom) / 2);
-        mouseDown.button = skui::MouseButton::Right;
-        (void)runtime.handleEvent(mouseDown);
-        skui::Event mouseUp = mouseDown;
-        mouseUp.type = skui::EventType::MouseUp;
-        (void)runtime.handleEvent(mouseUp);
+        const auto rightClickCardPoint = [&runtime](float x, float y) {
+            skui::Event mouseDown;
+            mouseDown.type = skui::EventType::MouseDown;
+            mouseDown.x = x;
+            mouseDown.y = y;
+            mouseDown.button = skui::MouseButton::Right;
+            (void)runtime.handleEvent(mouseDown);
+            skui::Event mouseUp = mouseDown;
+            mouseUp.type = skui::EventType::MouseUp;
+            (void)runtime.handleEvent(mouseUp);
+        };
+        rightClickCardPoint(static_cast<float>(
+                                (targetCard.left + targetCard.right) / 2),
+                            static_cast<float>(
+                                (targetCard.top + targetCard.bottom) / 2));
+        if (gMessageContextMenuVisible || !gFileContextPath.empty()) {
+            return 61;
+        }
+        rightClickCardPoint(static_cast<float>(targetCard.left + 40),
+                            static_cast<float>(targetCard.top + 52));
         if (!gMessageContextMenuVisible || gFileContextPath.empty() ||
             !gFileContextPath.is_absolute() ||
             gFileContextPath.filename() != L"relaydesk_skiaui.exe") {
