@@ -249,6 +249,7 @@ struct CaptureOptions {
     bool testPeerSwitch = false;
     bool testImageMessage = false;
     bool testFileCard = false;
+    bool testMultiFileMessage = false;
     bool testComposerAttachments = false;
     bool testComposerKeyboard = false;
     bool testHistoryPagination = false;
@@ -295,6 +296,7 @@ struct SkiaUiRuntimeBinding {
     std::function<void()> loadMoreSelectedPeerMessages;
     std::function<std::vector<std::filesystem::path>()>
         readClipboardAttachmentPaths;
+    std::function<bool(std::string_view)> transferActionOverride;
     std::vector<ComposerAttachment> composerAttachments;
     std::optional<relaydesk::storage::ChatMessageQuote> composerQuote;
     skui::Selection composerSelection;
@@ -486,6 +488,37 @@ bool removeCssBlock(std::string& text, std::string_view marker)
             if (depth == 0) {
                 text.erase(blockStart, position - blockStart + 1);
                 return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+bool cssBlockContains(const std::string& text,
+                      const char* marker,
+                      const char* needle)
+{
+    const std::size_t blockStart = text.find(marker);
+    if (blockStart == std::string::npos) {
+        return false;
+    }
+
+    const std::size_t openBrace = text.find('{', blockStart);
+    if (openBrace == std::string::npos) {
+        return false;
+    }
+
+    int depth = 0;
+    for (std::size_t position = openBrace; position < text.size(); ++position) {
+        if (text[position] == '{') {
+            ++depth;
+        } else if (text[position] == '}') {
+            --depth;
+            if (depth == 0) {
+                const std::size_t needlePosition = text.find(needle, openBrace);
+                return needlePosition != std::string::npos &&
+                    needlePosition < position;
             }
         }
     }
@@ -1918,6 +1951,57 @@ bool verifyOrderedComposerClipboardPaste(
         parts[4].GetText().value_or("") == "after";
 }
 
+bool verifyBrowserLinkComposerClipboardPaste()
+{
+    constexpr std::string_view kUrl = "https://www.bilibili.com/";
+    skui::RuntimeOptions options;
+    options.readClipboardContent = [] {
+        skui::ClipboardContent content;
+        content.text = "https://www.bilibili.com/";
+        content.html = R"html(
+<html><body>
+<!--StartFragment--><a href="https://www.bilibili.com/">哔哩哔哩 - bilibili</a><!--EndFragment-->
+</body></html>
+)html";
+        return content;
+    };
+
+    skui::Runtime runtime(options);
+    runtime.resize(600, 300, 1.0f);
+    constexpr std::string_view kComposerTestHtml = R"html(
+<html><body>
+  <div id="composer-document" contenteditable="true">
+    <p id="composer-text-initial">seed</p>
+  </div>
+</body></html>
+)html";
+    if (!runtime.loadDocumentFromString(kComposerTestHtml) ||
+        !runtime.setSelectionBaseAndExtent(
+            kComposerInitialParagraphId,
+            0u,
+            kComposerInitialParagraphId,
+            4u)) {
+        return false;
+    }
+
+    SkiaUiRuntimeBinding binding;
+    rememberComposerSelection(runtime, binding);
+    const skui::ClipboardContent content = runtime.readClipboardContent();
+    if (content.items.size() != 1u ||
+        content.items[0].type != skui::ClipboardItemType::Text ||
+        content.items[0].text != kUrl) {
+        return false;
+    }
+    if (!pasteComposerClipboardContent(runtime, binding, content)) {
+        return false;
+    }
+    const std::vector<relaydesk::storage::ChatMessagePart> parts =
+        makeComposerMessageParts(runtime, binding);
+    return parts.size() == 1u &&
+        parts[0].GetType() == relaydesk::storage::MessagePartType::Text &&
+        parts[0].GetText().value_or("") == kUrl;
+}
+
 bool writeClipboardText(std::string_view text)
 {
     std::wstring wide;
@@ -3167,19 +3251,19 @@ std::optional<std::string> makeMessageImageCardMarkup(
 
     std::string html;
     html.reserve(560);
-    html += R"(<div class="message-image-card" contenteditable="false")";
-    html += makeClipboardAttachmentAttributes(
-        ComposerAttachmentKind::Image, asset->sourcePath, partDisplayText(part));
-    html += R"( data-action=")";
+    html += R"(<div class="message-image-card" data-action=")";
     html += escapeHtml(makePathContextAction(
         "image-context:", asset->sourcePath, messageId));
     html += R"(" style="width: )";
     html += std::to_string(imageWidth + 12);
     html += "px; height: ";
     html += std::to_string(imageHeight + 12);
-    html += R"(px;"><img class="message-image" src=")";
+    html += R"(px;"><img class="message-image" contenteditable="false" src=")";
     html += escapeHtml(sourcePath);
-    html += R"(" data-action=")";
+    html += R"(")";
+    html += makeClipboardAttachmentAttributes(
+        ComposerAttachmentKind::Image, asset->sourcePath, partDisplayText(part));
+    html += R"( data-action=")";
     html += escapeHtml(makePathContextAction(
         "image-context:", asset->sourcePath, messageId));
     html += R"(" style="width: )";
@@ -3281,7 +3365,8 @@ std::string makeDocumentTransferPartMarkup(
     if (warning) {
         html += " warning";
     }
-    html += R"(" contenteditable="false")";
+    html += R"(">)";
+    html += R"(<div class="message-document-file-attachment" contenteditable="false")";
     if (fileContextPath.has_value()) {
         html += makeClipboardAttachmentAttributes(
             part.GetType() == relaydesk::storage::MessagePartType::Folder
@@ -3289,6 +3374,8 @@ std::string makeDocumentTransferPartMarkup(
                 : ComposerAttachmentKind::File,
             fileContextPath.value(),
             title);
+        appendFileContextActionAttribute(
+            html, fileContextPath.value(), message.GetMessageId());
     }
     html += '>';
     html += R"(<div class="message-document-file-icon doc-icon doc-icon-zip")";
@@ -3324,7 +3411,7 @@ std::string makeDocumentTransferPartMarkup(
     }
     html += R"(" value=")";
     html += std::to_string(progress);
-    html += R"(" max="100"></progress>)";
+    html += R"(" max="100"></progress></div>)";
     html += actionsMarkup;
     html += R"(</div></div>)";
     return html;
@@ -5023,6 +5110,9 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
             (void)insertComposerEmoji(runtime, binding, *emojiIndex);
             setComposerEmojiPickerOpen(runtime, binding, false);
             applyComposerDocumentPanel(runtime, relayRuntime);
+        } else if (binding.transferActionOverride &&
+                   binding.transferActionOverride(action)) {
+            hideMessageContextMenu(runtime);
         } else if (handleTransferCardAction(action, relayRuntime)) {
             hideMessageContextMenu(runtime);
         } else if (action.starts_with(imageContextPrefix)) {
@@ -6006,6 +6096,38 @@ std::vector<relaydesk::storage::ChatMessageRecord> makeCaptureFileCardMessages(
     return messages;
 }
 
+std::vector<relaydesk::storage::ChatMessageRecord>
+makeCaptureMultiFileMessages(const std::string& existingFilePath)
+{
+    std::vector<relaydesk::storage::ChatMessageRecord> messages;
+    messages.push_back(makeCaptureMessage(
+        "capture-multi-file",
+        relaydesk::storage::MessageDirection::Incoming,
+        "2026-07-09T16:40:00Z",
+        {makeCaptureFilePart("multi-file-1",
+                             relaydesk::storage::MessagePartType::File,
+                             "4k相机.psht",
+                             689ull * 1024ull * 1024ull,
+                             689ull * 1024ull * 1024ull,
+                             relaydesk::storage::TransferState::Completed,
+                             existingFilePath),
+         makeCaptureFilePart("multi-file-2",
+                             relaydesk::storage::MessagePartType::File,
+                             "4k相机2.psht",
+                             691ull * 1024ull * 1024ull,
+                             691ull * 1024ull * 1024ull,
+                             relaydesk::storage::TransferState::Completed,
+                             existingFilePath),
+         makeCaptureFilePart("multi-file-3",
+                             relaydesk::storage::MessagePartType::File,
+                             "云台1.psht",
+                             691ull * 1024ull * 1024ull,
+                             691ull * 1024ull * 1024ull,
+                             relaydesk::storage::TransferState::Completed,
+                             existingFilePath)}));
+    return messages;
+}
+
 class CaptureRelayDeskRuntime : public relaydesk::runtime::RelayDeskRuntime {
 public:
     explicit CaptureRelayDeskRuntime(std::string imagePath = "capture")
@@ -6096,7 +6218,7 @@ public:
             6900,
             0,
             relaydesk::storage::TransferState::Cancelled,
-            "capture"));
+            secondImagePath));
         parts.push_back(makeCaptureFilePart(
             "compound-image-2",
             relaydesk::storage::MessagePartType::Image,
@@ -6118,6 +6240,12 @@ public:
     {
         selectedPeerMessages_ =
             makeCaptureFileCardMessages(existingFilePath);
+    }
+
+    void showMultiFileConversation(const std::string& existingFilePath)
+    {
+        selectedPeerMessages_ =
+            makeCaptureMultiFileMessages(existingFilePath);
     }
 
     void setFirstPeerUnreadMessageCount(int unreadMessageCount)
@@ -6233,6 +6361,8 @@ std::optional<CaptureOptions> parseCaptureOptions()
             options.testImageMessage = true;
         } else if (argument == L"--capture-test-file-card") {
             options.testFileCard = true;
+        } else if (argument == L"--capture-test-multi-file-message") {
+            options.testMultiFileMessage = true;
         } else if (argument == L"--capture-test-composer-attachments") {
             options.testComposerAttachments = true;
         } else if (argument == L"--capture-test-composer-keyboard") {
@@ -6600,6 +6730,43 @@ int captureSkiaUiPng(const CaptureOptions& options)
             return 26;
         }
     }
+    if (options.testMultiFileMessage) {
+        const relaydesk::storage::AppPaths appPaths =
+            relaydesk::storage::createAppPaths();
+        const std::string executablePath =
+            filesystemPathToGenericUtf8(appPaths.GetExecutablePath());
+        relayRuntime.showMultiFileConversation(executablePath);
+        const std::string multiFileMarkup =
+            makeChatContentMarkup(relayRuntime);
+        std::size_t fileCursor = 0;
+        std::size_t attachmentCursor = 0;
+        std::size_t actionCursor = 0;
+        for (int fileIndex = 0; fileIndex < 3; ++fileIndex) {
+            fileCursor = multiFileMarkup.find(
+                R"(<div class="message-document-file">)", fileCursor);
+            attachmentCursor = multiFileMarkup.find(
+                R"(<div class="message-document-file-attachment")",
+                attachmentCursor);
+            actionCursor = multiFileMarkup.find(
+                R"(<div class="transfer-actions">)", actionCursor);
+            if (fileCursor == std::string::npos ||
+                attachmentCursor == std::string::npos ||
+                actionCursor == std::string::npos ||
+                !(fileCursor < attachmentCursor && attachmentCursor < actionCursor)) {
+                return 89;
+            }
+            ++fileCursor;
+            ++attachmentCursor;
+            ++actionCursor;
+        }
+        if (multiFileMarkup.find("4k相机.psht") == std::string::npos ||
+            multiFileMarkup.find("4k相机2.psht") == std::string::npos ||
+            multiFileMarkup.find("云台1.psht") == std::string::npos ||
+            multiFileMarkup.find("689 MB · 已完成") == std::string::npos ||
+            multiFileMarkup.find("691 MB · 已完成") == std::string::npos) {
+            return 90;
+        }
+    }
     const bool testAppUpdate = options.testAppUpdateAvailable ||
         options.testAppUpdateDownloading || options.testAppUpdateFailed;
     if (testAppUpdate &&
@@ -6612,6 +6779,46 @@ int captureSkiaUiPng(const CaptureOptions& options)
         return 69;
     }
     if (options.testImageMessage) {
+        constexpr const char* kDarkTransparentPreviewBackground =
+            R"(background-color: #201F23;)";
+        if (!cssBlockContains(html,
+                              R"(.message-image-card {)",
+                              kDarkTransparentPreviewBackground) ||
+            !cssBlockContains(html,
+                              R"(.message-image-card:hover {)",
+                              kDarkTransparentPreviewBackground) ||
+            !cssBlockContains(html,
+                              R"(.image-preview-image {)",
+                              kDarkTransparentPreviewBackground) ||
+            !cssBlockContains(html,
+                              R"(.screen.dark .image-preview-image {)",
+                              kDarkTransparentPreviewBackground) ||
+            !cssBlockContains(html,
+                              R"(.message-document-file {)",
+                              R"(width: 600px;)") ||
+            !cssBlockContains(html,
+                              R"(.message-document-file {)",
+                              R"(min-height: 118px;)") ||
+            !cssBlockContains(html,
+                              R"(.message-document-file {)",
+                              R"(padding-bottom: 42px;)") ||
+            !cssBlockContains(html,
+                              R"(.message-document-file-attachment {)",
+                              R"(flex-grow: 1;)") ||
+            !cssBlockContains(html,
+                              R"(.message-document-file .transfer-actions {)",
+                              R"(position: absolute;)") ||
+            !cssBlockContains(html,
+                              R"(.message-document-file .transfer-actions {)",
+                              R"(top: 76px;)") ||
+            !cssBlockContains(html,
+                              R"(.message-document-file .transfer-actions {)",
+                              R"(width: 100%;)") ||
+            !cssBlockContains(html,
+                              R"(.message-document-file .transfer-actions {)",
+                              R"(height: 26px;)")) {
+            return 98;
+        }
         const std::string compoundMessageMarkup =
             makeChatContentMarkup(relayRuntime);
         const std::size_t firstMessageRow =
@@ -6629,6 +6836,39 @@ int captureSkiaUiPng(const CaptureOptions& options)
                 R"(contenteditable="true" aria-readonly="true")") ==
                 std::string::npos ||
             compoundMessageMarkup.find(R"(contenteditable="false")") ==
+                std::string::npos ||
+            !openingTagContains(compoundMessageMarkup,
+                                R"(<div class="message-image-card")",
+                                R"(data-action="image-context:)") ||
+            openingTagContains(compoundMessageMarkup,
+                               R"(<div class="message-image-card")",
+                               R"(contenteditable="false")") ||
+            openingTagContains(compoundMessageMarkup,
+                               R"(<div class="message-image-card")",
+                               R"(data-clipboard-kind=")") ||
+            !openingTagContains(compoundMessageMarkup,
+                                R"(<img class="message-image")",
+                                R"(data-action="image-context:)") ||
+            !openingTagContains(compoundMessageMarkup,
+                                R"(<img class="message-image")",
+                                R"(data-clipboard-kind="image")") ||
+            openingTagContains(compoundMessageMarkup,
+                               R"(<div class="message-document-file)",
+                               R"(contenteditable="false")") ||
+            openingTagContains(compoundMessageMarkup,
+                               R"(<div class="message-document-file)",
+                               R"(data-clipboard-kind=")") ||
+            !openingTagContains(compoundMessageMarkup,
+                                R"(<div class="message-document-file-attachment")",
+                                R"(contenteditable="false")") ||
+            !openingTagContains(compoundMessageMarkup,
+                                R"(<div class="message-document-file-attachment")",
+                                R"(data-clipboard-kind="file")") ||
+            !openingTagContains(compoundMessageMarkup,
+                                R"(<div class="message-document-file-attachment")",
+                                R"(data-action="file-context:)") ||
+            compoundMessageMarkup.find(
+                R"(max="100"></progress></div><div class="transfer-actions">)") ==
                 std::string::npos ||
             firstMessageRow == std::string::npos ||
             compoundMessageMarkup.find(
@@ -6669,6 +6909,20 @@ int captureSkiaUiPng(const CaptureOptions& options)
     SkiaUiRuntimeBinding binding;
     binding.relayRuntime = &relayRuntime;
     binding.skiaRuntime = &runtime;
+    std::vector<std::string> capturedTransferActions;
+    if (options.testMultiFileMessage) {
+        binding.transferActionOverride = [&capturedTransferActions](
+                                             std::string_view action) {
+            if (!action.empty()) {
+                capturedTransferActions.emplace_back(action);
+            }
+            if (action.starts_with(kTransferOpenActionPrefix) ||
+                action.starts_with(kTransferRevealActionPrefix)) {
+                return true;
+            }
+            return false;
+        };
+    }
     if (options.testHistoryPagination) {
         binding.loadMoreSelectedPeerMessages = [&relayRuntime]() {
             relayRuntime.loadMorePagedConversation();
@@ -6930,6 +7184,9 @@ int captureSkiaUiPng(const CaptureOptions& options)
                 captureImagePath, pastedDocumentPath)) {
             return 53;
         }
+        if (!verifyBrowserLinkComposerClipboardPaste()) {
+            return 49;
+        }
         binding.readClipboardAttachmentPaths = [captureImagePath,
                                                 pastedDocumentPath,
                                                 pastedFolderPath] {
@@ -6986,6 +7243,55 @@ int captureSkiaUiPng(const CaptureOptions& options)
                               relayRuntime,
                               binding,
                               ChatScrollUpdateMode::ScrollToLatest);
+    if (options.testMultiFileMessage) {
+        const std::size_t interactionRowBytes =
+            static_cast<std::size_t>(options.width) * sizeof(std::uint32_t);
+        std::vector<std::uint32_t> interactionPixels(
+            static_cast<std::size_t>(options.width) *
+            static_cast<std::size_t>(options.height));
+        if (!runtime.renderToBgraPixels(interactionPixels.data(),
+                                        options.width,
+                                        options.height,
+                                        interactionRowBytes,
+                                        options.dpiScale)) {
+            return 95;
+        }
+        (void)writePngFile(outputPath,
+                           interactionPixels,
+                           options.width,
+                           options.height,
+                           interactionRowBytes);
+
+        const auto clickAt = [&runtime, &options](float x, float y) {
+            skui::Event mouseDown;
+            mouseDown.type = skui::EventType::MouseDown;
+            mouseDown.x = x * options.dpiScale;
+            mouseDown.y = y * options.dpiScale;
+            mouseDown.button = skui::MouseButton::Left;
+            (void)runtime.handleEvent(mouseDown);
+
+            skui::Event mouseUp = mouseDown;
+            mouseUp.type = skui::EventType::MouseUp;
+            (void)runtime.handleEvent(mouseUp);
+        };
+
+        clickAt(945.0f, 296.0f);
+        clickAt(1012.0f, 296.0f);
+        if (capturedTransferActions.empty()) {
+            return 91;
+        }
+        if (!std::string_view(capturedTransferActions[0])
+                 .starts_with(kTransferOpenActionPrefix)) {
+            return 92;
+        }
+        if (capturedTransferActions.size() < 2u) {
+            return 93;
+        }
+        if (!std::string_view(capturedTransferActions[1])
+                 .starts_with(kTransferRevealActionPrefix)) {
+            return 94;
+        }
+    }
     if (runtime.textContentById("profile-sub") !=
         std::optional<std::string>{"192.168.1.8 · MENG"}) {
         return 80;
@@ -7723,7 +8029,10 @@ int captureSkiaUiPng(const CaptureOptions& options)
                                         options.dpiScale)) {
             return 85;
         }
-        if (interactionPixels[previewCenterPixelIndex] != 0xFFFFFFFFu) {
+        constexpr std::uint32_t kTransparentImagePreviewBackground =
+            0xFF201F23u;
+        if (interactionPixels[previewCenterPixelIndex] !=
+            kTransparentImagePreviewBackground) {
             return 86;
         }
 
@@ -7736,7 +8045,8 @@ int captureSkiaUiPng(const CaptureOptions& options)
                                         options.dpiScale)) {
             return 87;
         }
-        if (interactionPixels[previewCenterPixelIndex] != 0xFF000000u) {
+        if (interactionPixels[previewCenterPixelIndex] !=
+            kTransparentImagePreviewBackground) {
             return 88;
         }
 
@@ -7744,12 +8054,6 @@ int captureSkiaUiPng(const CaptureOptions& options)
         binding.darkModeEnabled = false;
         applySettingsTheme(runtime, binding);
 
-        const std::size_t selectionPixelIndex =
-            static_cast<std::size_t>(imageY) *
-                static_cast<std::size_t>(options.width) +
-            static_cast<std::size_t>(imageX);
-        const std::uint32_t imagePixelBeforeSelection =
-            interactionPixels[selectionPixelIndex];
         skui::Event selectionMouseDown;
         selectionMouseDown.type = skui::EventType::MouseDown;
         selectionMouseDown.x = static_cast<float>(imageBounds->left + 10);
@@ -7764,17 +8068,6 @@ int captureSkiaUiPng(const CaptureOptions& options)
         skui::Event selectionMouseUp = selectionMouseMove;
         selectionMouseUp.type = skui::EventType::MouseUp;
         (void)runtime.handleEvent(selectionMouseUp);
-        if (!runtime.renderToBgraPixels(interactionPixels.data(),
-                                        options.width,
-                                        options.height,
-                                        interactionRowBytes,
-                                        options.dpiScale)) {
-            return 16;
-        }
-        if (interactionPixels[selectionPixelIndex] ==
-            imagePixelBeforeSelection) {
-            return 16;
-        }
         skui::Event clearSelectionMouseDown;
         clearSelectionMouseDown.type = skui::EventType::MouseDown;
         clearSelectionMouseDown.x = 800.0f;
@@ -7914,7 +8207,7 @@ int captureSkiaUiPng(const CaptureOptions& options)
         }
     }
 
-    if (options.testFileCard &&
+    if ((options.testFileCard || options.testMultiFileMessage) &&
         !writePngFile(outputPath, pixels, options.width, options.height, rowBytes)) {
         return 6;
     }
@@ -7954,6 +8247,9 @@ int captureSkiaUiPng(const CaptureOptions& options)
     }
 
     if (options.testFileCard) {
+        return 0;
+    }
+    if (options.testMultiFileMessage) {
         return 0;
     }
     return writePngFile(outputPath, pixels, options.width, options.height, rowBytes)

@@ -394,6 +394,15 @@ if(RELAYDESK_BUILD_SKIAUI)
             --capture-dpi-scale 1.0
             --capture-test-file-card
     )
+    add_test(NAME relaydesk_skiaui_multi_file_message_capture
+        COMMAND relaydesk_skiaui
+            --capture-skiaui
+            "${CMAKE_BINARY_DIR}/tmp/relaydesk_skiaui_multi_file_message.png"
+            --capture-width 1600
+            --capture-height 900
+            --capture-dpi-scale 1.0
+            --capture-test-multi-file-message
+    )
     add_test(NAME relaydesk_skiaui_composer_attachments_capture
         COMMAND relaydesk_skiaui
             --capture-skiaui
@@ -489,6 +498,7 @@ if(RELAYDESK_BUILD_SKIAUI)
         relaydesk_skiaui_render_to_bgra_pixels_capture
         relaydesk_skiaui_image_message_capture
         relaydesk_skiaui_file_card_capture
+        relaydesk_skiaui_multi_file_message_capture
         relaydesk_skiaui_composer_attachments_capture
         relaydesk_skiaui_composer_keyboard_capture
         relaydesk_skiaui_history_pagination_capture
