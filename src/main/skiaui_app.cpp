@@ -2222,21 +2222,29 @@ bool isMessageContextMenuEvent(const skui::ElementEvent& event)
            eventHasClass(event, "message-context-item");
 }
 
-std::string shortMessageTime(const relaydesk::storage::ChatMessageRecord& message)
+std::string fallbackMessageTimestamp(const std::string& createdAt)
 {
-    const std::string& createdAt = message.GetCreatedAt();
-    try {
-        return relaydesk::core::formatUtcTimestampAsLocalTimeOfDay(createdAt);
-    } catch (const std::exception&) {
-    }
-
-    if (createdAt.size() >= 16 && createdAt[10] == 'T') {
-        return createdAt.substr(11, 5);
+    if (createdAt.size() >= 16 && createdAt[4] == '-'
+        && createdAt[7] == '-' && createdAt[10] == 'T') {
+        return createdAt.substr(5, 5) + " " + createdAt.substr(11, 5);
     }
     if (createdAt.size() >= 5) {
         return createdAt.substr(0, 5);
     }
     return {};
+}
+
+std::string messageTimestamp(
+    const relaydesk::storage::ChatMessageRecord& message)
+{
+    const std::string& createdAt = message.GetCreatedAt();
+    try {
+        return relaydesk::core::formatUtcTimestampAsLocalMessageTimestamp(
+            createdAt);
+    } catch (const std::exception&) {
+    }
+
+    return fallbackMessageTimestamp(createdAt);
 }
 
 std::string formatFileSize(std::uintmax_t size)
@@ -2967,7 +2975,7 @@ std::string makeTextMessageMarkup(
     const bool outgoing =
         message.GetDirection() == relaydesk::storage::MessageDirection::Outgoing;
     const std::string text = trimMessageWhitespace(partDisplayText(part));
-    const std::string timeText = shortMessageTime(message);
+    const std::string timeText = messageTimestamp(message);
 
     std::string html;
     html.reserve(620);
@@ -3164,7 +3172,7 @@ std::string makeTransferMessageMarkup(
     html += R"(">)";
     html += escapeHtml(stateText);
     html += R"(</div><div class="transfer-tail">)";
-    const std::string timeText = shortMessageTime(message);
+    const std::string timeText = messageTimestamp(message);
     if (!timeText.empty()) {
         html += R"(<div class="card-time">)";
         html += escapeHtml(timeText);
@@ -3286,7 +3294,7 @@ std::string makeImageMessageMarkup(
 
     const bool outgoing =
         message.GetDirection() == relaydesk::storage::MessageDirection::Outgoing;
-    const std::string timeText = shortMessageTime(message);
+    const std::string timeText = messageTimestamp(message);
 
     std::string html;
     html.reserve(720);
@@ -3422,7 +3430,7 @@ std::string makeCompoundMessageMarkup(
 {
     const bool outgoing =
         message.GetDirection() == relaydesk::storage::MessageDirection::Outgoing;
-    const std::string timeText = shortMessageTime(message);
+    const std::string timeText = messageTimestamp(message);
 
     std::string documentMarkup;
     documentMarkup.reserve(1600);
@@ -3482,7 +3490,6 @@ std::string makeChatContentMarkup(
     std::string html;
     html.reserve(4096);
     html += R"(<div id="chat-content" class="chat-content">)";
-    html += R"(<div class="day-row"><div class="day-pill">今天</div></div>)";
 
     const auto& messages = relayRuntime.GetSelectedPeerMessages();
     if (!relayRuntime.GetSelectedPeer().has_value()) {
@@ -7434,6 +7441,8 @@ int captureSkiaUiPng(const CaptureOptions& options)
             !relayRuntime.GetSelectedPeerHasMoreMessages() ||
             !firstPageChatScroll.has_value() ||
             !firstPageText.has_value() ||
+            firstPageText->find("今天") != std::string::npos ||
+            firstPageText->find("07-09") == std::string::npos ||
             firstPageText->find("pagination-message-31") ==
                 std::string::npos) {
             return 56;
@@ -7518,6 +7527,7 @@ int captureSkiaUiPng(const CaptureOptions& options)
             html.find(R"(data-action="send-screen-shake")") ==
                 std::string::npos ||
             !chatContent.has_value() ||
+            chatContent->find("今天") != std::string::npos ||
             chatContent->find("已发送震屏") == std::string::npos ||
             chatContent->find("震屏发送得太频繁") == std::string::npos ||
             chatContent->find("收到震屏") == std::string::npos ||

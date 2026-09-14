@@ -55,7 +55,7 @@ bool hasUuidV4Shape(const std::string& value)
         && (variant == '8' || variant == '9' || variant == 'a' || variant == 'b');
 }
 
-std::string expectedLocalTimeOfDay(const std::string& timestamp)
+std::string expectedLocalTime(const std::string& timestamp, const char* format)
 {
     const std::chrono::system_clock::time_point timePoint =
         relaydesk::core::parseUtcTimestamp(timestamp);
@@ -72,8 +72,13 @@ std::string expectedLocalTimeOfDay(const std::string& timestamp)
     }
 #endif
     std::ostringstream output;
-    output << std::put_time(&localTime, "%H:%M");
+    output << std::put_time(&localTime, format);
     return output.str();
+}
+
+std::string expectedLocalTimeOfDay(const std::string& timestamp)
+{
+    return expectedLocalTime(timestamp, "%H:%M");
 }
 
 int formatsUnixEpochAsUtc()
@@ -98,6 +103,71 @@ int formatsUtcTimestampAsLocalTimeOfDay()
     return expect(relaydesk::core::formatUtcTimestampAsLocalTimeOfDay(kTimestamp)
                       == expectedLocalTimeOfDay(kTimestamp),
                   "UTC timestamp local time-of-day format mismatch.");
+}
+
+int formatsMessageTimestampWithRelativeAndYearAwareDate()
+{
+    const std::chrono::system_clock::time_point currentTime =
+        relaydesk::core::parseUtcTimestamp("2026-09-14T12:00:00Z");
+    constexpr const char* kTodayTimestamp = "2026-09-14T12:34:00Z";
+    constexpr const char* kYesterdayTimestamp = "2026-09-13T12:34:00Z";
+    constexpr const char* kDayBeforeYesterdayTimestamp =
+        "2026-09-12T12:34:00Z";
+    constexpr const char* kSameYearTimestamp = "2026-02-03T12:34:00Z";
+    constexpr const char* kPreviousYearTimestamp = "2025-07-09T12:34:00Z";
+
+    const auto today = relaydesk::core::parseUtcTimestamp(kTodayTimestamp);
+    const auto yesterday = relaydesk::core::parseUtcTimestamp(
+        kYesterdayTimestamp);
+    const auto dayBeforeYesterday = relaydesk::core::parseUtcTimestamp(
+        kDayBeforeYesterdayTimestamp);
+    const auto sameYear = relaydesk::core::parseUtcTimestamp(
+        kSameYearTimestamp);
+    const auto previousYear = relaydesk::core::parseUtcTimestamp(
+        kPreviousYearTimestamp);
+
+    if (const int result = expect(
+            relaydesk::core::formatLocalMessageTimestamp(
+                today, currentTime) ==
+                "今天 " + expectedLocalTimeOfDay(kTodayTimestamp),
+            "Today message timestamp format mismatch.");
+        result != 0) {
+        return result;
+    }
+
+    if (const int result = expect(
+            relaydesk::core::formatLocalMessageTimestamp(
+                yesterday, currentTime) ==
+                "昨天 " + expectedLocalTimeOfDay(kYesterdayTimestamp),
+            "Yesterday message timestamp format mismatch.");
+        result != 0) {
+        return result;
+    }
+
+    if (const int result = expect(
+            relaydesk::core::formatLocalMessageTimestamp(
+                dayBeforeYesterday, currentTime) ==
+                "前天 " + expectedLocalTimeOfDay(
+                    kDayBeforeYesterdayTimestamp),
+            "Day-before-yesterday message timestamp format mismatch.");
+        result != 0) {
+        return result;
+    }
+
+    if (const int result = expect(
+            relaydesk::core::formatLocalMessageTimestamp(
+                sameYear, currentTime) ==
+                expectedLocalTime(kSameYearTimestamp, "%m-%d %H:%M"),
+            "Same-year message timestamp format mismatch.");
+        result != 0) {
+        return result;
+    }
+
+    return expect(relaydesk::core::formatLocalMessageTimestamp(
+                      previousYear, currentTime) ==
+                      expectedLocalTime(kPreviousYearTimestamp,
+                                        "%Y-%m-%d %H:%M"),
+                  "Previous-year message timestamp format mismatch.");
 }
 
 int rejectsInvalidUtcTimestamp()
@@ -143,6 +213,11 @@ int main()
     }
 
     if (const int result = formatsUtcTimestampAsLocalTimeOfDay(); result != 0) {
+        return result;
+    }
+
+    if (const int result = formatsMessageTimestampWithRelativeAndYearAwareDate();
+        result != 0) {
         return result;
     }
 

@@ -39,6 +39,41 @@ void validateTimestampShape(const std::string& value)
     }
 }
 
+std::tm toLocalTime(std::chrono::system_clock::time_point timePoint)
+{
+    const std::time_t timestamp = std::chrono::system_clock::to_time_t(timePoint);
+    std::tm localTime{};
+
+#if defined(_WIN32)
+    if (localtime_s(&localTime, &timestamp) != 0) {
+        throw std::runtime_error("Failed to convert timestamp to local time.");
+    }
+#else
+    if (localtime_r(&timestamp, &localTime) == nullptr) {
+        throw std::runtime_error("Failed to convert timestamp to local time.");
+    }
+#endif
+
+    return localTime;
+}
+
+std::chrono::sys_days localDate(const std::tm& localTime)
+{
+    const std::chrono::year_month_day date{
+        std::chrono::year{localTime.tm_year + 1900},
+        std::chrono::month{static_cast<unsigned int>(localTime.tm_mon + 1)},
+        std::chrono::day{static_cast<unsigned int>(localTime.tm_mday)},
+    };
+    return std::chrono::sys_days{date};
+}
+
+std::string formatLocalTime(const std::tm& localTime, const char* format)
+{
+    std::ostringstream output;
+    output << std::put_time(&localTime, format);
+    return output.str();
+}
+
 } // namespace
 
 std::string formatUtcTimestamp(std::chrono::system_clock::time_point timePoint)
@@ -97,27 +132,44 @@ std::chrono::system_clock::time_point parseUtcTimestamp(const std::string& times
 
 std::string formatLocalTimeOfDay(std::chrono::system_clock::time_point timePoint)
 {
-    const std::time_t timestamp = std::chrono::system_clock::to_time_t(timePoint);
-    std::tm localTime{};
+    const std::tm localTime = toLocalTime(timePoint);
+    return formatLocalTime(localTime, "%H:%M");
+}
 
-#if defined(_WIN32)
-    if (localtime_s(&localTime, &timestamp) != 0) {
-        throw std::runtime_error("Failed to convert timestamp to local time.");
-    }
-#else
-    if (localtime_r(&timestamp, &localTime) == nullptr) {
-        throw std::runtime_error("Failed to convert timestamp to local time.");
-    }
-#endif
+std::string formatLocalMessageTimestamp(
+    std::chrono::system_clock::time_point timePoint,
+    std::chrono::system_clock::time_point currentTime)
+{
+    const std::tm messageLocalTime = toLocalTime(timePoint);
+    const std::tm currentLocalTime = toLocalTime(currentTime);
+    const std::chrono::sys_days messageDate = localDate(messageLocalTime);
+    const std::chrono::sys_days currentDate = localDate(currentLocalTime);
 
-    std::ostringstream output;
-    output << std::put_time(&localTime, "%H:%M");
-    return output.str();
+    if (messageDate == currentDate) {
+        return "今天 " + formatLocalTime(messageLocalTime, "%H:%M");
+    }
+    if (messageDate == currentDate - std::chrono::days{1}) {
+        return "昨天 " + formatLocalTime(messageLocalTime, "%H:%M");
+    }
+    if (messageDate == currentDate - std::chrono::days{2}) {
+        return "前天 " + formatLocalTime(messageLocalTime, "%H:%M");
+    }
+    if (messageLocalTime.tm_year == currentLocalTime.tm_year) {
+        return formatLocalTime(messageLocalTime, "%m-%d %H:%M");
+    }
+    return formatLocalTime(messageLocalTime, "%Y-%m-%d %H:%M");
 }
 
 std::string formatUtcTimestampAsLocalTimeOfDay(const std::string& timestamp)
 {
     return formatLocalTimeOfDay(parseUtcTimestamp(timestamp));
+}
+
+std::string formatUtcTimestampAsLocalMessageTimestamp(
+    const std::string& timestamp)
+{
+    return formatLocalMessageTimestamp(parseUtcTimestamp(timestamp),
+                                       std::chrono::system_clock::now());
 }
 
 std::string currentUtcTimestamp()
