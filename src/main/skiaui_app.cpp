@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cwchar>
 #include <cstring>
 #include <exception>
@@ -49,6 +50,9 @@
 #include "main/image_attachment_store.h"
 #include "main/skiaui_background.h"
 #include "platform/attachment_input.h"
+#include "platform/crash_reporter.h"
+#include "platform/crash_report.h"
+#include "platform/crash_uploader.h"
 #include "platform/startup_launch.h"
 #include "platform/text_encoding.h"
 #include "storage/app_paths.h"
@@ -175,6 +179,84 @@ std::vector<std::wstring> currentProcessArguments()
     }
     LocalFree(rawArguments);
     return arguments;
+}
+
+// 分发版本崩溃后没有任何现场，用户只能反馈"闪退了"。在进入任何 UI、网络和存储
+// 逻辑之前安装崩溃处理器，把转储、报告和日志快照落到 data/crashes 下。
+// 必须在 wWinMain 最前面调用：晚一步就可能漏掉启动阶段的崩溃。
+//
+// 崩溃采集是辅助能力，绝不能成为新的崩溃来源：解析数据目录在受限环境下会抛异常
+// （例如测试沙箱路径不匹配），这里失败时只记录一条普通日志，然后让程序照常启动。
+std::filesystem::path currentExecutablePath()
+{
+    std::wstring buffer(32768, L'\0');
+    const DWORD length = GetModuleFileNameW(
+        nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (length == 0 || length >= buffer.size()) {
+        return {};
+    }
+    buffer.resize(length);
+    return std::filesystem::path(buffer);
+}
+
+void installSkiaUiCrashHandler() noexcept
+{
+    try {
+        const relaydesk::storage::AppPaths appPaths =
+            relaydesk::storage::createAppPaths();
+
+        relaydesk::platform::CrashReportConfiguration configuration;
+        configuration.SetCrashDirectory(appPaths.GetCrashesDirectory());
+        configuration.SetLogsDirectory(appPaths.GetLogsDirectory());
+        configuration.SetApplicationVersion(
+            std::to_string(relaydesk::core::kAppVersion));
+#if defined(RELAYDESK_BUILD_CONFIGURATION)
+        configuration.SetBuildConfiguration(RELAYDESK_BUILD_CONFIGURATION);
+#endif
+#if defined(RELAYDESK_BUILD_TIMESTAMP)
+        configuration.SetBuildTimestamp(RELAYDESK_BUILD_TIMESTAMP);
+#endif
+        configuration.SetMaximumRetainedCrashes(10);
+        configuration.SetRecentLogLineCount(200);
+        configuration.SetDumpType(relaydesk::platform::CrashDumpType::Full);
+        // 崩溃采集完成后拉起的“崩溃处理程序”就是当前 exe：采集侧只负责落盘和
+        // 启动，是否上传由该进程弹窗询问用户决定。
+        configuration.SetReporterExecutablePath(currentExecutablePath());
+
+        relaydesk::platform::installCrashHandler(configuration);
+    } catch (const std::exception& error) {
+        relaydesk::platform::recordCrashActivity(
+            std::string("crash_handler.install_skipped message=") + error.what());
+    } catch (...) {
+        relaydesk::platform::recordCrashActivity(
+            "crash_handler.install_skipped message=unknown");
+    }
+}
+
+bool isCrashCaptureTestRequested()
+{
+    for (const std::wstring& argument : currentProcessArguments()) {
+        if (argument == L"--relaydesk-crash-test") {
+            return true;
+        }
+    }
+    return false;
+}
+
+// 故意触发一次访问违例，用来确认崩溃采集链路真的能产出转储与报告。
+// 只能在开发机上手工执行；它必然终止进程，不要接进自动化测试。
+[[noreturn]] void runCrashCaptureTest()
+{
+    relaydesk::platform::recordCrashActivity(
+        "crash_capture_test.trigger requested=--relaydesk-crash-test");
+
+    volatile int* invalidAddress = nullptr;
+    *invalidAddress = 1;
+
+    // 访问违例在 /EHsc 下不会被上面的写操作吞掉，能走到这里说明系统没有按预期
+    // 抛出结构化异常，直接终止以免测试结果被误读为"采集成功"。
+    TerminateProcess(GetCurrentProcess(), 6);
+    std::abort();
 }
 
 enum class ComposerAttachmentKind {
@@ -8365,6 +8447,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd)
             updateOptions =
                 relaydesk::runtime::parseAppUpdateApplyOptions(arguments);
         if (updateOptions.has_value()) {
+            // 更新助手模式不能被崩溃提示拦住，否则更新流程会依赖聊天 UI。
+            installSkiaUiCrashHandler();
             return relaydesk::runtime::runAppUpdateApplyMode(
                 updateOptions.value());
         }
@@ -8372,8 +8456,39 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd)
             && arguments.front() == L"--relaydesk-apply-update") {
             return 2;
         }
+
+        if (const std::optional<relaydesk::platform::CrashUploadOptions>
+                uploadOptions =
+                    relaydesk::platform::parseCrashUploadOptions(arguments)) {
+            return relaydesk::platform::runCrashUploadMode(*uploadOptions);
+        }
+        if (const std::optional<relaydesk::platform::CrashReporterOptions>
+                reporterOptions =
+                    relaydesk::platform::parseCrashReporterOptions(arguments)) {
+            return relaydesk::platform::runCrashReporterMode(*reporterOptions)
+                ? 0
+                : 2;
+        }
+
+        installSkiaUiCrashHandler();
+        if (isCrashCaptureTestRequested()) {
+            runCrashCaptureTest();
+        }
         return runSkiaUiApp(instance, showCmd);
+    } catch (const std::exception& error) {
+        // 未捕获的 C++ 异常以前被静默吞掉，只留下一个退出码 1。现在先记进日志并
+        // 留一份崩溃现场，再正常退出。
+        relaydesk::platform::recordCrashActivity(
+            std::string("wWinMain.uncaught_exception message=") + error.what());
+        std::fputs("relaydesk: uncaught exception: ", stderr);
+        std::fputs(error.what(), stderr);
+        std::fputc('\n', stderr);
+        core::async::shutdown();
+        return 1;
     } catch (...) {
+        relaydesk::platform::recordCrashActivity(
+            "wWinMain.uncaught_exception message=unknown");
+        std::fputs("relaydesk: uncaught exception: unknown\n", stderr);
         core::async::shutdown();
         return 1;
     }

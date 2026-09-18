@@ -16,6 +16,10 @@ public:
     const std::filesystem::path& GetConfigFilePath() const { return configFilePath_; }
     const std::filesystem::path& GetIdentityFilePath() const { return identityFilePath_; }
     const std::filesystem::path& GetLogsDirectory() const { return logsDirectory_; }
+    const std::filesystem::path& GetCrashesDirectory() const
+    {
+        return crashesDirectory_;
+    }
     const std::filesystem::path& GetPeersDirectory() const { return peersDirectory_; }
     const std::filesystem::path& GetStickersDirectory() const
     {
@@ -53,6 +57,7 @@ protected:
     std::filesystem::path configFilePath_;
     std::filesystem::path identityFilePath_;
     std::filesystem::path logsDirectory_;
+    std::filesystem::path crashesDirectory_;
     std::filesystem::path peersDirectory_;
     std::filesystem::path stickersDirectory_;
     std::filesystem::path favoriteStickersDirectory_;

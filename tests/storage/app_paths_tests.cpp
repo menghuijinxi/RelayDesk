@@ -104,6 +104,15 @@ int verifiesTestDataSandbox()
     if (appPaths.GetDataDirectory() != testDataDirectory) {
         return fail("Test data directory override was ignored.");
     }
+
+    // 崩溃处理器依赖这两个目录在启动早期就已存在：转储先写文件，不负责建目录树。
+    relaydesk::storage::ensureAppDirectories(appPaths);
+    if (!std::filesystem::is_directory(appPaths.GetLogsDirectory())) {
+        return fail("Logs directory was not created.");
+    }
+    if (!std::filesystem::is_directory(appPaths.GetCrashesDirectory())) {
+        return fail("Crashes directory was not created.");
+    }
     return 0;
 }
 
@@ -200,6 +209,15 @@ int main()
     if (appPaths.GetImageThumbnailsDirectory()
         != LR"(C:\RelayDesk\bin\data\images\thumbnails)") {
         return fail("Image thumbnails directory mismatch.");
+    }
+
+    // 崩溃产物必须固定落在日志同级目录，排查时才能和数据目录一起打包回传。
+    if (appPaths.GetLogsDirectory() != LR"(C:\RelayDesk\bin\data\logs)") {
+        return fail("Logs directory mismatch.");
+    }
+
+    if (appPaths.GetCrashesDirectory() != LR"(C:\RelayDesk\bin\data\crashes)") {
+        return fail("Crashes directory mismatch.");
     }
 
 #if defined(_WIN32)

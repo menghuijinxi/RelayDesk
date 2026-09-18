@@ -282,6 +282,9 @@ if(RELAYDESK_BUILD_SKIAUI)
         src/core/uuid.cpp
         src/platform/attachment_input_win.cpp
         src/platform/computer_name_win.cpp
+        src/platform/crash_report_win.cpp
+        src/platform/crash_reporter_win.cpp
+        src/platform/crash_uploader_win.cpp
         src/platform/startup_launch_state.cpp
         src/platform/startup_launch_win.cpp
         src/platform/text_encoding_win.cpp
@@ -312,6 +315,23 @@ if(RELAYDESK_BUILD_SKIAUI)
         SkiaUI::SkuiWin32Dx12
     )
 
+    # 分发版本必须保留调试信息：崩溃报告里的偏移量只有在能映射回函数名和行号时
+    # 才有价值。这里同时生成 PDB 并记录程序库信息，供符号归档使用。
+    if(MSVC)
+        target_compile_options(relaydesk_skiaui PRIVATE
+            "$<$<CONFIG:Release>:/Zi>"
+            "$<$<CONFIG:RelWithDebInfo>:/Zi>"
+        )
+        target_link_options(relaydesk_skiaui PRIVATE
+            "$<$<CONFIG:Release>:/DEBUG:FULL>"
+            "$<$<CONFIG:Release>:/OPT:REF>"
+            "$<$<CONFIG:Release>:/OPT:ICF>"
+            "$<$<CONFIG:RelWithDebInfo>:/DEBUG:FULL>"
+            "$<$<CONFIG:RelWithDebInfo>:/OPT:REF>"
+            "$<$<CONFIG:RelWithDebInfo>:/OPT:ICF>"
+        )
+    endif()
+
     if(WIN32)
         set(RELAYDESK_SKIAUI_ASSETS_RC
             ${CMAKE_SOURCE_DIR}/relaydesk_skiaui_assets.rc)
@@ -338,7 +358,10 @@ if(RELAYDESK_BUILD_SKIAUI)
             advapi32
             bcrypt
             comdlg32
+            dbghelp
             dwmapi
+            psapi
+            winhttp
             shell32
             winmm
         )
@@ -347,9 +370,20 @@ if(RELAYDESK_BUILD_SKIAUI)
     endif()
 
     if(MSVC)
-        target_compile_options(relaydesk_skiaui PRIVATE /W4 /permissive- /utf-8)
-        set_source_files_properties(src/main/app_runtime.cpp PROPERTIES
-            COMPILE_OPTIONS "$<$<CONFIG:Release>:/Od>;$<$<CONFIG:Release>:/Ob0>")
+        target_compile_options(relaydesk_skiaui PRIVATE
+            /W4
+            /permissive-
+            /utf-8
+            "$<$<CONFIG:Release>:/O1>"
+        )
+        # VS 2026 MSVC 14.51 在大型运行时翻译单元上可能因激进内联触发 C1001。
+        # 保留 /O1 优化，仅关闭该文件级内联，避免牺牲整体 Release 优化。
+        set_source_files_properties(
+            src/main/app_runtime.cpp
+            src/platform/startup_launch_state.cpp
+            src/platform/startup_launch_win.cpp
+            PROPERTIES
+            COMPILE_OPTIONS "$<$<CONFIG:Release>:/Ob0>")
     endif()
 
     if(RELAYDESK_HAS_BOOST_ASIO)
@@ -362,6 +396,36 @@ if(RELAYDESK_BUILD_SKIAUI)
         target_compile_definitions(relaydesk_skiaui PRIVATE RELAYDESK_HAS_BOOST_ASIO)
         target_link_libraries(relaydesk_skiaui PRIVATE relaydesk_boost_asio)
     endif()
+
+    # 崩溃报告要说明现场来自哪一次构建。配置名和构建时间由 CMake 注入，
+    # 版本号由 src/core/app_version.cpp 维护。
+    string(TIMESTAMP RELAYDESK_BUILD_TIMESTAMP "%Y-%m-%dT%H:%M:%SZ" UTC)
+    target_compile_definitions(relaydesk_skiaui PRIVATE
+        "RELAYDESK_BUILD_CONFIGURATION=\"$<CONFIG>\""
+        "RELAYDESK_BUILD_TIMESTAMP=\"${RELAYDESK_BUILD_TIMESTAMP}\""
+    )
+endif()
+
+# 符号归档：把每次发布产出的 exe 与 pdb 按版本集中存放。崩溃报告不能自带符号
+# （pdb 有几十 MB），所以排查时依赖这份归档把偏移量还原成函数名与行号。
+function(relaydesk_archive_symbols target)
+    if(NOT MSVC)
+        return()
+    endif()
+    add_custom_command(TARGET ${target} POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+            "-DSYMBOL_TARGET_FILE=$<TARGET_FILE:${target}>"
+            "-DSYMBOL_TARGET_PDB=$<TARGET_PDB_FILE:${target}>"
+            "-DSYMBOL_CONFIG=$<CONFIG>"
+            "-DSYMBOL_ARCHIVE_DIR=${CMAKE_SOURCE_DIR}/out/symbols"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ArchiveSymbols.cmake"
+        COMMENT "Archiving symbols for ${target}"
+        VERBATIM
+    )
+endfunction()
+
+if(RELAYDESK_BUILD_SKIAUI AND TARGET relaydesk_skiaui)
+    relaydesk_archive_symbols(relaydesk_skiaui)
 endif()
 
 enable_testing()
