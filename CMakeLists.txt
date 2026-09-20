@@ -871,6 +871,20 @@ endif()
 
 add_test(NAME relaydesk_core_tests COMMAND relaydesk_core_tests)
 
+add_executable(relaydesk_async_tests
+    tests/core/async_tests.cpp
+    src/core/platform/async.cpp
+)
+
+target_include_directories(relaydesk_async_tests PRIVATE src)
+target_compile_features(relaydesk_async_tests PRIVATE cxx_std_23)
+
+if(MSVC)
+    target_compile_options(relaydesk_async_tests PRIVATE /W4 /permissive- /utf-8)
+endif()
+
+add_test(NAME relaydesk_async_tests COMMAND relaydesk_async_tests)
+
 add_executable(relaydesk_text_encoding_tests
     tests/platform/text_encoding_tests.cpp
     src/platform/text_encoding_win.cpp

@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <string>
@@ -155,7 +156,14 @@ bool start(std::string key, bool restart, WorkFn work, ThenFn then)
             return;
         }
 
-        Result<Value> result = invokeWork<Value>(work, token);
+        Result<Value> result;
+        try {
+            result = invokeWork<Value>(work, token);
+        } catch (const std::exception& error) {
+            result.error = error.what();
+        } catch (...) {
+            result.error = "Unknown async worker exception.";
+        }
         Status finalStatus = result.ok ? Status::Done : Status::Failed;
         if (token.canceled()) {
             finalStatus = Status::Canceled;
