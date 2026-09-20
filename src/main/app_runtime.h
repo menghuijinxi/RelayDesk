@@ -1,5 +1,6 @@
 #pragma once
 
+#include "platform/github_app_update.h"
 #include "storage/history_store.h"
 #include "storage/peer_profile.h"
 
@@ -88,7 +89,21 @@ enum class AppUpdateInstallMode {
     InstallOnExit,
 };
 
+enum class AppUpdateSource {
+    LocalPeer,
+    GitHub,
+};
+
 enum class AppUpdatePromptState {
+    Available,
+    Downloading,
+    Failed,
+};
+
+enum class GitHubAppUpdateCheckState {
+    Idle,
+    Checking,
+    UpToDate,
     Available,
     Downloading,
     Failed,
@@ -202,6 +217,7 @@ public:
     const std::string& GetSourceDeviceId() const { return sourceDeviceId_; }
     const std::string& GetSourceDisplayName() const { return sourceDisplayName_; }
     const std::string& GetFileName() const { return fileName_; }
+    AppUpdateSource GetSource() const { return source_; }
     int GetAppVersion() const { return appVersion_; }
     AppUpdatePromptState GetState() const { return state_; }
     AppUpdateInstallMode GetInstallMode() const { return installMode_; }
@@ -219,6 +235,7 @@ public:
         sourceDisplayName_ = std::move(sourceDisplayName);
     }
     void SetFileName(std::string fileName) { fileName_ = std::move(fileName); }
+    void SetSource(AppUpdateSource source) { source_ = source; }
     void SetAppVersion(int appVersion) { appVersion_ = appVersion; }
     void SetState(AppUpdatePromptState state) { state_ = state; }
     void SetInstallMode(AppUpdateInstallMode installMode)
@@ -240,6 +257,7 @@ protected:
     std::string sourceDeviceId_;
     std::string sourceDisplayName_;
     std::string fileName_;
+    AppUpdateSource source_ = AppUpdateSource::LocalPeer;
     int appVersion_ = 0;
     AppUpdatePromptState state_ = AppUpdatePromptState::Available;
     AppUpdateInstallMode installMode_ = AppUpdateInstallMode::RestartNow;
@@ -585,6 +603,7 @@ public:
     }
     void SetScreenShakeCooldownMilliseconds(int milliseconds);
     std::optional<AppUpdatePrompt> GetAppUpdatePrompt();
+    std::string GetGitHubAppUpdateStatus();
     bool GetAppUpdateExitRequested() const
     {
         return appUpdateExitRequested_.load(std::memory_order_relaxed);
@@ -600,6 +619,7 @@ public:
     void updateLocalDisplayName(std::string displayName);
     void refreshPeersIfNeeded();
     void requestPeerDiscovery();
+    void checkGitHubAppUpdate();
     void selectPeer(std::string deviceId);
     void loadMoreSelectedPeerMessages();
     bool loadSelectedPeerMessagesAround(const std::string& messageId);
@@ -639,6 +659,9 @@ protected:
     void maybeOfferAppUpdateFromPeer(const PeerListItem& peer);
     void requestAppUpdateFromPeer(const PeerListItem& peer,
                                   AppUpdateInstallMode installMode);
+    void requestAppUpdateFromGitHub(
+        const relaydesk::platform::GitHubAppUpdateRelease& release,
+        AppUpdateInstallMode installMode);
     void sendAppUpdatePackageToPeer(
         const PeerListItem& peer,
         const relaydesk::net::AppUpdateRequestMessage& request);
@@ -766,6 +789,11 @@ protected:
         incomingScreenShakeCooldowns_;
     std::optional<AppUpdatePrompt> appUpdatePrompt_;
     std::optional<PendingIncomingAppUpdate> scheduledAppUpdate_;
+    std::optional<relaydesk::platform::GitHubAppUpdateRelease>
+        githubAppUpdateRelease_;
+    GitHubAppUpdateCheckState githubAppUpdateCheckState_ =
+        GitHubAppUpdateCheckState::Idle;
+    std::string githubAppUpdateError_;
     std::vector<relaydesk::storage::ChatMessageRecord> selectedPeerMessages_;
     std::unordered_set<std::string> transientSelectedPeerMessageIds_;
     std::string selectedPeerDeviceId_;

@@ -6,6 +6,7 @@
 #include "core/time.h"
 #include "core/uuid.h"
 #include "platform/computer_name.h"
+#include "platform/github_app_update.h"
 #include "platform/text_encoding.h"
 #include "platform/windows_install_id.h"
 #include "storage/app_paths.h"
@@ -51,6 +52,11 @@ namespace {
 using namespace std::chrono_literals;
 
 constexpr const char* kDiscoveryLogFileName = "discovery.log";
+constexpr const char* kGitHubRepository = "menghuijinxi/RelayDesk";
+constexpr const char* kGitHubAppUpdateSourceId = "github";
+constexpr const char* kGitHubAppUpdateSourceName = "GitHub";
+constexpr const char* kGitHubAppUpdateTaskKey = "relaydesk.update.github.check";
+constexpr const char* kGitHubAppUpdateAssetName = "relaydesk_skiaui.exe";
 constexpr std::size_t kSelectedPeerMessagePageSize = 30;
 constexpr auto kPeerOnlineTimeout = 90s;
 constexpr auto kPeerStatusRefreshInterval = 5s;
@@ -2778,6 +2784,38 @@ std::optional<AppUpdatePrompt> RelayDeskRuntime::GetAppUpdatePrompt()
     return appUpdatePrompt_;
 }
 
+std::string RelayDeskRuntime::GetGitHubAppUpdateStatus()
+{
+    std::lock_guard lock(pendingAppUpdateMutex_);
+    switch (githubAppUpdateCheckState_) {
+    case GitHubAppUpdateCheckState::Checking:
+        return "正在检查更新";
+    case GitHubAppUpdateCheckState::Downloading:
+        return "正在下载更新";
+    case GitHubAppUpdateCheckState::UpToDate:
+        return "当前已是最新版本";
+    case GitHubAppUpdateCheckState::Failed:
+        return githubAppUpdateError_.empty()
+            ? "检查更新失败"
+            : "更新失败：" + githubAppUpdateError_;
+    case GitHubAppUpdateCheckState::Available:
+        if (scheduledAppUpdate_.has_value()
+            && scheduledAppUpdate_->GetSourceDeviceId()
+                == kGitHubAppUpdateSourceId) {
+            return "更新已下载，退出程序后安装";
+        }
+        if (githubAppUpdateRelease_.has_value()) {
+            return "发现新版本 "
+                + std::to_string(
+                    githubAppUpdateRelease_->GetAppVersion());
+        }
+        return "发现新版本";
+    case GitHubAppUpdateCheckState::Idle:
+        return "尚未检查更新";
+    }
+    return "尚未检查更新";
+}
+
 std::uint64_t RelayDeskRuntime::ConsumePendingUserNotificationCount()
 {
     return pendingUserNotificationCount_.exchange(0);
@@ -2801,6 +2839,95 @@ void RelayDeskRuntime::SetScreenShakeCooldownMilliseconds(int milliseconds)
         throw std::invalid_argument("Screen shake cooldown is out of range.");
     }
     screenShakeCooldownMilliseconds_.store(milliseconds);
+}
+
+void RelayDeskRuntime::checkGitHubAppUpdate()
+{
+    {
+        std::lock_guard lock(pendingAppUpdateMutex_);
+        if (githubAppUpdateCheckState_ == GitHubAppUpdateCheckState::Checking
+            || githubAppUpdateCheckState_
+                == GitHubAppUpdateCheckState::Downloading) {
+            return;
+        }
+
+        githubAppUpdateCheckState_ = GitHubAppUpdateCheckState::Checking;
+        githubAppUpdateError_.clear();
+        githubAppUpdateRelease_.reset();
+        if (appUpdatePrompt_.has_value()
+            && appUpdatePrompt_->GetSource() == AppUpdateSource::GitHub) {
+            appUpdatePrompt_.reset();
+        }
+    }
+    requestUiRefresh();
+
+    const bool accepted = ::core::async::restart(
+        kGitHubAppUpdateTaskKey,
+        [] {
+            return ::core::async::success(
+                relaydesk::platform::fetchGitHubAppUpdateRelease(
+                    kGitHubRepository,
+                    kGitHubAppUpdateAssetName));
+        },
+        [this](const ::core::async::Result<
+                   relaydesk::platform::GitHubAppUpdateRelease>& result) {
+            if (!result.ok) {
+                {
+                    std::lock_guard lock(pendingAppUpdateMutex_);
+                    githubAppUpdateCheckState_ =
+                        GitHubAppUpdateCheckState::Failed;
+                    githubAppUpdateError_ = result.error;
+                }
+                requestUiRefresh();
+                return;
+            }
+
+            const relaydesk::platform::GitHubAppUpdateRelease& release =
+                result.value;
+            {
+                std::lock_guard lock(pendingAppUpdateMutex_);
+                if (release.GetAppVersion() <= relaydesk::core::kAppVersion) {
+                    githubAppUpdateCheckState_ =
+                        GitHubAppUpdateCheckState::UpToDate;
+                    githubAppUpdateRelease_.reset();
+                    githubAppUpdateError_.clear();
+                    if (appUpdatePrompt_.has_value()
+                        && appUpdatePrompt_->GetSource()
+                            == AppUpdateSource::GitHub) {
+                        appUpdatePrompt_.reset();
+                    }
+                } else {
+                    githubAppUpdateCheckState_ =
+                        GitHubAppUpdateCheckState::Available;
+                    githubAppUpdateRelease_ = release;
+                    githubAppUpdateError_.clear();
+
+                    // 更新弹窗只有一个，不能覆盖正在显示的局域网更新。
+                    if (!appUpdatePrompt_.has_value()
+                        || appUpdatePrompt_->GetSource()
+                            == AppUpdateSource::GitHub) {
+                        AppUpdatePrompt prompt;
+                        prompt.SetSource(AppUpdateSource::GitHub);
+                        prompt.SetSourceDeviceId(kGitHubAppUpdateSourceId);
+                        prompt.SetSourceDisplayName(kGitHubAppUpdateSourceName);
+                        prompt.SetFileName(release.GetAssetName());
+                        prompt.SetAppVersion(release.GetAppVersion());
+                        prompt.SetExpectedSize(release.GetAssetSize());
+                        prompt.SetState(AppUpdatePromptState::Available);
+                        appUpdatePrompt_ = std::move(prompt);
+                    }
+                }
+            }
+            requestUiRefresh();
+        });
+    if (!accepted) {
+        {
+            std::lock_guard lock(pendingAppUpdateMutex_);
+            githubAppUpdateCheckState_ = GitHubAppUpdateCheckState::Failed;
+            githubAppUpdateError_ = "更新检查任务未能启动。";
+        }
+        requestUiRefresh();
+    }
 }
 
 void RelayDeskRuntime::updateLocalDisplayName(std::string displayName)
@@ -2912,6 +3039,13 @@ void RelayDeskRuntime::maybeOfferAppUpdateFromPeer(const PeerListItem& peer)
         }
 
         if (appUpdatePrompt_.has_value()
+            && appUpdatePrompt_->GetSource() == AppUpdateSource::GitHub
+            && appUpdatePrompt_->GetState() != AppUpdatePromptState::Failed
+            && bestPeer->GetAppVersion()
+                <= appUpdatePrompt_->GetAppVersion()) {
+            return;
+        }
+        if (appUpdatePrompt_.has_value()
             && appUpdatePrompt_->GetSourceDeviceId() == bestPeer->GetDeviceId()
             && appUpdatePrompt_->GetAppVersion() == bestPeer->GetAppVersion()) {
             return;
@@ -2927,7 +3061,7 @@ void RelayDeskRuntime::maybeOfferAppUpdateFromPeer(const PeerListItem& peer)
         prompt.SetSourceDisplayName(bestPeer->GetDisplayName().empty()
                                         ? bestPeer->GetHostName()
                                         : bestPeer->GetDisplayName());
-        prompt.SetFileName("relaydesk.exe");
+        prompt.SetFileName(kGitHubAppUpdateAssetName);
         prompt.SetAppVersion(bestPeer->GetAppVersion());
         prompt.SetState(AppUpdatePromptState::Available);
         appUpdatePrompt_ = std::move(prompt);
@@ -3065,6 +3199,159 @@ void RelayDeskRuntime::requestAppUpdateFromPeer(const PeerListItem& peer,
 #endif
 }
 
+void RelayDeskRuntime::requestAppUpdateFromGitHub(
+    const relaydesk::platform::GitHubAppUpdateRelease& release,
+    AppUpdateInstallMode installMode)
+{
+#if defined(RELAYDESK_HAS_BOOST_ASIO)
+    const std::string requestId = relaydesk::core::createUuidV4();
+    try {
+        if (release.GetAppVersion() <= relaydesk::core::kAppVersion) {
+            throw std::runtime_error("GitHub 没有可安装的新版本。");
+        }
+        if (release.GetAssetName() != kGitHubAppUpdateAssetName) {
+            throw std::runtime_error("GitHub 更新文件名称不正确。");
+        }
+
+        const auto appPaths = relaydesk::storage::createAppPaths();
+        const std::string fileName = appUpdatePackageFileName(appPaths);
+        const std::filesystem::path tempFilePath =
+            makeAppUpdateTempFilePath(appPaths, requestId);
+        std::filesystem::create_directories(tempFilePath.parent_path());
+        {
+            std::ofstream output(tempFilePath,
+                                 std::ios::binary | std::ios::trunc);
+            if (!output) {
+                throw std::runtime_error(
+                    "无法创建 GitHub 更新临时文件。");
+            }
+        }
+
+        PendingIncomingAppUpdate update;
+        update.SetRequestId(requestId);
+        update.SetSourceDeviceId(kGitHubAppUpdateSourceId);
+        update.SetAppVersion(release.GetAppVersion());
+        update.SetFileName(fileName);
+        update.SetExpectedSize(release.GetAssetSize());
+        update.SetTempFilePath(tempFilePath);
+        update.SetInstallMode(installMode);
+        update.SetStartedAt(std::chrono::steady_clock::now());
+        {
+            std::lock_guard lock(pendingAppUpdateMutex_);
+            pendingIncomingAppUpdates_[requestId] = update;
+            githubAppUpdateCheckState_ =
+                GitHubAppUpdateCheckState::Downloading;
+            githubAppUpdateError_.clear();
+            if (appUpdatePrompt_.has_value()
+                && appUpdatePrompt_->GetSource() == AppUpdateSource::GitHub
+                && appUpdatePrompt_->GetAppVersion()
+                    == release.GetAppVersion()) {
+                appUpdatePrompt_->SetState(AppUpdatePromptState::Downloading);
+                appUpdatePrompt_->SetInstallMode(installMode);
+                appUpdatePrompt_->SetFileName(fileName);
+                appUpdatePrompt_->SetExpectedSize(release.GetAssetSize());
+                appUpdatePrompt_->SetReceivedSize(0);
+                appUpdatePrompt_->SetBytesPerSecond(0.0);
+                appUpdatePrompt_->SetErrorMessage({});
+            }
+        }
+        requestUiRefresh();
+
+        const bool accepted = ::core::async::runOnce(
+            "relaydesk.update.github.download." + requestId,
+            [this, requestId, release, tempFilePath](
+                const ::core::async::CancelToken& cancelToken) {
+                relaydesk::platform::downloadGitHubAppUpdate(
+                    release,
+                    tempFilePath,
+                    [&cancelToken] {
+                        return cancelToken.canceled();
+                    },
+                    [this, requestId](std::uintmax_t receivedSize) {
+                        {
+                            std::lock_guard lock(pendingAppUpdateMutex_);
+                            const auto existing =
+                                pendingIncomingAppUpdates_.find(requestId);
+                            if (existing == pendingIncomingAppUpdates_.end()) {
+                                return;
+                            }
+                            existing->second.SetReceivedSize(receivedSize);
+                            if (appUpdatePrompt_.has_value()
+                                && appUpdatePrompt_->GetSource()
+                                    == AppUpdateSource::GitHub
+                                && appUpdatePrompt_->GetAppVersion()
+                                    == existing->second.GetAppVersion()) {
+                                appUpdatePrompt_->SetReceivedSize(
+                                    receivedSize);
+                                const auto startedAt =
+                                    existing->second.GetStartedAt();
+                                const double elapsedSeconds =
+                                    std::chrono::duration<double>(
+                                        std::chrono::steady_clock::now()
+                                            - startedAt)
+                                        .count();
+                                appUpdatePrompt_->SetBytesPerSecond(
+                                    elapsedSeconds > 0.0
+                                        ? static_cast<double>(receivedSize)
+                                            / elapsedSeconds
+                                        : 0.0);
+                            }
+                        }
+                        requestUiRefresh();
+                    });
+                return ::core::async::success();
+            },
+            [this,
+             requestId,
+             appVersion = release.GetAppVersion()](
+                const ::core::async::Result<void>& result) {
+                if (!result.ok) {
+                    markAppUpdateFailed(kGitHubAppUpdateSourceId,
+                                        appVersion,
+                                        result.error);
+                    return;
+                }
+
+                PendingIncomingAppUpdate update;
+                {
+                    std::lock_guard lock(pendingAppUpdateMutex_);
+                    const auto existing =
+                        pendingIncomingAppUpdates_.find(requestId);
+                    if (existing == pendingIncomingAppUpdates_.end()) {
+                        return;
+                    }
+                    update = existing->second;
+                    pendingIncomingAppUpdates_.erase(existing);
+                }
+
+                try {
+                    if (update.GetReceivedSize() != update.GetExpectedSize()) {
+                        throw std::runtime_error(
+                            "GitHub 更新文件下载不完整。");
+                    }
+                    completeDownloadedAppUpdate(update);
+                } catch (const std::exception& error) {
+                    markAppUpdateFailed(kGitHubAppUpdateSourceId,
+                                        appVersion,
+                                        error.what());
+                }
+            });
+        if (!accepted) {
+            markAppUpdateFailed(kGitHubAppUpdateSourceId,
+                                release.GetAppVersion(),
+                                "更新下载任务未能启动。");
+        }
+    } catch (const std::exception& error) {
+        markAppUpdateFailed(kGitHubAppUpdateSourceId,
+                            release.GetAppVersion(),
+                            error.what());
+    }
+#else
+    (void)release;
+    (void)installMode;
+#endif
+}
+
 void RelayDeskRuntime::sendAppUpdatePackageToPeer(
     const PeerListItem& peer,
     const relaydesk::net::AppUpdateRequestMessage& request)
@@ -3132,6 +3419,11 @@ void RelayDeskRuntime::completeDownloadedAppUpdate(
         {
             std::lock_guard lock(pendingAppUpdateMutex_);
             scheduledAppUpdate_ = update;
+            if (update.GetSourceDeviceId() == kGitHubAppUpdateSourceId) {
+                githubAppUpdateCheckState_ =
+                    GitHubAppUpdateCheckState::Available;
+                githubAppUpdateError_ = "更新已下载，退出程序后安装。";
+            }
             if (appUpdatePrompt_.has_value()
                 && appUpdatePrompt_->GetSourceDeviceId()
                     == update.GetSourceDeviceId()
@@ -3276,6 +3568,7 @@ void RelayDeskRuntime::markAppUpdateFailed(const std::string& sourceDeviceId,
                                            int appVersion,
                                            std::string errorMessage)
 {
+    const std::string failureMessage = errorMessage;
     std::vector<std::filesystem::path> tempDirectories;
     {
         std::lock_guard lock(pendingAppUpdateMutex_);
@@ -3299,6 +3592,10 @@ void RelayDeskRuntime::markAppUpdateFailed(const std::string& sourceDeviceId,
             && appUpdatePrompt_->GetAppVersion() == appVersion) {
             appUpdatePrompt_->SetState(AppUpdatePromptState::Failed);
             appUpdatePrompt_->SetErrorMessage(std::move(errorMessage));
+        }
+        if (sourceDeviceId == kGitHubAppUpdateSourceId) {
+            githubAppUpdateCheckState_ = GitHubAppUpdateCheckState::Failed;
+            githubAppUpdateError_ = failureMessage;
         }
     }
 
@@ -4348,6 +4645,8 @@ bool RelayDeskRuntime::applyNextPendingScreenShakeRequest()
 void RelayDeskRuntime::startAppUpdate(AppUpdateInstallMode installMode)
 {
     std::optional<AppUpdatePrompt> prompt;
+    std::optional<relaydesk::platform::GitHubAppUpdateRelease>
+        githubRelease;
     {
         std::lock_guard lock(pendingAppUpdateMutex_);
         if (!appUpdatePrompt_.has_value()
@@ -4355,6 +4654,20 @@ void RelayDeskRuntime::startAppUpdate(AppUpdateInstallMode installMode)
             return;
         }
         prompt = appUpdatePrompt_;
+        if (prompt->GetSource() == AppUpdateSource::GitHub) {
+            githubRelease = githubAppUpdateRelease_;
+        }
+    }
+
+    if (prompt->GetSource() == AppUpdateSource::GitHub) {
+        if (!githubRelease.has_value()) {
+            markAppUpdateFailed(kGitHubAppUpdateSourceId,
+                                prompt->GetAppVersion(),
+                                "GitHub 更新信息已失效，请重新检查更新。");
+            return;
+        }
+        requestAppUpdateFromGitHub(githubRelease.value(), installMode);
+        return;
     }
 
     const std::optional<PeerListItem> peer =
@@ -4372,18 +4685,33 @@ void RelayDeskRuntime::startAppUpdate(AppUpdateInstallMode installMode)
 void RelayDeskRuntime::dismissAppUpdatePrompt()
 {
     std::vector<std::filesystem::path> tempDirectories;
+    std::vector<std::string> githubDownloadTaskKeys;
     {
         std::lock_guard lock(pendingAppUpdateMutex_);
         if (appUpdatePrompt_.has_value()) {
-            dismissedAppUpdateVersions_[appUpdatePrompt_->GetSourceDeviceId()] =
-                appUpdatePrompt_->GetAppVersion();
-            requestedAppUpdateVersions_.erase(appUpdatePrompt_->GetSourceDeviceId());
+            const std::string sourceDeviceId =
+                appUpdatePrompt_->GetSourceDeviceId();
+            if (appUpdatePrompt_->GetSource() == AppUpdateSource::GitHub) {
+                githubAppUpdateCheckState_ =
+                    GitHubAppUpdateCheckState::Idle;
+                githubAppUpdateRelease_.reset();
+                githubAppUpdateError_.clear();
+            } else {
+                dismissedAppUpdateVersions_[sourceDeviceId] =
+                    appUpdatePrompt_->GetAppVersion();
+                requestedAppUpdateVersions_.erase(sourceDeviceId);
+            }
             for (auto iterator = pendingIncomingAppUpdates_.begin();
                  iterator != pendingIncomingAppUpdates_.end();) {
                 if (iterator->second.GetSourceDeviceId()
-                    == appUpdatePrompt_->GetSourceDeviceId()) {
+                    == sourceDeviceId) {
                     tempDirectories.push_back(
                         iterator->second.GetTempFilePath().parent_path());
+                    if (sourceDeviceId == kGitHubAppUpdateSourceId) {
+                        githubDownloadTaskKeys.push_back(
+                            "relaydesk.update.github.download."
+                            + iterator->second.GetRequestId());
+                    }
                     iterator = pendingIncomingAppUpdates_.erase(iterator);
                 } else {
                     ++iterator;
@@ -4393,6 +4721,9 @@ void RelayDeskRuntime::dismissAppUpdatePrompt()
         appUpdatePrompt_.reset();
     }
 
+    for (const std::string& taskKey : githubDownloadTaskKeys) {
+        (void)::core::async::cancel(taskKey);
+    }
     for (const auto& directory : tempDirectories) {
         std::error_code error;
         std::filesystem::remove_all(directory, error);

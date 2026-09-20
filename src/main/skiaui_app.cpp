@@ -4185,6 +4185,7 @@ void initializeSettingsState(skui::Runtime& runtime,
         ? localUser.GetHostName()
         : localUser.GetDisplayName();
     binding.settingsSavedProfileName = binding.settingsProfileName;
+    binding.updateStatus = relayRuntime.GetGitHubAppUpdateStatus();
     binding.screenShakeCooldownMilliseconds =
         relayRuntime.GetScreenShakeCooldownMilliseconds();
     if (binding.backgroundController != nullptr) {
@@ -4214,6 +4215,8 @@ std::string makeAppUpdatePromptSignature(
     }
 
     std::string signature = prompt->GetSourceDeviceId();
+    signature += '|';
+    signature += std::to_string(static_cast<int>(prompt->GetSource()));
     signature += '|';
     signature += prompt->GetSourceDisplayName();
     signature += '|';
@@ -4272,12 +4275,15 @@ void applyAppUpdatePrompt(
                   downloading ? "正在下载更新"
                               : failed ? "更新失败" : "发现新版本");
 
+    const bool fromGitHub =
+        prompt->GetSource() == relaydesk::runtime::AppUpdateSource::GitHub;
     const std::string sourceName = prompt->GetSourceDisplayName().empty()
-        ? "附近设备"
+        ? (fromGitHub ? "GitHub" : "附近设备")
         : prompt->GetSourceDisplayName();
     addTextUpdate(updates,
                   "app-update-message",
-                  sourceName + " 提供了更新后的 RelayDesk。");
+                  fromGitHub ? "GitHub 发布了新的 RelayDesk 版本。"
+                             : sourceName + " 提供了更新后的 RelayDesk。");
     addTextUpdate(updates,
                   "app-update-version",
                   "当前版本 " +
@@ -4286,7 +4292,7 @@ void applyAppUpdatePrompt(
                       std::to_string(prompt->GetAppVersion()));
 
     const std::string fileName = prompt->GetFileName().empty()
-        ? "relaydesk.exe"
+        ? "relaydesk_skiaui.exe"
         : prompt->GetFileName();
     addTextUpdate(updates, "app-update-file-name", fileName);
     addTextUpdate(updates,
@@ -4417,6 +4423,8 @@ std::string makeRelayDeskUiSignature(
     }
     signature += "--app-update--\n";
     signature += makeAppUpdatePromptSignature(updatePrompt);
+    signature += "\n--github-update-status--\n";
+    signature += binding.updateStatus;
     return signature;
 }
 
@@ -5401,7 +5409,8 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
                 binding.screenShakeCooldownMilliseconds);
             applySettingsView(runtime, binding);
         } else if (action == "settings-check-update") {
-            binding.updateStatus = "检查更新功能占位，等待接入更新服务";
+            relayRuntime.checkGitHubAppUpdate();
+            binding.updateStatus = relayRuntime.GetGitHubAppUpdateStatus();
             applySettingsView(runtime, binding);
         } else if (action == kQuoteMessageAction) {
             const relaydesk::storage::ChatMessageRecord* message =
@@ -5611,6 +5620,8 @@ bool refreshRelayDeskDevicePanelIfChanged(SkiaUiRuntimeBinding& binding,
                                    binding,
                                    changedAttachmentIds);
     binding.relayRuntime->refreshPeersIfNeeded();
+    binding.updateStatus =
+        binding.relayRuntime->GetGitHubAppUpdateStatus();
     const std::optional<relaydesk::runtime::AppUpdatePrompt> updatePrompt =
         binding.relayRuntime->GetAppUpdatePrompt();
     const std::string nextSignature =

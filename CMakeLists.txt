@@ -285,6 +285,7 @@ if(RELAYDESK_BUILD_SKIAUI)
         src/platform/crash_report_win.cpp
         src/platform/crash_reporter_win.cpp
         src/platform/crash_uploader_win.cpp
+        src/platform/github_app_update_win.cpp
         src/platform/startup_launch_state.cpp
         src/platform/startup_launch_win.cpp
         src/platform/text_encoding_win.cpp
@@ -672,6 +673,7 @@ if(WIN32 AND RELAYDESK_HAS_EUI_NEO AND RELAYDESK_HAS_BOOST_ASIO)
         src/core/uuid.cpp
         src/platform/attachment_input_win.cpp
         src/platform/computer_name_win.cpp
+        src/platform/github_app_update_win.cpp
         src/platform/text_encoding_win.cpp
         src/platform/windows_install_id_win.cpp
         src/net/boost_asio_tcp_peer_transport.cpp
@@ -724,6 +726,7 @@ if(WIN32 AND RELAYDESK_HAS_EUI_NEO AND RELAYDESK_HAS_BOOST_ASIO)
         relaydesk_boost_asio
         nlohmann_json::nlohmann_json
         shell32
+        winhttp
         windowscodecs
         ole32
         bcrypt
@@ -742,6 +745,33 @@ if(WIN32 AND RELAYDESK_HAS_EUI_NEO AND RELAYDESK_HAS_BOOST_ASIO)
     set_tests_properties(relaydesk_app_runtime_update_prompt_tests PROPERTIES
         ENVIRONMENT "${app_runtime_test_environment}"
     )
+endif()
+
+if(WIN32)
+    add_executable(relaydesk_github_app_update_tests
+        tests/platform/github_app_update_tests.cpp
+        src/platform/github_app_update_win.cpp
+    )
+
+    target_include_directories(relaydesk_github_app_update_tests PRIVATE src)
+    target_compile_features(relaydesk_github_app_update_tests PRIVATE cxx_std_23)
+    target_compile_definitions(relaydesk_github_app_update_tests PRIVATE
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+    )
+    target_link_libraries(relaydesk_github_app_update_tests PRIVATE
+        nlohmann_json::nlohmann_json
+        bcrypt
+        winhttp
+    )
+
+    if(MSVC)
+        target_compile_options(relaydesk_github_app_update_tests
+            PRIVATE /W4 /permissive- /utf-8)
+    endif()
+
+    add_test(NAME relaydesk_github_app_update_tests
+        COMMAND relaydesk_github_app_update_tests)
 endif()
 
 add_executable(relaydesk_identity_tests
