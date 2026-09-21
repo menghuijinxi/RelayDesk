@@ -6314,7 +6314,7 @@ public:
         parts.push_back(makeCaptureFilePart(
             "compound-file",
             relaydesk::storage::MessagePartType::File,
-            "relaydesk_vscode_icon_resources.rc",
+            "relaydesk_skiaui_assets.rc",
             6900,
             0,
             relaydesk::storage::TransferState::Cancelled,
@@ -6359,7 +6359,7 @@ public:
         relaydesk::runtime::AppUpdatePrompt prompt;
         prompt.SetSourceDeviceId("capture-peer");
         prompt.SetSourceDisplayName("Alex-PC");
-        prompt.SetFileName("relaydesk.exe");
+        prompt.SetFileName("relaydesk_skiaui.exe");
         prompt.SetAppVersion(relaydesk::core::kAppVersion + 1);
         prompt.SetState(state);
         prompt.SetExpectedSize(100u * 1024u * 1024u);
@@ -7100,7 +7100,7 @@ int captureSkiaUiPng(const CaptureOptions& options)
         }
         binding.composerAttachments.push_back(documentAttachment.value());
         constexpr std::string_view kLongCaptureFileName =
-            "relaydesk_vscode_icon_resources.rc";
+            "relaydesk_skiaui_assets.rc";
         binding.composerAttachments.back().displayName = kLongCaptureFileName;
         const std::string fileAttachmentMarkup =
             makeComposerAttachmentMarkup(binding.composerAttachments.back());

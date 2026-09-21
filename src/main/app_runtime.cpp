@@ -1200,7 +1200,7 @@ std::string appUpdatePackageFileName(
     const std::string executableFileName =
         filesystemPathToUtf8String(appPaths.GetExecutablePath().filename());
     if (executableFileName.empty()) {
-        return "relaydesk.exe";
+        return "relaydesk_skiaui.exe";
     }
     return sanitizeFileName(executableFileName);
 }

@@ -6,18 +6,6 @@
     "nlohmann-json"
   ],
   "features": {
-    "skia-renderer": {
-      "description": "Experimental Skia OpenGL renderer for EUI-NEO.",
-      "dependencies": [
-        {
-          "name": "skia",
-          "default-features": false,
-          "features": [
-            "gl"
-          ]
-        }
-      ]
-    },
     "skiaui-renderer": {
       "description": "SkiaUI executable dependencies.",
       "dependencies": [

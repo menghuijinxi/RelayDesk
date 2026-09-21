@@ -7,17 +7,6 @@
   },
   "configurePresets": [
     {
-      "name": "windows-vcpkg-base",
-      "hidden": true,
-      "toolchainFile": "${sourceDir}/../out/vcpkg/scripts/buildsystems/vcpkg.cmake",
-      "cacheVariables": {
-        "VCPKG_TARGET_TRIPLET": "x64-windows-static",
-        "VCPKG_HOST_TRIPLET": "x64-windows",
-        "VCPKG_MANIFEST_FEATURES": "skia-renderer",
-        "RELAYDESK_USE_SKIA_EUI_BACKEND": "ON"
-      }
-    },
-    {
       "name": "windows-skiaui-vcpkg-base",
       "hidden": true,
       "toolchainFile": "${sourceDir}/../out/vcpkg/scripts/buildsystems/vcpkg.cmake",
@@ -26,43 +15,42 @@
         "VCPKG_HOST_TRIPLET": "x64-windows",
         "VCPKG_INSTALLED_DIR": "${sourceDir}/../out/vcpkg/installed-static",
         "VCPKG_MANIFEST_FEATURES": "skiaui-renderer",
-        "RELAYDESK_USE_SKIA_EUI_BACKEND": "OFF",
         "RELAYDESK_BUILD_SKIAUI": "ON"
       }
     },
     {
       "name": "windows-msvc-debug",
-      "displayName": "Windows MSVC Debug",
-      "inherits": "windows-vcpkg-base",
+      "displayName": "Windows MSVC Debug SkiaUI",
+      "inherits": "windows-skiaui-vcpkg-base",
       "generator": "Visual Studio 18 2026",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/out/build/windows-msvc-debug",
       "cacheVariables": {
         "CMAKE_SYSTEM_VERSION": "10.0.26100.0",
-        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDebugDLL"
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDebug"
       }
     },
     {
       "name": "windows-msvc-release",
-      "displayName": "Windows MSVC Release",
-      "inherits": "windows-vcpkg-base",
+      "displayName": "Windows MSVC Release SkiaUI",
+      "inherits": "windows-skiaui-vcpkg-base",
       "generator": "Visual Studio 18 2026",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/out/build/windows-msvc-release",
       "cacheVariables": {
         "CMAKE_SYSTEM_VERSION": "10.0.26100.0",
-        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDLL"
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded"
       }
     },
     {
       "name": "windows-msvc-nmake-debug",
-      "displayName": "Windows MSVC NMake Debug",
-      "inherits": "windows-vcpkg-base",
+      "displayName": "Windows MSVC NMake Debug SkiaUI",
+      "inherits": "windows-skiaui-vcpkg-base",
       "generator": "NMake Makefiles",
       "binaryDir": "${sourceDir}/out/build/windows-msvc-nmake-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDebugDLL"
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDebug"
       }
     },
     {

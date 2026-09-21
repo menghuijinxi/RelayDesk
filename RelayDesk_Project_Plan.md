@@ -9,7 +9,7 @@ RelayDesk 是一个面向内网环境的点对点桌面聊天工具。目标是�
 核心要求：
 
 - 使用 C++23 和 CMake 开发。
-- UI 使用 [sudoevolve/EUI-NEO](https://github.com/sudoevolve/EUI-NEO)。
+- UI 使用 SkiaUI，正式程序目标为 `relaydesk_skiaui`。
 - 聊天记录使用 JSONL 存储。
 - 聊天记录、默认发送文件副本、默认接收文件和文件夹都存储在软件工作目录下。
 - 默认显示当前电脑名作为用户名。
@@ -31,25 +31,19 @@ RelayDesk 是一个面向内网环境的点对点桌面聊天工具。目标是�
 
 - 语言：C++23。
 - 构建：CMake。
-- UI：EUI-NEO，通过 CMake `FetchContent` 拉取固定 commit 集成，不使用 git submodule。
-- 窗口后端：优先使用 EUI-NEO 默认 GLFW 后端。
-- 渲染后端：优先 Vulkan，OpenGL 仅作为兼容 fallback 或诊断后端。
+- UI：SkiaUI，通过 vcpkg 的 `skiaui-renderer` feature 引入。
+- 窗口与渲染后端：Windows Win32 + DirectX 12。
 - JSON：使用 vcpkg 提供的 `nlohmann-json`，便于 JSONL 读写和协议头序列化。
 - 网络：使用 vcpkg 提供的 Boost.Asio，通过 CMake `find_package(Boost)` 接入。
 - 哈希：SHA-256，用于文件完整性校验、附件去重和内容校验。
 - UUID：UUIDv7 或随机 UUIDv4，用于消息 ID、传输任务 ID。
 
-### 2.2 EUI-NEO 集成方式
+### 2.2 SkiaUI 集成方式
 
-RelayDesk 使用 `FetchContent` 集成 EUI-NEO：
+RelayDesk 使用 vcpkg 引入 SkiaUI，界面入口集中在 `src/main/skiaui_app.cpp`，
+业务运行时保留在 `src/main/app_runtime.cpp`，避免 UI 与聊天、传输、更新逻辑相互复制。
 
-- `FetchContent_Declare(eui_neo ...)`
-- 使用 `${RELAYDESK_EUI_NEO_SOURCE_DIR}/core/app/glfw_app_main.cpp`
-- 应用代码实现 `app::dslAppConfig()` 和 `app::compose()`
-- 调用 `eui_neo_configure_app(target)`
-- Skia 后端相关修改通过项目内 CMake patch 脚本应用到 FetchContent 构建副本，不直接修改第三方源码仓库。
-
-计划中的 CMake 结构：
+当前 CMake 结构：
 
 ```cmake
 cmake_minimum_required(VERSION 3.20)
@@ -66,51 +60,35 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(BUILD_SHARED_LIBS OFF)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-include(FetchContent)
-FetchContent_Declare(eui_neo
-    GIT_REPOSITORY "https://github.com/sudoevolve/EUI-NEO.git"
-    GIT_TAG "<pinned-commit>"
-)
-FetchContent_MakeAvailable(eui_neo)
-FetchContent_GetProperties(eui_neo)
-set(RELAYDESK_EUI_NEO_SOURCE_DIR "${eui_neo_SOURCE_DIR}")
+find_package(SkiaUI CONFIG REQUIRED)
 
-add_executable(relaydesk
-    ${RELAYDESK_EUI_NEO_SOURCE_DIR}/core/app/glfw_app_main.cpp
-    src/main/app.cpp
-    src/ui/main_window.cpp
+add_executable(relaydesk_skiaui WIN32
+    src/main/skiaui_app.cpp
+    src/main/app_runtime.cpp
     src/net/discovery_service.cpp
-    src/net/peer_session.cpp
     src/storage/history_store.cpp
-    src/storage/identity_store.cpp
-    src/transfer/transfer_manager.cpp
 )
 
-eui_neo_configure_app(relaydesk)
-target_include_directories(relaydesk PRIVATE src)
-
-target_link_options(relaydesk PRIVATE
-    $<$<CXX_COMPILER_ID:MSVC>:/INCREMENTAL:NO>
-    $<$<CXX_COMPILER_ID:GNU>:-static>
-    $<$<CXX_COMPILER_ID:GNU>:-static-libgcc>
-    $<$<CXX_COMPILER_ID:GNU>:-static-libstdc++>
+target_include_directories(relaydesk_skiaui PRIVATE src)
+target_link_libraries(relaydesk_skiaui PRIVATE
+    SkiaUI::SkuiWin32Dx12
 )
 ```
 
 ### 2.3 静态链接与分发策略
 
-目标：发布目录尽量只有 `relaydesk.exe`、配置模板和必要资源文件，不随程序携带 GLFW、JSON、Asio、运行时库等第三方 DLL。
+目标：发布目录尽量只有 `relaydesk_skiaui.exe`，不随程序携带 JSON、Asio、运行时库等第三方 DLL。
 
 规则：
 
 - 所有可控第三方库优先以 static library 方式构建。
 - CMake 全局设置 `BUILD_SHARED_LIBS=OFF`。
 - MSVC 使用 `/MT` 和 `/MTd`，避免依赖 Visual C++ Redistributable DLL。
-- MinGW 构建时使用 `-static -static-libgcc -static-libstdc++`。
-- 第三方依赖通过 vcpkg、FetchContent 或预编译静态库引入，不使用 git submodule，不使用只提供动态库的包。
+- 第三方依赖通过 vcpkg 或预编译静态库引入，不使用 git submodule，不使用只提供动态库的包。
 - CI 和发布流程必须检查输出目录，不允许出现非系统依赖 DLL。
 
-Windows 上仍然会依赖系统自带 DLL，例如 `kernel32.dll`、`user32.dll`、`ws2_32.dll` 等。Vulkan 也通常依赖目标机器显卡驱动或 Vulkan Runtime 提供的 `vulkan-1.dll`。项目目标是不随 RelayDesk 发布包携带一组应用私有 DLL；如果目标机器没有 Vulkan Runtime，则启动时提示安装显卡驱动/Vulkan Runtime，或自动切换到 OpenGL fallback。
+Windows 上仍然会依赖系统自带 DLL，例如 `kernel32.dll`、`user32.dll`、`ws2_32.dll` 等。
+项目目标是不随 RelayDesk 发布包携带一组应用私有 DLL。
 
 建议增加发布检查脚本：
 
@@ -121,9 +99,9 @@ tools/check_release_dependencies.ps1
 检查内容：
 
 - 发布目录是否只包含允许的 `.exe`、资源、配置和文档。
-- 使用 `dumpbin /dependents` 或 `llvm-objdump -p` 检查 `relaydesk.exe` 依赖。
-- 允许 Windows 系统 DLL 和 Vulkan Runtime。
-- 禁止出现第三方应用私有 DLL，例如 `glfw3.dll`、`libstdc++-6.dll`、`libgcc_s_seh-1.dll`。
+- 使用 `dumpbin /dependents` 检查 `relaydesk_skiaui.exe` 依赖。
+- 允许 Windows 系统 DLL。
+- 禁止出现 VC++ 运行库或其他应用私有 DLL。
 
 ## 3. 项目目录规划
 
@@ -193,20 +171,20 @@ RelayDesk/
 RelayDesk 默认使用软件工作目录保存所有可变数据。为避免 Windows 快捷方式或启动器改变 current working directory，软件工作目录定义为：
 
 ```text
-work_dir = relaydesk.exe 所在目录
+work_dir = relaydesk_skiaui.exe 所在目录
 ```
 
 后续可以通过启动参数或设置项覆盖：
 
 ```text
-relaydesk.exe --work-dir D:/RelayDeskWork
+relaydesk_skiaui.exe --work-dir D:/RelayDeskWork
 ```
 
 默认数据布局：
 
 ```text
 <work_dir>/
-  relaydesk.exe
+  relaydesk_skiaui.exe
   data/
     identity.json
     config.json
@@ -244,7 +222,7 @@ relaydesk.exe --work-dir D:/RelayDeskWork
 - 发送的文件和文件夹默认先复制成发送快照，保存到 `<work_dir>/data/transfers/outbox/<peer_device_id>/<transfer_id>/`，再从该快照传输。
 - 文件传输临时数据默认保存到 `<work_dir>/data/transfers/temp/<transfer_id>/`。
 - 用户可以在设置中修改软件工作目录；修改后新数据写入新目录，旧数据通过迁移工具移动。
-- 如果 `relaydesk.exe` 所在目录不可写，启动时提示用户选择一个可写的软件工作目录，不静默降级到系统目录。
+- 如果 `relaydesk_skiaui.exe` 所在目录不可写，启动时提示用户选择一个可写的软件工作目录，不静默降级到系统目录。
 
 ### 4.1 本机身份
 
@@ -686,7 +664,7 @@ body       body_len bytes
 
 线程划分：
 
-- UI 主线程：EUI-NEO 渲染和用户交互。
+- UI 主线程：SkiaUI 渲染和用户交互。
 - 网络线程：Boost.Asio `io_context`，负责 discovery、TCP session、文件传输。
 - 存储线程：顺序写 JSONL，避免 UI 卡顿。
 - 哈希线程池：大文件 SHA-256 和文件夹 manifest 生成。
@@ -762,9 +740,8 @@ MVP 必须实现：
 产出：
 
 - CMake 项目初始化，语言标准固定为 C++23。
-- EUI-NEO 通过 FetchContent 固定 commit 集成。
-- Vulkan 优先的空白窗口启动成功。
-- OpenGL fallback 能在 Vulkan 不可用时作为兼容路径保留。
+- SkiaUI 通过 vcpkg 固定版本集成。
+- Win32 + DirectX 12 主窗口启动成功。
 - 软件工作目录、数据目录、日志目录、传输目录确定。
 - 第三方依赖默认按静态库构建。
 
@@ -773,7 +750,7 @@ MVP 必须实现：
 - Windows Debug/Release 都能构建。
 - 启动显示 RelayDesk 主窗口。
 - 构建日志确认 `CMAKE_CXX_STANDARD=23`。
-- Release 输出目录不包含 GLFW、C++ 运行时、Asio 等第三方 DLL。
+- Release 输出目录不包含 VC++ 运行时、Asio 等第三方 DLL。
 - 默认数据根目录为 `<work_dir>/data/`，不写入 `%APPDATA%`、`%LOCALAPPDATA%` 或 `%ProgramData%`。
 
 ### M1：身份和本地存储
@@ -890,7 +867,7 @@ MVP 必须实现：
 - 内测问题可通过日志定位。
 - 发布目录不携带第三方 DLL。
 - `dumpbin /dependents` 或等价工具检查结果符合允许列表。
-- Vulkan Runtime 缺失时能给出明确提示，或自动切换 OpenGL fallback。
+- DirectX 12 初始化失败时能给出明确错误信息。
 
 ## 13. 风险和应对
 
