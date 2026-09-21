@@ -425,6 +425,78 @@ function(relaydesk_archive_symbols target)
     )
 endfunction()
 
+if(WIN32)
+    string(TIMESTAMP RELAYDESK_CRASH_TEST_BUILD_TIMESTAMP
+        "%Y-%m-%dT%H:%M:%SZ" UTC)
+
+    add_executable(relaydesk_crash_dump_test WIN32
+        tools/crash_dump_test_main.cpp
+        src/core/app_version.cpp
+        src/platform/crash_report_win.cpp
+    )
+
+    target_include_directories(relaydesk_crash_dump_test PRIVATE src)
+    target_compile_features(relaydesk_crash_dump_test PRIVATE cxx_std_23)
+    target_compile_definitions(relaydesk_crash_dump_test PRIVATE
+        NOMINMAX
+        UNICODE
+        _UNICODE
+        WIN32_LEAN_AND_MEAN
+        "RELAYDESK_CRASH_TEST_BUILD_CONFIGURATION=\"$<CONFIG>\""
+        "RELAYDESK_CRASH_TEST_BUILD_TIMESTAMP=\"${RELAYDESK_CRASH_TEST_BUILD_TIMESTAMP}\""
+    )
+    target_link_libraries(relaydesk_crash_dump_test PRIVATE
+        advapi32
+        psapi
+        shell32
+        user32
+    )
+
+    if(MSVC)
+        target_compile_options(relaydesk_crash_dump_test PRIVATE
+            /W4
+            /permissive-
+            /utf-8
+            "$<$<CONFIG:Release>:/O1>"
+            "$<$<CONFIG:Release>:/Zi>"
+            "$<$<CONFIG:RelWithDebInfo>:/Zi>"
+        )
+        target_link_options(relaydesk_crash_dump_test PRIVATE
+            "$<$<CONFIG:Release>:/DEBUG:FULL>"
+            "$<$<CONFIG:Release>:/OPT:REF>"
+            "$<$<CONFIG:Release>:/OPT:ICF>"
+            "$<$<CONFIG:RelWithDebInfo>:/DEBUG:FULL>"
+            "$<$<CONFIG:RelWithDebInfo>:/OPT:REF>"
+            "$<$<CONFIG:RelWithDebInfo>:/OPT:ICF>"
+        )
+    endif()
+
+    add_custom_command(TARGET relaydesk_crash_dump_test POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "${CMAKE_SOURCE_DIR}/out/crash-dump-test-remote"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:relaydesk_crash_dump_test>"
+            "${CMAKE_SOURCE_DIR}/out/crash-dump-test-remote/relaydesk_crash_dump_test.exe"
+        COMMAND ${CMAKE_COMMAND} -E rm -f
+            "${CMAKE_SOURCE_DIR}/out/crash-dump-test-remote/relaydesk_crash_dump_test.pdb"
+        COMMENT "Preparing PDB-free crash dump test package"
+        VERBATIM
+    )
+
+    if(MSVC)
+        add_custom_command(TARGET relaydesk_crash_dump_test POST_BUILD
+            COMMAND ${CMAKE_COMMAND}
+                "-DSYMBOL_TARGET_FILE=$<TARGET_FILE:relaydesk_crash_dump_test>"
+                "-DSYMBOL_TARGET_PDB=$<TARGET_PDB_FILE:relaydesk_crash_dump_test>"
+                "-DSYMBOL_CONFIG=$<CONFIG>"
+                "-DSYMBOL_ARCHIVE_DIR=${CMAKE_SOURCE_DIR}/out/symbols/crash-dump-test"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ArchiveSymbols.cmake"
+            COMMENT "Archiving crash dump test symbols"
+            VERBATIM
+        )
+    endif()
+endif()
+
 if(RELAYDESK_BUILD_SKIAUI AND TARGET relaydesk_skiaui)
     relaydesk_archive_symbols(relaydesk_skiaui)
 endif()
