@@ -7614,6 +7614,50 @@ int captureSkiaUiPng(const CaptureOptions& options)
             relayRuntime.GetSelectedPeerMessages().size();
         const std::optional<std::string> chatContent =
             runtime.textContentById("chat-content");
+        constexpr std::string_view kImeFixture = "已输入";
+        if (!runtime.setTextById(kComposerInitialParagraphId, kImeFixture) ||
+            !runtime.collapseSelection(
+                kComposerInitialParagraphId, kImeFixture.size())) {
+            return 102;
+        }
+        const std::optional<skui::LayoutRect> caretBeforeComposition =
+            runtime.editingCaretRect();
+        skui::Event composition;
+        composition.type = skui::EventType::ImeComposition;
+        composition.text = "hao le";
+        if (!runtime.handleEvent(composition)) {
+            return 102;
+        }
+        const std::optional<skui::LayoutRect> caretDuringComposition =
+            runtime.editingCaretRect();
+        skui::Event compositionCommit;
+        compositionCommit.type = skui::EventType::TextInput;
+        compositionCommit.text = "好了";
+        if (!runtime.handleEvent(compositionCommit)) {
+            return 103;
+        }
+        const std::optional<skui::LayoutRect> caretAfterComposition =
+            runtime.editingCaretRect();
+        if (!caretBeforeComposition.has_value() ||
+            !caretDuringComposition.has_value() ||
+            !caretAfterComposition.has_value() ||
+            caretDuringComposition->x <=
+                caretBeforeComposition->x + 20.0f ||
+            caretAfterComposition->x >= caretDuringComposition->x ||
+            runtime.textContentById(kComposerInitialParagraphId) !=
+                std::optional<std::string>{"已输入好了"}) {
+            return 103;
+        }
+        skui::Event composingEnter;
+        composingEnter.type = skui::EventType::KeyDown;
+        composingEnter.key = VK_RETURN;
+        composingEnter.isComposing = true;
+        if (runtime.handleEvent(composingEnter) ||
+            relayRuntime.GetSelectedPeerMessages().size() !=
+                messageCountBefore) {
+            return 104;
+        }
+
         constexpr std::string_view kSelectionFixture = "abc";
         if (html.find(R"(data-action="toggle-composer-emoji-picker")") ==
                 std::string::npos ||
