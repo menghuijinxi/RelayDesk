@@ -392,6 +392,7 @@ struct SkiaUiRuntimeBinding {
     std::string settingsProfileName;
     std::string settingsSavedProfileName;
     std::string settingsProfileStatus;
+    std::string settingsAvatarPath;
     std::string screenshotShortcut = "Ctrl + Shift + A";
     std::string startupStatus;
     std::string updateStatus = "尚未检查更新";
@@ -512,7 +513,12 @@ std::string makeDeviceRowMarkup(int index)
     html += R"(<div id="device-dot-)";
     html += rowIndex;
     html += R"(" class="status-dot"></div>)";
-    html += R"(<svg class="device-icon" viewBox="0 0 24 24" fill="none">)";
+    html += R"(<div id="device-avatar-)";
+    html += rowIndex;
+    html += R"(" class="device-avatar" style="display: none;"></div>)";
+    html += R"(<svg id="device-icon-)";
+    html += rowIndex;
+    html += R"(" class="device-icon" viewBox="0 0 24 24" fill="none">)";
     html += R"(<rect x="3" y="4.71" width="18" height="11.76" rx="1.56")";
     html += R"( fill="currentColor"></rect>)";
     html += R"(<rect x="5.88" y="7.06" width="12.24" height="6.47" fill="#ffffff"></rect>)";
@@ -848,6 +854,55 @@ std::string firstUtf8Character(std::string_view text)
         length = 2;
     }
     return std::string(text.substr(0, std::min(length, text.size())));
+}
+
+std::string avatarCssUrl(const std::string& path)
+{
+    const std::string generic = std::filesystem::path(path).generic_string();
+    const bool hasDoubleQuote = generic.find('"') != std::string::npos;
+    const bool hasSingleQuote = generic.find('\'') != std::string::npos;
+    if (hasDoubleQuote && hasSingleQuote) {
+        return {};
+    }
+
+    const char quote = hasDoubleQuote ? '\'' : '"';
+    std::string url = "url(";
+    url.push_back(quote);
+    url += generic;
+    url.push_back(quote);
+    url += ')';
+    return url;
+}
+
+std::string avatarImageStyle(const std::string& path, bool hideWhenMissing)
+{
+    const std::string url = path.empty() ? std::string{} : avatarCssUrl(path);
+    if (url.empty()) {
+        return hideWhenMissing ? "display: none;" : "";
+    }
+
+    std::string style = hideWhenMissing ? "display: block; " : "";
+    style += "background-image: ";
+    style += url;
+    style += "; background-size: 100% 100%; background-repeat: no-repeat;";
+    return style;
+}
+
+std::string avatarIconStyle(const std::string& path)
+{
+    return path.empty() ? "" : "display: none;";
+}
+
+void applySettingsAvatar(skui::Runtime& runtime,
+                         const SkiaUiRuntimeBinding& binding)
+{
+    const bool hasAvatar = !binding.settingsAvatarPath.empty();
+    (void)runtime.setTextById(
+        "settings-profile-avatar",
+        hasAvatar ? "" : firstUtf8Character(binding.settingsProfileName));
+    (void)runtime.setStyleById(
+        "settings-profile-avatar",
+        avatarImageStyle(binding.settingsAvatarPath, false));
 }
 
 std::string escapeHtml(std::string_view text)
@@ -4110,9 +4165,7 @@ void applySettingsView(skui::Runtime& runtime,
             active ? "display: block;" : "display: none;");
     }
 
-    (void)runtime.setTextById(
-        "settings-profile-avatar",
-        firstUtf8Character(binding.settingsProfileName));
+    applySettingsAvatar(runtime, binding);
     applySettingsProfileStatus(runtime, binding);
     applySettingsToggle(runtime,
                         "settings-dark-toggle",
@@ -4206,6 +4259,7 @@ void initializeSettingsState(skui::Runtime& runtime,
         ? localUser.GetHostName()
         : localUser.GetDisplayName();
     binding.settingsSavedProfileName = binding.settingsProfileName;
+    binding.settingsAvatarPath = localUser.GetAvatarPath();
     binding.updateStatus = relayRuntime.GetGitHubAppUpdateStatus();
     binding.screenShakeCooldownMilliseconds =
         relayRuntime.GetScreenShakeCooldownMilliseconds();
@@ -4546,6 +4600,10 @@ void hideDeviceRow(skui::RuntimeUpdates& updates, int rowIndex)
     addTextUpdate(updates, indexedId("device-unread-", rowIndex), "");
     addTextUpdate(updates, indexedId("device-name-", rowIndex), "");
     addTextUpdate(updates, indexedId("device-ip-", rowIndex), "");
+    addStyleUpdate(updates,
+                   indexedId("device-avatar-", rowIndex),
+                   "display: none;");
+    addStyleUpdate(updates, indexedId("device-icon-", rowIndex), "");
 }
 
 void showDeviceRow(skui::RuntimeUpdates& updates,
@@ -4589,6 +4647,12 @@ void showDeviceRow(skui::RuntimeUpdates& updates,
                   unreadText);
     addTextUpdate(updates, indexedId("device-name-", rowIndex), peerDisplayName(peer));
     addTextUpdate(updates, indexedId("device-ip-", rowIndex), peerAddressText(peer));
+    addStyleUpdate(updates,
+                   indexedId("device-avatar-", rowIndex),
+                   avatarImageStyle(peer.GetAvatarPath(), true));
+    addStyleUpdate(updates,
+                   indexedId("device-icon-", rowIndex),
+                   avatarIconStyle(peer.GetAvatarPath()));
 }
 
 int deviceContentHeightForLastRowTop(int rowTop)
@@ -4782,7 +4846,12 @@ void applyRelayDeskDevicePanel(
                                            : localUser.GetDisplayName();
     addTextUpdate(updates,
                   "profile-avatar",
-                  firstUtf8Character(localDisplayName));
+                  localUser.GetAvatarPath().empty()
+                      ? firstUtf8Character(localDisplayName)
+                      : "");
+    addStyleUpdate(updates,
+                   "profile-avatar",
+                   avatarImageStyle(localUser.GetAvatarPath(), false));
     addTextUpdate(updates, "profile-name", localDisplayName);
     const std::string localAddress = localUser.GetAddress().empty()
         ? "本机"
@@ -4806,6 +4875,15 @@ void applyRelayDeskDevicePanel(
         addTextUpdate(updates, "header-ip", "等待发现设备");
         addStyleUpdate(updates, "header-status-dot", "background-color: #a8b3c0;");
     }
+    const std::string headerAvatarPath = selectedPeer.has_value()
+        ? selectedPeer->GetAvatarPath()
+        : std::string{};
+    addStyleUpdate(updates,
+                   "header-avatar",
+                   avatarImageStyle(headerAvatarPath, true));
+    addStyleUpdate(updates,
+                   "header-icon",
+                   avatarIconStyle(headerAvatarPath));
 
     std::vector<const relaydesk::runtime::PeerListItem*> onlinePeers;
     std::vector<const relaydesk::runtime::PeerListItem*> offlinePeers;
@@ -5095,9 +5173,11 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
                 binding.settingsProfileStatus.clear();
                 binding.settingsProfileStatusError = false;
             }
-            (void)runtime.setTextById(
-                "settings-profile-avatar",
-                firstUtf8Character(binding.settingsProfileName));
+            if (binding.settingsAvatarPath.empty()) {
+                (void)runtime.setTextById(
+                    "settings-profile-avatar",
+                    firstUtf8Character(binding.settingsProfileName));
+            }
             applySettingsProfileStatus(runtime, binding);
             return;
         }
@@ -5306,6 +5386,7 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
             const std::string currentName = localUser.GetDisplayName().empty()
                 ? localUser.GetHostName()
                 : localUser.GetDisplayName();
+            binding.settingsAvatarPath = localUser.GetAvatarPath();
             if (binding.settingsSavedProfileName != currentName) {
                 binding.settingsProfileName = currentName;
                 binding.settingsSavedProfileName = currentName;
@@ -5355,9 +5436,44 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
             }
             applySettingsView(runtime, binding);
         } else if (action == "settings-avatar-change") {
-            binding.settingsProfileStatus = "头像修改暂未接入";
-            binding.settingsProfileStatusError = false;
-            applySettingsProfileStatus(runtime, binding);
+            const std::optional<std::filesystem::path> selectedPath =
+                relaydesk::platform::selectImageFileFromDialog();
+            if (!selectedPath.has_value()) {
+                return;
+            }
+            try {
+                relayRuntime.updateLocalAvatar(selectedPath.value());
+                binding.settingsAvatarPath =
+                    relayRuntime.GetLocalUser().GetAvatarPath();
+                binding.settingsProfileStatus = "头像已更新";
+                binding.settingsProfileStatusError = false;
+                applyRelayDeskDevicePanel(
+                    runtime,
+                    relayRuntime,
+                    binding,
+                    ChatScrollUpdateMode::PreserveOffset);
+            } catch (const std::exception& error) {
+                binding.settingsProfileStatus = error.what();
+                binding.settingsProfileStatusError = true;
+            }
+            applySettingsView(runtime, binding);
+        } else if (action == "settings-avatar-clear") {
+            try {
+                relayRuntime.clearLocalAvatar();
+                binding.settingsAvatarPath =
+                    relayRuntime.GetLocalUser().GetAvatarPath();
+                binding.settingsProfileStatus = "已恢复默认头像";
+                binding.settingsProfileStatusError = false;
+                applyRelayDeskDevicePanel(
+                    runtime,
+                    relayRuntime,
+                    binding,
+                    ChatScrollUpdateMode::PreserveOffset);
+            } catch (const std::exception& error) {
+                binding.settingsProfileStatus = error.what();
+                binding.settingsProfileStatusError = true;
+            }
+            applySettingsView(runtime, binding);
         } else if (action == "settings-dark-toggle") {
             binding.darkModeEnabled = !binding.darkModeEnabled;
             if (binding.backgroundController != nullptr) {

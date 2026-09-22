@@ -24,10 +24,15 @@ std::optional<std::filesystem::path> createImageThumbnail(
     const std::filesystem::path& sourcePath,
     const std::filesystem::path& targetPath,
     unsigned int maxSide);
+std::optional<std::filesystem::path> createSquareJpeg(
+    const std::filesystem::path& sourcePath,
+    const std::filesystem::path& targetPath,
+    unsigned int side);
 std::optional<std::filesystem::path> selectSavePathFromDialog(
     const std::filesystem::path& initialDirectory,
     const std::string& suggestedFileName);
 std::vector<std::filesystem::path> selectFilesFromDialog();
+std::optional<std::filesystem::path> selectImageFileFromDialog();
 std::optional<std::filesystem::path> selectFolderFromDialog();
 bool copyImageFileToClipboard(const std::filesystem::path& sourcePath);
 bool copyAttachmentPathToClipboard(const std::filesystem::path& sourcePath);

@@ -1,5 +1,7 @@
 #include "net/discovery_message.h"
 
+#include "storage/avatar_store.h"
+
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -38,6 +40,11 @@ void validateAnnouncement(const DiscoveryAnnouncement& announcement)
     }
 
     validateStringList(announcement.GetCapabilities(), "capabilities");
+    if (announcement.GetAvatarSha256Specified()
+        && !announcement.GetAvatarSha256().empty()
+        && !relaydesk::storage::isAvatarSha256(announcement.GetAvatarSha256())) {
+        throw std::runtime_error("Discovery announcement avatar hash is invalid.");
+    }
 }
 
 std::string readRequiredString(const nlohmann::json& value, const char* fieldName)
@@ -100,7 +107,7 @@ std::vector<std::string> readCapabilities(const nlohmann::json& value)
 nlohmann::json toJson(const DiscoveryAnnouncement& announcement)
 {
     validateAnnouncement(announcement);
-    return nlohmann::json{
+    nlohmann::json value{
         {"protocol", kProtocol},
         {"version", announcement.GetVersion()},
         {"type", announcement.GetType()},
@@ -112,6 +119,11 @@ nlohmann::json toJson(const DiscoveryAnnouncement& announcement)
         {"capabilities", announcement.GetCapabilities()},
         {"timestamp", announcement.GetTimestamp()},
     };
+    // 字段缺失表示旧版本；空字符串表示新版本主动恢复文字头像。
+    if (announcement.GetAvatarSha256Specified()) {
+        value["avatar_sha256"] = announcement.GetAvatarSha256();
+    }
+    return value;
 }
 
 DiscoveryAnnouncement fromJson(const nlohmann::json& value)
@@ -132,6 +144,17 @@ DiscoveryAnnouncement fromJson(const nlohmann::json& value)
     announcement.SetAppVersion(readOptionalAppVersion(value));
     announcement.SetCapabilities(readCapabilities(value));
     announcement.SetTimestamp(readRequiredString(value, "timestamp"));
+    if (value.contains("avatar_sha256")) {
+        if (!value["avatar_sha256"].is_string()) {
+            throw std::runtime_error("Discovery announcement avatar hash is invalid.");
+        }
+        const std::string avatarSha256 = value["avatar_sha256"].get<std::string>();
+        if (!avatarSha256.empty()
+            && !relaydesk::storage::isAvatarSha256(avatarSha256)) {
+            throw std::runtime_error("Discovery announcement avatar hash is invalid.");
+        }
+        announcement.SetAvatarSha256(avatarSha256);
+    }
     validateAnnouncement(announcement);
     return announcement;
 }

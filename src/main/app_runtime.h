@@ -23,6 +23,10 @@ class AppUpdateRequestMessage;
 class PeerFrame;
 }
 
+namespace relaydesk::storage {
+class LocalIdentity;
+}
+
 namespace relaydesk::runtime {
 
 class DiscoveryWorkerHandle;
@@ -121,17 +125,20 @@ public:
     const std::string& GetHostName() const { return hostName_; }
     const std::string& GetDeviceId() const { return deviceId_; }
     const std::string& GetAddress() const { return address_; }
+    const std::string& GetAvatarPath() const { return avatarPath_; }
 
     void SetDisplayName(std::string displayName);
     void SetHostName(std::string hostName);
     void SetDeviceId(std::string deviceId);
     void SetAddress(std::string address);
+    void SetAvatarPath(std::string avatarPath);
 
 protected:
     std::string displayName_ = "RelayDesk";
     std::string hostName_ = "Local";
     std::string deviceId_;
     std::string address_;
+    std::string avatarPath_;
 };
 
 class PeerListItem {
@@ -153,6 +160,8 @@ public:
         return lastOnlineSignalAt_;
     }
     bool GetOnline() const { return online_; }
+    const std::string& GetAvatarSha256() const { return avatarSha256_; }
+    const std::string& GetAvatarPath() const { return avatarPath_; }
 
     void SetDeviceId(std::string deviceId);
     void SetDisplayName(std::string displayName);
@@ -165,6 +174,8 @@ public:
     void SetAppVersion(int appVersion);
     void SetLastOnlineSignalAt(std::chrono::steady_clock::time_point signalAt);
     void SetOnline(bool online);
+    void SetAvatarSha256(std::string avatarSha256);
+    void SetAvatarPath(std::string avatarPath);
 
 protected:
     std::string deviceId_;
@@ -178,6 +189,8 @@ protected:
     int appVersion_ = 0;
     std::chrono::steady_clock::time_point lastOnlineSignalAt_{};
     bool online_ = false;
+    std::string avatarSha256_;
+    std::string avatarPath_;
 };
 
 class PendingPeerProfile {
@@ -617,6 +630,8 @@ public:
     void SetUserNotificationHandler(std::function<void()> handler);
 
     void updateLocalDisplayName(std::string displayName);
+    void updateLocalAvatar(const std::filesystem::path& sourcePath);
+    void clearLocalAvatar();
     void refreshPeersIfNeeded();
     void requestPeerDiscovery();
     void checkGitHubAppUpdate();
@@ -700,6 +715,17 @@ protected:
     void enqueueIncomingChatMessage(
         relaydesk::storage::ChatMessageRecord record);
     void handleIncomingPeerFrame(relaydesk::net::PeerFrame frame);
+    void applyLocalIdentity(const relaydesk::storage::LocalIdentity& identity,
+                            bool broadcastNow);
+    void refreshLocalAvatarPath(const relaydesk::storage::AppPaths& appPaths,
+                                const std::string& avatarSha256);
+    void applyStoredPeerAvatar(const relaydesk::storage::AppPaths& appPaths,
+                               const relaydesk::storage::PeerProfile& profile,
+                               PeerListItem& item) const;
+    void maybeRequestPeerAvatar(const PeerListItem& peer);
+    void drainPendingAvatarDownloads();
+    void handleIncomingAvatarRequest(const relaydesk::net::PeerFrame& frame);
+    void handleIncomingAvatarUpdate(const relaydesk::net::PeerFrame& frame);
     void failIncomingTransferFromFrame(const relaydesk::net::PeerFrame& frame);
     void interruptPendingIncomingTransfers();
     void notifyIncomingTransferFailed(
@@ -805,6 +831,20 @@ protected:
         appUpdateHelperLauncherForTest_;
     std::function<std::chrono::steady_clock::time_point()> screenShakeClock_ =
         [] { return std::chrono::steady_clock::now(); };
+    struct PendingAvatarReady {
+        std::string deviceId;
+        std::string avatarSha256;
+        std::string avatarPath;
+    };
+
+    struct AvatarFetchAttempt {
+        std::string avatarSha256;
+        std::chrono::steady_clock::time_point attemptedAt{};
+    };
+
+    std::vector<PendingAvatarReady> pendingAvatarDownloads_;
+    std::unordered_map<std::string, AvatarFetchAttempt> avatarFetchAttempts_;
+    std::mutex pendingAvatarMutex_;
     std::mutex pendingPeerMutex_;
     std::mutex pendingChatMutex_;
     std::mutex pendingTransferUpdateMutex_;

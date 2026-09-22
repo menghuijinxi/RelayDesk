@@ -34,6 +34,7 @@ protected:
     std::string sha256_;
 };
 
+std::string sha256FileHex(const std::filesystem::path& sourcePath);
 std::optional<StoredImageAttachment> storePreviewableImageAttachment(
     const relaydesk::storage::AppPaths& appPaths,
     const std::filesystem::path& sourcePath,

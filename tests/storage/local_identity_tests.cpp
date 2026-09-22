@@ -228,6 +228,113 @@ int loadsUnicodeEscapedIdentityFile()
                   "Unicode escaped display name was not decoded.");
 }
 
+
+nlohmann::json readJsonFile(const std::filesystem::path& filePath)
+{
+    std::ifstream input(filePath, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("Failed to read test file.");
+    }
+    return nlohmann::json::parse(input);
+}
+
+int roundTripsAvatarHashAndOmitsEmptyHash()
+{
+    const auto appPaths = makeAppPaths("avatar-hash");
+    static_cast<void>(
+        relaydesk::storage::loadOrCreateLocalIdentity(appPaths, "HOST-A"));
+    const std::string avatarHash(64, 'a');
+    const auto updated =
+        relaydesk::storage::updateLocalAvatarSha256(appPaths, avatarHash);
+    if (const int result = expect(updated.GetAvatarSha256() == avatarHash,
+                                  "Avatar hash was not saved.");
+        result != 0) {
+        return result;
+    }
+
+    const auto renamed =
+        relaydesk::storage::updateLocalDisplayName(appPaths, "Custom Name");
+    if (const int result = expect(renamed.GetAvatarSha256() == avatarHash
+                                      && renamed.GetDisplayName()
+                                          == "Custom Name",
+                                  "Display name update dropped the avatar hash.");
+        result != 0) {
+        return result;
+    }
+
+    const nlohmann::json saved = readJsonFile(appPaths.GetIdentityFilePath());
+    if (const int result = expect(saved.value("avatar_sha256", "") == avatarHash,
+                                  "Saved identity omitted the avatar hash.");
+        result != 0) {
+        return result;
+    }
+
+    const auto cleared =
+        relaydesk::storage::updateLocalAvatarSha256(appPaths, "");
+    if (const int result = expect(cleared.GetAvatarSha256().empty(),
+                                  "Clearing the avatar hash failed.");
+        result != 0) {
+        return result;
+    }
+    const nlohmann::json clearedJson =
+        readJsonFile(appPaths.GetIdentityFilePath());
+    return expect(!clearedJson.contains("avatar_sha256"),
+                  "Empty avatar hash was written to the identity file.");
+}
+
+int loadsExplicitEmptyAvatarHash()
+{
+    const auto appPaths = makeAppPaths("avatar-empty");
+    writeJsonFile(appPaths.GetIdentityFilePath(), nlohmann::json{
+        {"schema_version", 1},
+        {"device_id", "device-id"},
+        {"install_id", "install-id"},
+        {"created_at", "2026-06-12T00:00:00Z"},
+        {"host_name", "HOST-A"},
+        {"display_name", "HOST-A"},
+        {"avatar_sha256", ""},
+    });
+    const auto loaded = relaydesk::storage::loadLocalIdentity(appPaths);
+    return expect(loaded.GetAvatarSha256().empty(),
+                  "Explicit empty avatar hash was not accepted.");
+}
+
+int rejectsInvalidAvatarHash()
+{
+    const auto appPaths = makeAppPaths("avatar-invalid");
+    const auto created =
+        relaydesk::storage::loadOrCreateLocalIdentity(appPaths, "HOST-A");
+    try {
+        static_cast<void>(
+            relaydesk::storage::updateLocalAvatarSha256(appPaths, "not-a-hash"));
+        return fail("Invalid avatar hash update was accepted.");
+    } catch (const std::invalid_argument&) {
+    }
+
+    const auto unchanged = relaydesk::storage::loadLocalIdentity(appPaths);
+    if (const int result = expect(unchanged.GetAvatarSha256().empty(),
+                                  "Rejected avatar update changed the identity.");
+        result != 0) {
+        return result;
+    }
+
+    writeJsonFile(appPaths.GetIdentityFilePath(), nlohmann::json{
+        {"schema_version", 1},
+        {"device_id", created.GetDeviceId()},
+        {"install_id", created.GetInstallId()},
+        {"created_at", created.GetCreatedAt()},
+        {"host_name", created.GetHostName()},
+        {"display_name", created.GetDisplayName()},
+        {"avatar_sha256", "not-a-hash"},
+    });
+    try {
+        static_cast<void>(relaydesk::storage::loadLocalIdentity(appPaths));
+    } catch (const std::exception&) {
+        return 0;
+    }
+    return fail("Identity file with an invalid avatar hash was accepted.");
+}
+
 int rejectsInvalidIdentityFile()
 {
     const auto appPaths = makeAppPaths("invalid");
@@ -275,6 +382,19 @@ int main()
     }
 
     if (const int result = rejectsInvalidIdentityFile(); result != 0) {
+        return result;
+    }
+
+    if (const int result = roundTripsAvatarHashAndOmitsEmptyHash();
+        result != 0) {
+        return result;
+    }
+
+    if (const int result = loadsExplicitEmptyAvatarHash(); result != 0) {
+        return result;
+    }
+
+    if (const int result = rejectsInvalidAvatarHash(); result != 0) {
         return result;
     }
 

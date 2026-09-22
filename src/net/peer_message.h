@@ -21,6 +21,8 @@ constexpr const char* kPeerMessageTypeTransferComplete = "transfer_complete";
 constexpr const char* kPeerMessageTypeAppUpdateRequest = "app_update_request";
 constexpr const char* kPeerMessageTypeAppUpdateChunk = "app_update_chunk";
 constexpr const char* kPeerMessageTypeAppUpdateComplete = "app_update_complete";
+constexpr const char* kPeerMessageTypeAvatarRequest = "avatar_request";
+constexpr const char* kPeerMessageTypeAvatar = "avatar";
 constexpr const char* kScreenShakeEventMarker =
     "relaydesk-event:screen-shake:v1";
 constexpr const char* kScreenShakeEventMessageIdPrefix =
@@ -324,9 +326,55 @@ AppUpdateChunkMessage parseAppUpdateChunkHeader(const std::string& payload);
 PeerFrame makeAppUpdateChunkFrame(AppUpdateChunkMessage message,
                                   std::vector<std::uint8_t> body);
 AppUpdateChunkMessage parseAppUpdateChunkFrame(const PeerFrame& frame);
+class AvatarRequestMessage {
+public:
+    const std::string& GetRequesterDeviceId() const { return requesterDeviceId_; }
+    const std::string& GetDeviceId() const { return deviceId_; }
+    const std::string& GetAvatarSha256() const { return avatarSha256_; }
+
+    void SetRequesterDeviceId(std::string requesterDeviceId)
+    {
+        requesterDeviceId_ = std::move(requesterDeviceId);
+    }
+    void SetDeviceId(std::string deviceId) { deviceId_ = std::move(deviceId); }
+    void SetAvatarSha256(std::string avatarSha256)
+    {
+        avatarSha256_ = std::move(avatarSha256);
+    }
+
+protected:
+    std::string requesterDeviceId_;
+    std::string deviceId_;
+    std::string avatarSha256_;
+};
+
+class AvatarMessage {
+public:
+    const std::string& GetDeviceId() const { return deviceId_; }
+    const std::string& GetAvatarSha256() const { return avatarSha256_; }
+
+    void SetDeviceId(std::string deviceId) { deviceId_ = std::move(deviceId); }
+    void SetAvatarSha256(std::string avatarSha256)
+    {
+        avatarSha256_ = std::move(avatarSha256);
+    }
+
+protected:
+    std::string deviceId_;
+    std::string avatarSha256_;
+};
+
 std::string serializeAppUpdateCompleteHeader(const AppUpdateCompleteMessage& message);
 AppUpdateCompleteMessage parseAppUpdateCompleteHeader(const std::string& payload);
 PeerFrame makeAppUpdateCompleteFrame(const AppUpdateCompleteMessage& message);
 AppUpdateCompleteMessage parseAppUpdateCompleteFrame(const PeerFrame& frame);
+std::string serializeAvatarRequestHeader(const AvatarRequestMessage& message);
+AvatarRequestMessage parseAvatarRequestHeader(const std::string& payload);
+PeerFrame makeAvatarRequestFrame(const AvatarRequestMessage& message);
+AvatarRequestMessage parseAvatarRequestFrame(const PeerFrame& frame);
+std::string serializeAvatarHeader(const AvatarMessage& message);
+AvatarMessage parseAvatarHeader(const std::string& payload);
+PeerFrame makeAvatarFrame(AvatarMessage message, std::vector<std::uint8_t> body);
+AvatarMessage parseAvatarFrame(const PeerFrame& frame);
 
 }

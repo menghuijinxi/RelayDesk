@@ -5,11 +5,15 @@
 #include "core/platform/async.h"
 #include "core/time.h"
 #include "core/uuid.h"
+#include "main/image_attachment_store.h"
+#include "net/peer_message.h"
+#include "platform/attachment_input.h"
 #include "platform/computer_name.h"
 #include "platform/github_app_update.h"
 #include "platform/text_encoding.h"
 #include "platform/windows_install_id.h"
 #include "storage/app_paths.h"
+#include "storage/avatar_store.h"
 #include "storage/history_store.h"
 #include "storage/local_identity.h"
 #include "storage/peer_profile.h"
@@ -2663,6 +2667,11 @@ void LocalUserSummary::SetAddress(std::string address)
     address_ = std::move(address);
 }
 
+void LocalUserSummary::SetAvatarPath(std::string avatarPath)
+{
+    avatarPath_ = std::move(avatarPath);
+}
+
 void PeerListItem::SetDeviceId(std::string deviceId)
 {
     deviceId_ = std::move(deviceId);
@@ -2717,6 +2726,16 @@ void PeerListItem::SetLastOnlineSignalAt(
 void PeerListItem::SetOnline(bool online)
 {
     online_ = online;
+}
+
+void PeerListItem::SetAvatarSha256(std::string avatarSha256)
+{
+    avatarSha256_ = std::move(avatarSha256);
+}
+
+void PeerListItem::SetAvatarPath(std::string avatarPath)
+{
+    avatarPath_ = std::move(avatarPath);
 }
 
 PendingPeerProfile::PendingPeerProfile(
@@ -2942,18 +2961,452 @@ void RelayDeskRuntime::updateLocalDisplayName(std::string displayName)
     const auto appPaths = relaydesk::storage::createAppPaths();
     const relaydesk::storage::LocalIdentity identity =
         relaydesk::storage::updateLocalDisplayName(appPaths, displayName);
-    localUser_.SetDisplayName(identity.GetDisplayName());
-    localUser_.SetHostName(identity.GetHostName());
-    localUser_.SetDeviceId(identity.GetDeviceId());
-#if defined(RELAYDESK_HAS_BOOST_ASIO)
-    if (discoveryWorker_) {
-        discoveryWorker_->updateLocalIdentity(identity);
-    }
-#endif
     logDiagnostic("runtime.identity.display_name_updated device_id="
                   + identity.GetDeviceId()
                   + " display_name=" + identity.GetDisplayName());
+    applyLocalIdentity(identity, false);
+}
+
+void RelayDeskRuntime::applyLocalIdentity(
+    const relaydesk::storage::LocalIdentity& identity,
+    bool broadcastNow)
+{
+    localUser_.SetDisplayName(identity.GetDisplayName());
+    localUser_.SetHostName(identity.GetHostName());
+    localUser_.SetDeviceId(identity.GetDeviceId());
+    refreshLocalAvatarPath(
+        relaydesk::storage::createAppPaths(),
+        identity.GetAvatarSha256());
+#if defined(RELAYDESK_HAS_BOOST_ASIO)
+    if (discoveryWorker_) {
+        discoveryWorker_->updateLocalIdentity(identity);
+        if (broadcastNow) {
+            discoveryWorker_->requestFastBroadcast();
+        }
+    }
+#else
+    (void)broadcastNow;
+#endif
     requestUiRefresh();
+}
+
+void RelayDeskRuntime::refreshLocalAvatarPath(
+    const relaydesk::storage::AppPaths& appPaths,
+    const std::string& avatarSha256)
+{
+    if (!relaydesk::storage::isAvatarSha256(avatarSha256)) {
+        localUser_.SetAvatarPath({});
+        return;
+    }
+
+    const std::filesystem::path path = relaydesk::storage::avatarImagePath(
+        relaydesk::storage::localAvatarDirectory(appPaths.GetDataDirectory()),
+        avatarSha256);
+    std::error_code error;
+    if (std::filesystem::is_regular_file(path, error) && !error) {
+        localUser_.SetAvatarPath(path.string());
+        return;
+    }
+    localUser_.SetAvatarPath({});
+}
+
+void RelayDeskRuntime::applyStoredPeerAvatar(
+    const relaydesk::storage::AppPaths& appPaths,
+    const relaydesk::storage::PeerProfile& profile,
+    PeerListItem& item) const
+{
+    item.SetAvatarSha256(profile.GetAvatarSha256());
+    item.SetAvatarPath({});
+    const std::filesystem::path directory =
+        relaydesk::storage::peerAvatarDirectory(
+            relaydesk::storage::getPeerProfileFilePath(
+                appPaths,
+                profile.GetDeviceId()).parent_path());
+    if (!relaydesk::storage::isAvatarSha256(profile.GetAvatarSha256())) {
+        return;
+    }
+
+    const std::filesystem::path currentPath =
+        relaydesk::storage::avatarImagePath(
+            directory,
+            profile.GetAvatarSha256());
+    std::error_code error;
+    if (std::filesystem::is_regular_file(currentPath, error) && !error) {
+        item.SetAvatarPath(currentPath.string());
+        return;
+    }
+
+    // 新图尚未到达时继续显示已保存的上一张，避免拉取失败后头像消失。
+    const std::filesystem::path fallbackPath =
+        relaydesk::storage::findStoredAvatarImage(directory);
+    if (!fallbackPath.empty()) {
+        item.SetAvatarPath(fallbackPath.string());
+    }
+}
+
+void RelayDeskRuntime::updateLocalAvatar(
+    const std::filesystem::path& sourcePath)
+{
+    if (!storageAvailable_) {
+        throw std::runtime_error("Local storage is not available.");
+    }
+
+    const auto appPaths = relaydesk::storage::createAppPaths();
+    const std::filesystem::path directory =
+        relaydesk::storage::localAvatarDirectory(appPaths.GetDataDirectory());
+    std::filesystem::create_directories(directory);
+    const std::filesystem::path temporaryPath = directory / "avatar-writing.jpg";
+    const std::optional<std::filesystem::path> written =
+        relaydesk::platform::createSquareJpeg(
+            sourcePath,
+            temporaryPath,
+            relaydesk::storage::kAvatarImageSide);
+    if (!written.has_value()) {
+        throw std::runtime_error("无法处理这张图片。");
+    }
+
+    const std::uintmax_t writtenSize =
+        std::filesystem::file_size(written.value());
+    if (writtenSize == 0
+        || writtenSize > relaydesk::storage::kMaxAvatarImageBytes) {
+        std::error_code error;
+        std::filesystem::remove(written.value(), error);
+        throw std::runtime_error("无法处理这张图片。");
+    }
+
+    std::string avatarSha256;
+    try {
+        avatarSha256 = sha256FileHex(written.value());
+    } catch (const std::exception&) {
+        std::error_code error;
+        std::filesystem::remove(written.value(), error);
+        throw std::runtime_error("无法处理这张图片。");
+    }
+    if (!relaydesk::storage::isAvatarSha256(avatarSha256)) {
+        std::error_code error;
+        std::filesystem::remove(written.value(), error);
+        throw std::runtime_error("无法处理这张图片。");
+    }
+
+    const std::filesystem::path finalPath =
+        relaydesk::storage::avatarImagePath(directory, avatarSha256);
+    std::error_code error;
+    if (std::filesystem::equivalent(written.value(), finalPath, error) && !error) {
+        // 目标路径和临时文件相同，不需要移动。
+    } else if (std::filesystem::exists(finalPath, error) && !error) {
+        std::filesystem::remove(written.value(), error);
+    } else {
+        error.clear();
+        std::filesystem::rename(written.value(), finalPath, error);
+        if (error) {
+            std::filesystem::remove(written.value(), error);
+            throw std::runtime_error("无法保存头像。");
+        }
+    }
+
+    const relaydesk::storage::LocalIdentity identity =
+        relaydesk::storage::updateLocalAvatarSha256(appPaths, avatarSha256);
+    relaydesk::storage::removeUnmatchedAvatarFiles(directory, avatarSha256);
+    logDiagnostic("runtime.identity.avatar_updated device_id="
+                  + identity.GetDeviceId());
+    applyLocalIdentity(identity, true);
+}
+
+void RelayDeskRuntime::clearLocalAvatar()
+{
+    if (!storageAvailable_) {
+        throw std::runtime_error("Local storage is not available.");
+    }
+
+    const auto appPaths = relaydesk::storage::createAppPaths();
+    const relaydesk::storage::LocalIdentity identity =
+        relaydesk::storage::updateLocalAvatarSha256(appPaths, {});
+    relaydesk::storage::removeUnmatchedAvatarFiles(
+        relaydesk::storage::localAvatarDirectory(appPaths.GetDataDirectory()),
+        {});
+    logDiagnostic("runtime.identity.avatar_cleared device_id="
+                  + identity.GetDeviceId());
+    applyLocalIdentity(identity, true);
+}
+
+void RelayDeskRuntime::maybeRequestPeerAvatar(const PeerListItem& peer)
+{
+#if defined(RELAYDESK_HAS_BOOST_ASIO)
+    const bool currentAvatarReady = !peer.GetAvatarPath().empty()
+        && std::filesystem::path(peer.GetAvatarPath()).stem().string()
+            == peer.GetAvatarSha256();
+    if (!peer.GetOnline()
+        || !relaydesk::storage::isAvatarSha256(peer.GetAvatarSha256())
+        || currentAvatarReady
+        || peer.GetAddress().empty()
+        || peer.GetAddress() == "unknown"
+        || peer.GetTcpPort() == 0
+        || !tcpPeerTransport_) {
+        return;
+    }
+
+    constexpr auto kAvatarFetchRetryInterval = std::chrono::seconds(15);
+    const auto now = std::chrono::steady_clock::now();
+    {
+        std::lock_guard lock(pendingAvatarMutex_);
+        const auto existing = avatarFetchAttempts_.find(peer.GetDeviceId());
+        if (existing != avatarFetchAttempts_.end()
+            && existing->second.avatarSha256 == peer.GetAvatarSha256()
+            && now - existing->second.attemptedAt < kAvatarFetchRetryInterval) {
+            return;
+        }
+        AvatarFetchAttempt attempt;
+        attempt.avatarSha256 = peer.GetAvatarSha256();
+        attempt.attemptedAt = now;
+        avatarFetchAttempts_[peer.GetDeviceId()] = std::move(attempt);
+    }
+
+    relaydesk::net::AvatarRequestMessage message;
+    message.SetRequesterDeviceId(localUser_.GetDeviceId());
+    message.SetDeviceId(peer.GetDeviceId());
+    message.SetAvatarSha256(peer.GetAvatarSha256());
+    const relaydesk::net::PeerFrame frame =
+        relaydesk::net::makeAvatarRequestFrame(message);
+    const std::string address = peer.GetAddress();
+    const std::uint16_t port = peer.GetTcpPort();
+    const std::string deviceId = peer.GetDeviceId();
+    const bool accepted = ::core::async::runOnce(
+        "relaydesk.avatar.fetch." + deviceId,
+        [this, address, port, frame] {
+            try {
+                if (!tcpPeerTransport_) {
+                    return ::core::async::failure(
+                        "TCP peer transport is not available.");
+                }
+                tcpPeerTransport_->sendFrameTo(address, port, frame);
+                return ::core::async::success();
+            } catch (const std::exception& error) {
+                return ::core::async::failure(error.what());
+            }
+        },
+        [this, deviceId](const ::core::async::Result<void>& result) {
+            if (result.ok) {
+                return;
+            }
+            logDiagnostic("runtime.avatar.fetch_failed device_id=" + deviceId
+                          + " message=" + result.error);
+            std::lock_guard lock(pendingAvatarMutex_);
+            avatarFetchAttempts_.erase(deviceId);
+        });
+    if (!accepted) {
+        std::lock_guard lock(pendingAvatarMutex_);
+        avatarFetchAttempts_.erase(deviceId);
+        logDiagnostic("runtime.avatar.fetch_failed device_id=" + deviceId
+                      + " message=task_not_accepted");
+    }
+#else
+    (void)peer;
+#endif
+}
+
+void RelayDeskRuntime::drainPendingAvatarDownloads()
+{
+    std::vector<PendingAvatarReady> pending;
+    {
+        std::lock_guard lock(pendingAvatarMutex_);
+        pending.swap(pendingAvatarDownloads_);
+    }
+    if (pending.empty()) {
+        return;
+    }
+
+    for (const PendingAvatarReady& ready : pending) {
+        const auto existing = std::find_if(
+            peers_.begin(),
+            peers_.end(),
+            [&ready](const PeerListItem& peer) {
+                return peer.GetDeviceId() == ready.deviceId;
+            });
+        if (existing == peers_.end()
+            || existing->GetAvatarSha256() != ready.avatarSha256) {
+            continue;
+        }
+        existing->SetAvatarPath(ready.avatarPath);
+        std::lock_guard lock(pendingAvatarMutex_);
+        avatarFetchAttempts_.erase(ready.deviceId);
+    }
+}
+
+void RelayDeskRuntime::handleIncomingAvatarRequest(
+    const relaydesk::net::PeerFrame& frame)
+{
+#if defined(RELAYDESK_HAS_BOOST_ASIO)
+    const relaydesk::net::AvatarRequestMessage request =
+        relaydesk::net::parseAvatarRequestFrame(frame);
+    if (request.GetDeviceId() != localUser_.GetDeviceId()) {
+        return;
+    }
+
+    const std::optional<PeerListItem> peer =
+        findPeerByDeviceId(request.GetRequesterDeviceId());
+    if (!peer.has_value()
+        || peer->GetAddress().empty()
+        || peer->GetAddress() == "unknown"
+        || peer->GetTcpPort() == 0
+        || !tcpPeerTransport_) {
+        logDiagnostic("runtime.avatar.request_ignored requester="
+                      + request.GetRequesterDeviceId()
+                      + " reason=peer_unavailable");
+        return;
+    }
+
+    const auto appPaths = relaydesk::storage::createAppPaths();
+    const relaydesk::storage::LocalIdentity identity =
+        relaydesk::storage::loadLocalIdentity(appPaths);
+    if (identity.GetAvatarSha256() != request.GetAvatarSha256()) {
+        return;
+    }
+
+    const std::filesystem::path path = relaydesk::storage::avatarImagePath(
+        relaydesk::storage::localAvatarDirectory(appPaths.GetDataDirectory()),
+        identity.GetAvatarSha256());
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        logDiagnostic("runtime.avatar.request_ignored requester="
+                      + request.GetRequesterDeviceId()
+                      + " reason=file_missing");
+        return;
+    }
+    input.seekg(0, std::ios::end);
+    const auto end = input.tellg();
+    if (end <= 0
+        || static_cast<std::uintmax_t>(end)
+            > relaydesk::storage::kMaxAvatarImageBytes) {
+        return;
+    }
+    input.seekg(0, std::ios::beg);
+    std::vector<std::uint8_t> body(static_cast<std::size_t>(end));
+    input.read(reinterpret_cast<char*>(body.data()),
+               static_cast<std::streamsize>(body.size()));
+    if (!input) {
+        return;
+    }
+
+    relaydesk::net::AvatarMessage message;
+    message.SetDeviceId(localUser_.GetDeviceId());
+    message.SetAvatarSha256(identity.GetAvatarSha256());
+    const relaydesk::net::PeerFrame response =
+        relaydesk::net::makeAvatarFrame(message, std::move(body));
+    const std::string address = peer->GetAddress();
+    const std::uint16_t port = peer->GetTcpPort();
+    const std::string requesterId = request.GetRequesterDeviceId();
+    const bool accepted = ::core::async::runOnce(
+        "relaydesk.avatar.reply." + requesterId,
+        [this, address, port, response] {
+            try {
+                if (!tcpPeerTransport_) {
+                    return ::core::async::failure(
+                        "TCP peer transport is not available.");
+                }
+                tcpPeerTransport_->sendFrameTo(address, port, response);
+                return ::core::async::success();
+            } catch (const std::exception& error) {
+                return ::core::async::failure(error.what());
+            }
+        },
+        [this, requesterId](const ::core::async::Result<void>& result) {
+            if (!result.ok) {
+                logDiagnostic("runtime.avatar.reply_failed requester="
+                              + requesterId
+                              + " message=" + result.error);
+            }
+        });
+    if (!accepted) {
+        logDiagnostic("runtime.avatar.reply_failed requester=" + requesterId
+                      + " message=task_not_accepted");
+    }
+#else
+    (void)frame;
+#endif
+}
+
+void RelayDeskRuntime::handleIncomingAvatarUpdate(
+    const relaydesk::net::PeerFrame& frame)
+{
+    const relaydesk::net::AvatarMessage message =
+        relaydesk::net::parseAvatarFrame(frame);
+    if (!relaydesk::storage::isAvatarSha256(message.GetAvatarSha256())) {
+        return;
+    }
+
+    try {
+        const auto appPaths = relaydesk::storage::createAppPaths();
+        const relaydesk::storage::PeerProfile profile =
+            relaydesk::storage::loadPeerProfile(
+                appPaths,
+                message.GetDeviceId());
+        if (profile.GetAvatarSha256() != message.GetAvatarSha256()) {
+            logDiagnostic("runtime.avatar.store_ignored device_id="
+                          + message.GetDeviceId()
+                          + " reason=hash_mismatch");
+            return;
+        }
+        const std::filesystem::path directory =
+            relaydesk::storage::peerAvatarDirectory(
+                relaydesk::storage::getPeerProfileFilePath(
+                    appPaths,
+                    message.GetDeviceId()).parent_path());
+        std::filesystem::create_directories(directory);
+        const std::filesystem::path temporaryPath =
+            directory / (message.GetAvatarSha256() + ".jpg.writing");
+        {
+            std::ofstream output(temporaryPath,
+                                 std::ios::binary | std::ios::trunc);
+            if (!output) {
+                throw std::runtime_error("Failed to create avatar file.");
+            }
+            const auto& body = frame.GetBody();
+            output.write(reinterpret_cast<const char*>(body.data()),
+                         static_cast<std::streamsize>(body.size()));
+            if (!output) {
+                throw std::runtime_error("Failed to write avatar file.");
+            }
+        }
+
+        if (sha256FileHex(temporaryPath) != message.GetAvatarSha256()) {
+            std::error_code error;
+            std::filesystem::remove(temporaryPath, error);
+            throw std::runtime_error("Avatar hash does not match.");
+        }
+
+        const std::filesystem::path finalPath =
+            relaydesk::storage::avatarImagePath(
+                directory,
+                message.GetAvatarSha256());
+        std::error_code error;
+        std::filesystem::rename(temporaryPath, finalPath, error);
+        if (error) {
+            if (!std::filesystem::exists(finalPath)) {
+                std::filesystem::remove(temporaryPath, error);
+                throw std::runtime_error("Failed to store avatar file.");
+            }
+            std::filesystem::remove(temporaryPath, error);
+        }
+        relaydesk::storage::removeUnmatchedAvatarFiles(
+            directory,
+            message.GetAvatarSha256());
+
+        PendingAvatarReady ready;
+        ready.deviceId = message.GetDeviceId();
+        ready.avatarSha256 = message.GetAvatarSha256();
+        ready.avatarPath = finalPath.string();
+        {
+            std::lock_guard lock(pendingAvatarMutex_);
+            pendingAvatarDownloads_.push_back(std::move(ready));
+        }
+        requestUiRefresh();
+        logDiagnostic("runtime.avatar.stored device_id="
+                      + message.GetDeviceId());
+    } catch (const std::exception& error) {
+        logDiagnostic("runtime.avatar.store_failed device_id="
+                      + message.GetDeviceId()
+                      + " message=" + error.what());
+    }
 }
 
 std::optional<PeerListItem> RelayDeskRuntime::findPeerByDeviceId(
@@ -2971,9 +3424,11 @@ std::optional<PeerListItem> RelayDeskRuntime::findPeerByDeviceId(
 
     try {
         const auto appPaths = relaydesk::storage::createAppPaths();
-        return makePeerListItem(
-            relaydesk::storage::loadPeerProfile(appPaths, peerDeviceId),
-            false);
+        const relaydesk::storage::PeerProfile profile =
+            relaydesk::storage::loadPeerProfile(appPaths, peerDeviceId);
+        PeerListItem item = makePeerListItem(profile, false);
+        applyStoredPeerAvatar(appPaths, profile, item);
+        return item;
     } catch (const std::exception& error) {
         logDiagnostic("runtime.peer.lookup_failed device_id=" + peerDeviceId
                       + " message=" + error.what());
@@ -3616,6 +4071,7 @@ void RelayDeskRuntime::refreshPeersIfNeeded()
 
     const auto now = std::chrono::steady_clock::now();
     drainPendingPeerProfiles();
+    drainPendingAvatarDownloads();
     drainPendingChatMessages();
     drainPendingTransferUpdates();
     drainPendingTransferStateUpdates();
@@ -4763,6 +5219,7 @@ void RelayDeskRuntime::initialize()
         localUser_.SetDisplayName(identity.GetDisplayName());
         localUser_.SetHostName(identity.GetHostName());
         localUser_.SetDeviceId(identity.GetDeviceId());
+        refreshLocalAvatarPath(appPaths, identity.GetAvatarSha256());
         storageAvailable_ = true;
         logDiagnostic("runtime.identity.loaded device_id=" + identity.GetDeviceId()
                       + " host_name=" + identity.GetHostName()
@@ -4851,6 +5308,7 @@ void RelayDeskRuntime::refreshPeers()
         nextPeers.reserve(profiles.size());
         for (const auto& profile : profiles) {
             PeerListItem item = makePeerListItem(profile, false);
+            applyStoredPeerAvatar(appPaths, profile, item);
             item.SetLastConversationAt(
                 loadPeerLastConversationAtOrEmpty(appPaths, item.GetDeviceId()));
             nextPeers.push_back(std::move(item));
@@ -5270,6 +5728,14 @@ void RelayDeskRuntime::notifyIncomingTransferFailed(
 void RelayDeskRuntime::handleIncomingPeerFrame(relaydesk::net::PeerFrame frame)
 {
     switch (frame.GetType()) {
+    case relaydesk::net::PeerFrameType::ProfileHello: {
+        handleIncomingAvatarRequest(frame);
+        return;
+    }
+    case relaydesk::net::PeerFrameType::ProfileUpdate: {
+        handleIncomingAvatarUpdate(frame);
+        return;
+    }
     case relaydesk::net::PeerFrameType::ChatMessage: {
         relaydesk::storage::ChatMessageRecord record =
             relaydesk::net::parseChatMessageFrame(frame);
@@ -6581,7 +7047,9 @@ void RelayDeskRuntime::applyPeerProfile(
             loadPeerLastConversationAtOrEmpty(appPaths, profile.GetDeviceId());
     }
 
+    const auto avatarPaths = relaydesk::storage::createAppPaths();
     PeerListItem item = makePeerListItem(profile, online);
+    applyStoredPeerAvatar(avatarPaths, profile, item);
     item.SetLastConversationAt(std::move(lastConversationAt));
     if (online) {
         item.SetLastOnlineSignalAt(now);
@@ -6599,6 +7067,7 @@ void RelayDeskRuntime::applyPeerProfile(
                       + " stale_removed="
                       + std::to_string(stalePeerCount));
         maybeOfferAppUpdateFromPeer(item);
+        maybeRequestPeerAvatar(item);
         return;
     }
 
@@ -6616,6 +7085,7 @@ void RelayDeskRuntime::applyPeerProfile(
                   + " previous_last_seen=" + previousLastSeenAt
                   + " stale_removed=" + std::to_string(stalePeerCount));
     maybeOfferAppUpdateFromPeer(item);
+    maybeRequestPeerAvatar(item);
 }
 
 void RelayDeskRuntime::refreshPeerOnlineStates()

@@ -157,6 +157,68 @@ int rejectsMissingRequiredField()
     return fail("Discovery announcement with missing field was accepted.");
 }
 
+
+int roundTripsSpecifiedAvatarHash()
+{
+    auto announcement = makeAnnouncement();
+    const std::string avatarHash(64, 'a');
+    announcement.SetAvatarSha256(avatarHash);
+    const auto parsed = relaydesk::net::parseDiscoveryAnnouncement(
+        relaydesk::net::serializeDiscoveryAnnouncement(announcement));
+    return expect(parsed.GetAvatarSha256Specified()
+                      && parsed.GetAvatarSha256() == avatarHash,
+                  "Specified avatar hash did not round-trip.");
+}
+
+int roundTripsExplicitEmptyAvatarHash()
+{
+    auto announcement = makeAnnouncement();
+    announcement.SetAvatarSha256("");
+    const nlohmann::json value = nlohmann::json::parse(
+        relaydesk::net::serializeDiscoveryAnnouncement(announcement));
+    if (const int result = expect(value.contains("avatar_sha256")
+                                      && value["avatar_sha256"] == "",
+                                  "Explicit empty avatar hash was omitted.");
+        result != 0) {
+        return result;
+    }
+
+    const auto parsed = relaydesk::net::parseDiscoveryAnnouncement(value.dump());
+    return expect(parsed.GetAvatarSha256Specified()
+                      && parsed.GetAvatarSha256().empty(),
+                  "Explicit empty avatar hash did not round-trip.");
+}
+
+int leavesMissingAvatarHashUnspecified()
+{
+    const auto parsed = relaydesk::net::parseDiscoveryAnnouncement(
+        relaydesk::net::serializeDiscoveryAnnouncement(makeAnnouncement()));
+    return expect(!parsed.GetAvatarSha256Specified()
+                      && parsed.GetAvatarSha256().empty(),
+                  "Missing avatar hash should stay unspecified.");
+}
+
+int rejectsInvalidAvatarHash()
+{
+    nlohmann::json value = nlohmann::json::parse(
+        relaydesk::net::serializeDiscoveryAnnouncement(makeAnnouncement()));
+    value["avatar_sha256"] = std::string(64, 'g');
+    try {
+        static_cast<void>(
+            relaydesk::net::parseDiscoveryAnnouncement(value.dump()));
+    } catch (const std::runtime_error&) {
+        value["avatar_sha256"] = 1;
+        try {
+            static_cast<void>(
+                relaydesk::net::parseDiscoveryAnnouncement(value.dump()));
+        } catch (const std::runtime_error&) {
+            return 0;
+        }
+    }
+
+    return fail("Invalid discovery avatar hash was accepted.");
+}
+
 int rejectsInvalidTcpPort()
 {
     nlohmann::json value{
@@ -206,6 +268,22 @@ int main()
     }
 
     if (const int result = rejectsInvalidTcpPort(); result != 0) {
+        return result;
+    }
+
+    if (const int result = roundTripsSpecifiedAvatarHash(); result != 0) {
+        return result;
+    }
+
+    if (const int result = roundTripsExplicitEmptyAvatarHash(); result != 0) {
+        return result;
+    }
+
+    if (const int result = leavesMissingAvatarHashUnspecified(); result != 0) {
+        return result;
+    }
+
+    if (const int result = rejectsInvalidAvatarHash(); result != 0) {
         return result;
     }
 

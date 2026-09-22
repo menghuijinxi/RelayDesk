@@ -53,6 +53,7 @@ DiscoveryAnnouncement makeLocalDiscoveryAnnouncement(
     announcement.SetAppVersion(relaydesk::core::kAppVersion);
     announcement.SetCapabilities(std::move(capabilities));
     announcement.SetTimestamp(timestamp);
+    announcement.SetAvatarSha256(identity.GetAvatarSha256());
     return announcement;
 }
 

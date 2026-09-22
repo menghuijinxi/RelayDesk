@@ -1,7 +1,9 @@
 #include "net/peer_frame.h"
 #include "net/peer_message.h"
+#include "storage/avatar_store.h"
 #include "storage/history_store.h"
 
+#include <cstdint>
 #include <exception>
 #include <functional>
 #include <iostream>
@@ -665,6 +667,122 @@ int roundTripsAppUpdateChunkFrame()
                   "Decoded app update chunk body mismatch.");
 }
 
+
+int roundTripsAvatarRequestFrame()
+{
+    relaydesk::net::AvatarRequestMessage message;
+    message.SetRequesterDeviceId("local-device");
+    message.SetDeviceId("peer-device");
+    const std::string avatarHash(64, 'a');
+    message.SetAvatarSha256(avatarHash);
+    const relaydesk::net::PeerFrame frame =
+        relaydesk::net::makeAvatarRequestFrame(message);
+    if (const int result = expect(frame.GetBody().empty(),
+                                  "Avatar request frame should not have a body.");
+        result != 0) {
+        return result;
+    }
+
+    const auto decoded = relaydesk::net::parseAvatarRequestFrame(
+        relaydesk::net::decodePeerFrame(relaydesk::net::encodePeerFrame(frame)));
+    if (const int result = expect(decoded.GetRequesterDeviceId() == "local-device",
+                                  "Avatar request requester did not round-trip.");
+        result != 0) {
+        return result;
+    }
+    if (const int result = expect(decoded.GetDeviceId() == "peer-device",
+                                  "Avatar request device did not round-trip.");
+        result != 0) {
+        return result;
+    }
+    return expect(decoded.GetAvatarSha256() == avatarHash,
+                  "Avatar request hash did not round-trip.");
+}
+
+int roundTripsAvatarFrame()
+{
+    relaydesk::net::AvatarMessage message;
+    message.SetDeviceId("peer-device");
+    const std::string avatarHash(64, 'b');
+    message.SetAvatarSha256(avatarHash);
+    const std::vector<std::uint8_t> body{1, 2, 3, 4};
+    const relaydesk::net::PeerFrame frame =
+        relaydesk::net::makeAvatarFrame(message, body);
+    const relaydesk::net::PeerFrame decodedFrame =
+        relaydesk::net::decodePeerFrame(relaydesk::net::encodePeerFrame(frame));
+    const auto decoded = relaydesk::net::parseAvatarFrame(decodedFrame);
+    if (const int result = expect(decoded.GetDeviceId() == "peer-device",
+                                  "Avatar device did not round-trip.");
+        result != 0) {
+        return result;
+    }
+    if (const int result = expect(decoded.GetAvatarSha256() == avatarHash,
+                                  "Avatar hash did not round-trip.");
+        result != 0) {
+        return result;
+    }
+    return expect(decodedFrame.GetBody() == body,
+                  "Avatar body did not round-trip.");
+}
+
+int roundTripsClearedAvatarFrame()
+{
+    relaydesk::net::AvatarMessage message;
+    message.SetDeviceId("peer-device");
+    message.SetAvatarSha256("");
+    const relaydesk::net::PeerFrame frame =
+        relaydesk::net::makeAvatarFrame(message, {});
+    const auto decoded = relaydesk::net::parseAvatarFrame(
+        relaydesk::net::decodePeerFrame(relaydesk::net::encodePeerFrame(frame)));
+    return expect(decoded.GetDeviceId() == "peer-device"
+                      && decoded.GetAvatarSha256().empty(),
+                  "Cleared avatar frame did not round-trip.");
+}
+
+int rejectsInvalidAvatarFrames()
+{
+    relaydesk::net::AvatarRequestMessage request;
+    request.SetRequesterDeviceId("local-device");
+    request.SetDeviceId("peer-device");
+    request.SetAvatarSha256("short");
+    if (const int result = expectThrows(
+            [&] { relaydesk::net::makeAvatarRequestFrame(request); },
+            "Invalid avatar request was accepted.");
+        result != 0) {
+        return result;
+    }
+
+    relaydesk::net::AvatarMessage message;
+    message.SetDeviceId("peer-device");
+    message.SetAvatarSha256(std::string(64, 'a'));
+    if (const int result = expectThrows(
+            [&] { relaydesk::net::makeAvatarFrame(message, {}); },
+            "Avatar frame without a body was accepted.");
+        result != 0) {
+        return result;
+    }
+
+    message.SetAvatarSha256("");
+    if (const int result = expectThrows(
+            [&] {
+                relaydesk::net::makeAvatarFrame(
+                    message,
+                    std::vector<std::uint8_t>{1});
+            },
+            "Cleared avatar frame accepted a body.");
+        result != 0) {
+        return result;
+    }
+
+    const std::vector<std::uint8_t> oversized(
+        relaydesk::storage::kMaxAvatarImageBytes + 1u,
+        static_cast<std::uint8_t>(1));
+    message.SetAvatarSha256(std::string(64, 'a'));
+    return expectThrows(
+        [&] { relaydesk::net::makeAvatarFrame(message, oversized); },
+        "Oversized avatar frame was accepted.");
+}
+
 int roundTripsAppUpdateCompleteFrame()
 {
     const relaydesk::net::PeerFrame frame =
@@ -749,6 +867,18 @@ int main()
         return result;
     }
     if (const int result = roundTripsAppUpdateCompleteFrame(); result != 0) {
+        return result;
+    }
+    if (const int result = roundTripsAvatarRequestFrame(); result != 0) {
+        return result;
+    }
+    if (const int result = roundTripsAvatarFrame(); result != 0) {
+        return result;
+    }
+    if (const int result = roundTripsClearedAvatarFrame(); result != 0) {
+        return result;
+    }
+    if (const int result = rejectsInvalidAvatarFrames(); result != 0) {
         return result;
     }
 

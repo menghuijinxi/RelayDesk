@@ -1,8 +1,11 @@
 #include "net/discovery_peer_profile.h"
 
+#include "storage/avatar_store.h"
+
 #include <algorithm>
 #include <filesystem>
 #include <optional>
+#include <system_error>
 #include <stdexcept>
 #include <vector>
 
@@ -64,7 +67,16 @@ bool shouldIgnoreProfileUpdate(const DiscoveryAnnouncement& announcement,
         return false;
     }
 
-    return announcement.GetTimestamp() <= profile.GetLastSeenAt();
+    if (announcement.GetTimestamp() < profile.GetLastSeenAt()) {
+        return true;
+    }
+    if (announcement.GetTimestamp() > profile.GetLastSeenAt()) {
+        return false;
+    }
+
+    // 同一秒内的心跳仍忽略，但头像哈希变化必须落盘。
+    return !announcement.GetAvatarSha256Specified()
+        || announcement.GetAvatarSha256() == profile.GetAvatarSha256();
 }
 
 bool hasPersistentDiscoveryChange(
@@ -79,7 +91,8 @@ bool hasPersistentDiscoveryChange(
         || existingProfile.GetAppVersion() != updatedProfile.GetAppVersion()
         || existingProfile.GetUnreadMessageCount() != updatedProfile.GetUnreadMessageCount()
         || existingProfile.GetCapabilities() != updatedProfile.GetCapabilities()
-        || existingProfile.GetFirstSeenAt() != updatedProfile.GetFirstSeenAt();
+        || existingProfile.GetFirstSeenAt() != updatedProfile.GetFirstSeenAt()
+        || existingProfile.GetAvatarSha256() != updatedProfile.GetAvatarSha256();
 }
 
 std::string resolveLastSeenAt(const DiscoveryAnnouncement& announcement,
@@ -113,6 +126,45 @@ void removeStaleProfilesForAnnouncement(
     }
 }
 
+void applyAnnouncementAvatar(
+    relaydesk::storage::PeerProfile& profile,
+    const DiscoveryAnnouncement& announcement,
+    const std::optional<relaydesk::storage::PeerProfile>& existingProfile)
+{
+    if (announcement.GetAvatarSha256Specified()) {
+        profile.SetAvatarSha256(announcement.GetAvatarSha256());
+        return;
+    }
+
+    if (existingProfile.has_value()) {
+        profile.SetAvatarSha256(existingProfile->GetAvatarSha256());
+    }
+}
+
+void removeStaleAvatarFiles(const relaydesk::storage::AppPaths& appPaths,
+                            const relaydesk::storage::PeerProfile& profile)
+{
+    const std::filesystem::path avatarDirectory =
+        relaydesk::storage::peerAvatarDirectory(
+            relaydesk::storage::getPeerProfileFilePath(
+                appPaths,
+                profile.GetDeviceId()).parent_path());
+    if (!profile.GetAvatarSha256().empty()) {
+        std::error_code error;
+        const std::filesystem::path currentPath =
+            relaydesk::storage::avatarImagePath(
+                avatarDirectory,
+                profile.GetAvatarSha256());
+        // 新头像还没拉到时保留旧文件，拉取失败后界面仍能显示上一张。
+        if (!std::filesystem::is_regular_file(currentPath, error) || error) {
+            return;
+        }
+    }
+    relaydesk::storage::removeUnmatchedAvatarFiles(
+        avatarDirectory,
+        profile.GetAvatarSha256());
+}
+
 std::optional<relaydesk::storage::PeerProfile> loadPeerProfileIfReadable(
     const relaydesk::storage::AppPaths& appPaths,
     const std::string& peerDeviceId)
@@ -143,7 +195,9 @@ relaydesk::storage::PeerProfile upsertPeerProfileFromDiscovery(
             announcement,
             announcement.GetTimestamp(),
             mergeObservedAddress({}, observedAddress));
+        applyAnnouncementAvatar(createdProfile, announcement, std::nullopt);
         relaydesk::storage::savePeerProfile(appPaths, createdProfile);
+        removeStaleAvatarFiles(appPaths, createdProfile);
         return createdProfile;
     }
 
@@ -157,10 +211,12 @@ relaydesk::storage::PeerProfile upsertPeerProfileFromDiscovery(
         mergeObservedAddress(existingProfile->GetLastAddresses(), observedAddress));
     updatedProfile.SetLastSeenAt(resolveLastSeenAt(announcement, existingProfile.value()));
     updatedProfile.SetUnreadMessageCount(existingProfile->GetUnreadMessageCount());
+    applyAnnouncementAvatar(updatedProfile, announcement, existingProfile);
     if (announcement.GetType() == kDiscoveryAnnouncementTypeOffline
         || hasPersistentDiscoveryChange(existingProfile.value(), updatedProfile)) {
         removeStaleProfilesForAnnouncement(appPaths, announcement, observedAddress);
         relaydesk::storage::savePeerProfile(appPaths, updatedProfile);
+        removeStaleAvatarFiles(appPaths, updatedProfile);
     }
     return updatedProfile;
 }

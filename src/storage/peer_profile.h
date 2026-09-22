@@ -23,6 +23,7 @@ public:
     const std::vector<std::string>& GetCapabilities() const { return capabilities_; }
     const std::string& GetFirstSeenAt() const { return firstSeenAt_; }
     const std::string& GetLastSeenAt() const { return lastSeenAt_; }
+    const std::string& GetAvatarSha256() const { return avatarSha256_; }
 
     void SetDeviceId(std::string deviceId) { deviceId_ = std::move(deviceId); }
     void SetHostName(std::string hostName) { hostName_ = std::move(hostName); }
@@ -52,6 +53,10 @@ public:
     {
         lastSeenAt_ = std::move(lastSeenAt);
     }
+    void SetAvatarSha256(std::string avatarSha256)
+    {
+        avatarSha256_ = std::move(avatarSha256);
+    }
 
 protected:
     int schemaVersion_ = 1;
@@ -65,6 +70,7 @@ protected:
     std::vector<std::string> capabilities_;
     std::string firstSeenAt_;
     std::string lastSeenAt_;
+    std::string avatarSha256_;
 };
 
 std::filesystem::path getPeerProfileFilePath(const AppPaths& appPaths,

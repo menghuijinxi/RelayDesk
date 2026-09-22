@@ -113,7 +113,7 @@ DWORD getBCryptDwordProperty(BCRYPT_ALG_HANDLE algorithm,
     return value;
 }
 
-std::string sha256FileHex(const std::filesystem::path& sourcePath)
+std::string computeFileSha256Hex(const std::filesystem::path& sourcePath)
 {
     BCRYPT_ALG_HANDLE rawAlgorithm = nullptr;
     checkBCryptStatus(
@@ -357,6 +357,11 @@ std::optional<std::filesystem::path> ensureImageThumbnail(
 }
 
 } // namespace
+
+std::string sha256FileHex(const std::filesystem::path& sourcePath)
+{
+    return computeFileSha256Hex(sourcePath);
+}
 
 std::optional<StoredImageAttachment> storePreviewableImageAttachment(
     const relaydesk::storage::AppPaths& appPaths,

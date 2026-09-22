@@ -22,6 +22,8 @@ public:
     int GetAppVersion() const { return appVersion_; }
     const std::vector<std::string>& GetCapabilities() const { return capabilities_; }
     const std::string& GetTimestamp() const { return timestamp_; }
+    bool GetAvatarSha256Specified() const { return avatarSha256Specified_; }
+    const std::string& GetAvatarSha256() const { return avatarSha256_; }
 
     void SetVersion(int version) { version_ = version; }
     void SetType(std::string type) { type_ = std::move(type); }
@@ -38,6 +40,11 @@ public:
         capabilities_ = std::move(capabilities);
     }
     void SetTimestamp(std::string timestamp) { timestamp_ = std::move(timestamp); }
+    void SetAvatarSha256(std::string avatarSha256)
+    {
+        avatarSha256Specified_ = true;
+        avatarSha256_ = std::move(avatarSha256);
+    }
 
 protected:
     int version_ = 1;
@@ -49,6 +56,8 @@ protected:
     int appVersion_ = 0;
     std::vector<std::string> capabilities_;
     std::string timestamp_;
+    bool avatarSha256Specified_ = false;
+    std::string avatarSha256_;
 };
 
 std::string serializeDiscoveryAnnouncement(const DiscoveryAnnouncement& announcement);

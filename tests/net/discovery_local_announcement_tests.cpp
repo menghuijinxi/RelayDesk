@@ -78,12 +78,54 @@ int createsAnnouncementFromLocalIdentity()
         return result;
     }
 
+    if (const int result = expect(announcement.GetAvatarSha256Specified(),
+                                  "Local announcement should specify avatar hash.");
+        result != 0) {
+        return result;
+    }
+    if (const int result = expect(announcement.GetAvatarSha256().empty(),
+                                  "Missing local avatar should broadcast empty.");
+        result != 0) {
+        return result;
+    }
+
     const std::string payload =
         relaydesk::net::serializeDiscoveryAnnouncement(announcement);
     const relaydesk::net::DiscoveryAnnouncement parsed =
         relaydesk::net::parseDiscoveryAnnouncement(payload);
-    return expect(parsed.GetTimestamp() == "2026-06-12T12:00:00Z",
-                  "Serialized announcement timestamp mismatch.");
+    if (const int result = expect(parsed.GetTimestamp() == "2026-06-12T12:00:00Z",
+                                  "Serialized announcement timestamp mismatch.");
+        result != 0) {
+        return result;
+    }
+    return expect(parsed.GetAvatarSha256Specified()
+                      && parsed.GetAvatarSha256().empty(),
+                  "Serialized announcement omitted the empty avatar hash.");
+}
+
+int carriesAvatarHashFromLocalIdentity()
+{
+    auto identity = makeIdentity();
+    const std::string avatarHash(64, 'c');
+    identity.SetAvatarSha256(avatarHash);
+    const auto announcement = relaydesk::net::makeLocalDiscoveryAnnouncement(
+        identity,
+        39171,
+        {"text"},
+        "2026-06-12T12:00:00Z");
+    if (const int result = expect(announcement.GetAvatarSha256Specified()
+                                      && announcement.GetAvatarSha256()
+                                          == avatarHash,
+                                  "Local announcement dropped the avatar hash.");
+        result != 0) {
+        return result;
+    }
+
+    const auto parsed = relaydesk::net::parseDiscoveryAnnouncement(
+        relaydesk::net::serializeDiscoveryAnnouncement(announcement));
+    return expect(parsed.GetAvatarSha256Specified()
+                      && parsed.GetAvatarSha256() == avatarHash,
+                  "Serialized local avatar hash did not round-trip.");
 }
 
 int rejectsIdentityWithMissingDiscoveryField()
@@ -156,6 +198,10 @@ int rejectsEmptyTimestamp()
 int main()
 {
     if (const int result = createsAnnouncementFromLocalIdentity(); result != 0) {
+        return result;
+    }
+
+    if (const int result = carriesAvatarHashFromLocalIdentity(); result != 0) {
         return result;
     }
 

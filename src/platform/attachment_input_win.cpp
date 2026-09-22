@@ -996,6 +996,215 @@ std::optional<std::filesystem::path> createImageThumbnail(
     return targetPath.lexically_normal();
 }
 
+
+std::optional<std::filesystem::path> createSquareJpeg(
+    const std::filesystem::path& sourcePath,
+    const std::filesystem::path& targetPath,
+    unsigned int side)
+{
+    if (side < kMinimumThumbnailSide) {
+        return std::nullopt;
+    }
+
+    ComApartment apartment;
+    if (!apartment.GetAvailable()) {
+        return std::nullopt;
+    }
+
+    using Microsoft::WRL::ComPtr;
+    ComPtr<IWICImagingFactory> factory;
+    HRESULT result = CoCreateInstance(CLSID_WICImagingFactory,
+                                      nullptr,
+                                      CLSCTX_INPROC_SERVER,
+                                      IID_PPV_ARGS(&factory));
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    ComPtr<IWICBitmapDecoder> decoder;
+    result = factory->CreateDecoderFromFilename(
+        sourcePath.c_str(),
+        nullptr,
+        GENERIC_READ,
+        WICDecodeMetadataCacheOnDemand,
+        &decoder);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    ComPtr<IWICBitmapFrameDecode> frame;
+    result = decoder->GetFrame(0, &frame);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    UINT sourceWidth = 0;
+    UINT sourceHeight = 0;
+    result = frame->GetSize(&sourceWidth, &sourceHeight);
+    if (FAILED(result) || sourceWidth == 0 || sourceHeight == 0) {
+        return std::nullopt;
+    }
+
+    const UINT cropSide = std::min(sourceWidth, sourceHeight);
+    WICRect cropRect{};
+    cropRect.X = static_cast<INT>((sourceWidth - cropSide) / 2u);
+    cropRect.Y = static_cast<INT>((sourceHeight - cropSide) / 2u);
+    cropRect.Width = static_cast<INT>(cropSide);
+    cropRect.Height = static_cast<INT>(cropSide);
+
+    ComPtr<IWICBitmapClipper> clipper;
+    result = factory->CreateBitmapClipper(&clipper);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+    result = clipper->Initialize(frame.Get(), &cropRect);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    ComPtr<IWICBitmapScaler> scaler;
+    result = factory->CreateBitmapScaler(&scaler);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+    result = scaler->Initialize(clipper.Get(),
+                                side,
+                                side,
+                                WICBitmapInterpolationModeFant);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    std::error_code error;
+    std::filesystem::create_directories(targetPath.parent_path(), error);
+    if (error) {
+        return std::nullopt;
+    }
+    const std::filesystem::path writingPath =
+        targetPath.parent_path()
+        / (targetPath.filename().wstring() + L".writing");
+    std::filesystem::remove(writingPath, error);
+    error.clear();
+
+    const ThumbnailEncoderFormat encoderFormat{
+        GUID_ContainerFormatJpeg,
+        GUID_WICPixelFormat24bppBGR,
+        true,
+    };
+
+    ComPtr<IWICFormatConverter> converter;
+    result = factory->CreateFormatConverter(&converter);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+    result = converter->Initialize(scaler.Get(),
+                                   encoderFormat.pixelFormat,
+                                   WICBitmapDitherTypeNone,
+                                   nullptr,
+                                   0.0,
+                                   WICBitmapPaletteTypeCustom);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    ComPtr<IWICStream> stream;
+    result = factory->CreateStream(&stream);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+    result = stream->InitializeFromFilename(writingPath.c_str(), GENERIC_WRITE);
+    if (FAILED(result)) {
+        std::filesystem::remove(writingPath, error);
+        return std::nullopt;
+    }
+
+    ComPtr<IWICBitmapEncoder> encoder;
+    result = factory->CreateEncoder(encoderFormat.containerFormat,
+                                    nullptr,
+                                    &encoder);
+    if (FAILED(result)) {
+        std::filesystem::remove(writingPath, error);
+        return std::nullopt;
+    }
+    result = encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache);
+    if (FAILED(result)) {
+        std::filesystem::remove(writingPath, error);
+        return std::nullopt;
+    }
+
+    ComPtr<IWICBitmapFrameEncode> frameEncode;
+    ComPtr<IPropertyBag2> propertyBag;
+    result = encoder->CreateNewFrame(&frameEncode, &propertyBag);
+    if (FAILED(result)) {
+        std::filesystem::remove(writingPath, error);
+        return std::nullopt;
+    }
+    if (!writeJpegThumbnailQuality(propertyBag.Get())) {
+        std::filesystem::remove(writingPath, error);
+        return std::nullopt;
+    }
+
+    result = frameEncode->Initialize(propertyBag.Get());
+    if (FAILED(result)) {
+        std::filesystem::remove(writingPath, error);
+        return std::nullopt;
+    }
+    result = frameEncode->SetSize(side, side);
+    if (FAILED(result)) {
+        std::filesystem::remove(writingPath, error);
+        return std::nullopt;
+    }
+
+    WICPixelFormatGUID pixelFormat = encoderFormat.pixelFormat;
+    result = frameEncode->SetPixelFormat(&pixelFormat);
+    if (FAILED(result) || !IsEqualGUID(pixelFormat, encoderFormat.pixelFormat)) {
+        std::filesystem::remove(writingPath, error);
+        return std::nullopt;
+    }
+
+    result = frameEncode->WriteSource(converter.Get(), nullptr);
+    if (FAILED(result)) {
+        std::filesystem::remove(writingPath, error);
+        return std::nullopt;
+    }
+    result = frameEncode->Commit();
+    if (FAILED(result)) {
+        std::filesystem::remove(writingPath, error);
+        return std::nullopt;
+    }
+    result = encoder->Commit();
+    if (FAILED(result)) {
+        std::filesystem::remove(writingPath, error);
+        return std::nullopt;
+    }
+    result = stream->Commit(STGC_DEFAULT);
+    if (FAILED(result)) {
+        std::filesystem::remove(writingPath, error);
+        return std::nullopt;
+    }
+    frameEncode.Reset();
+    propertyBag.Reset();
+    encoder.Reset();
+    stream.Reset();
+
+    const std::uintmax_t writtenSize =
+        std::filesystem::file_size(writingPath, error);
+    if (error || writtenSize == 0u) {
+        std::filesystem::remove(writingPath, error);
+        return std::nullopt;
+    }
+
+    std::filesystem::remove(targetPath, error);
+    error.clear();
+    std::filesystem::rename(writingPath, targetPath, error);
+    if (error) {
+        std::filesystem::remove(writingPath, error);
+        return std::nullopt;
+    }
+
+    return targetPath.lexically_normal();
+}
+
 std::optional<std::filesystem::path> selectSavePathFromDialog(
     const std::filesystem::path& initialDirectory,
     const std::string& suggestedFileName)
@@ -1135,6 +1344,52 @@ std::vector<std::filesystem::path> selectFilesFromDialog()
         }
     }
     return selectedPaths;
+}
+
+
+std::optional<std::filesystem::path> selectImageFileFromDialog()
+{
+    ComApartment apartment;
+    if (!apartment.GetAvailable()) {
+        return std::nullopt;
+    }
+
+    using Microsoft::WRL::ComPtr;
+    ComPtr<IFileOpenDialog> dialog;
+    HRESULT result = CoCreateInstance(CLSID_FileOpenDialog,
+                                      nullptr,
+                                      CLSCTX_INPROC_SERVER,
+                                      IID_PPV_ARGS(&dialog));
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    DWORD options = 0;
+    result = dialog->GetOptions(&options);
+    if (SUCCEEDED(result)) {
+        (void)dialog->SetOptions(
+            options | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST);
+    }
+
+    const COMDLG_FILTERSPEC filters[] = {
+        {L"图片", L"*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.tif;*.tiff"},
+        {L"所有文件", L"*.*"},
+    };
+    (void)dialog->SetFileTypes(2, filters);
+    (void)dialog->SetFileTypeIndex(1);
+    (void)dialog->SetTitle(L"选择头像");
+
+    result = dialog->Show(findRelayDeskMainWindow());
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+
+    ComPtr<IShellItem> item;
+    result = dialog->GetResult(&item);
+    if (FAILED(result)) {
+        return std::nullopt;
+    }
+    return shellItemFilesystemPath(item.Get());
 }
 
 bool consumeBackspacePressed()

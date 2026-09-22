@@ -1,5 +1,7 @@
 #include "storage/peer_profile.h"
 
+#include "storage/avatar_store.h"
+
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -50,7 +52,9 @@ void validatePeerProfile(const PeerProfile& profile)
         || profile.GetAppVersion() < 0
         || profile.GetUnreadMessageCount() < 0
         || profile.GetFirstSeenAt().empty()
-        || profile.GetLastSeenAt().empty()) {
+        || profile.GetLastSeenAt().empty()
+        || (!profile.GetAvatarSha256().empty()
+            && !isAvatarSha256(profile.GetAvatarSha256()))) {
         throw std::runtime_error("Peer profile contains invalid required fields.");
     }
 
@@ -116,6 +120,22 @@ int readOptionalUnreadMessageCount(const nlohmann::json& value)
     return unreadMessageCount;
 }
 
+std::string readOptionalAvatarSha256(const nlohmann::json& value)
+{
+    if (!value.contains("avatar_sha256")) {
+        return {};
+    }
+    if (!value["avatar_sha256"].is_string()) {
+        throw std::runtime_error("Peer profile avatar hash is invalid.");
+    }
+
+    const std::string avatarSha256 = value["avatar_sha256"].get<std::string>();
+    if (!avatarSha256.empty() && !isAvatarSha256(avatarSha256)) {
+        throw std::runtime_error("Peer profile avatar hash is invalid.");
+    }
+    return avatarSha256;
+}
+
 std::vector<std::string> readStringList(const nlohmann::json& value,
                                         const char* fieldName)
 {
@@ -150,7 +170,7 @@ nlohmann::json readProfileJson(const std::filesystem::path& filePath)
 nlohmann::json toJson(const PeerProfile& profile)
 {
     validatePeerProfile(profile);
-    return nlohmann::json{
+    nlohmann::json value{
         {"schema_version", kSchemaVersion},
         {"device_id", profile.GetDeviceId()},
         {"host_name", profile.GetHostName()},
@@ -163,6 +183,10 @@ nlohmann::json toJson(const PeerProfile& profile)
         {"first_seen_at", profile.GetFirstSeenAt()},
         {"last_seen_at", profile.GetLastSeenAt()},
     };
+    if (!profile.GetAvatarSha256().empty()) {
+        value["avatar_sha256"] = profile.GetAvatarSha256();
+    }
+    return value;
 }
 
 PeerProfile fromJson(const nlohmann::json& value)
@@ -183,6 +207,7 @@ PeerProfile fromJson(const nlohmann::json& value)
     profile.SetCapabilities(readStringList(value, "capabilities"));
     profile.SetFirstSeenAt(readRequiredString(value, "first_seen_at"));
     profile.SetLastSeenAt(readRequiredString(value, "last_seen_at"));
+    profile.SetAvatarSha256(readOptionalAvatarSha256(value));
     validatePeerProfile(profile);
     return profile;
 }

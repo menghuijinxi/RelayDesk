@@ -1,5 +1,7 @@
 #include "net/peer_message.h"
 
+#include "storage/avatar_store.h"
+
 #include <stdexcept>
 #include <utility>
 
@@ -769,6 +771,152 @@ AppUpdateCompleteMessage parseAppUpdateCompleteFrame(const PeerFrame& frame)
     }
     requireEmptyBody(frame, "App update complete");
     return parseAppUpdateCompleteHeader(frame.GetHeader());
+}
+
+namespace {
+
+std::string readAvatarSha256(const nlohmann::json& value, bool allowEmpty)
+{
+    if (!value.contains("avatar_sha256") || !value["avatar_sha256"].is_string()) {
+        throw std::runtime_error("Avatar message hash is invalid.");
+    }
+
+    const std::string avatarSha256 = value["avatar_sha256"].get<std::string>();
+    if (avatarSha256.empty()) {
+        if (!allowEmpty) {
+            throw std::runtime_error("Avatar message hash is invalid.");
+        }
+        return avatarSha256;
+    }
+    if (!relaydesk::storage::isAvatarSha256(avatarSha256)) {
+        throw std::runtime_error("Avatar message hash is invalid.");
+    }
+    return avatarSha256;
+}
+
+nlohmann::json avatarRequestToJson(const AvatarRequestMessage& message)
+{
+    if (message.GetRequesterDeviceId().empty()
+        || message.GetDeviceId().empty()
+        || !relaydesk::storage::isAvatarSha256(message.GetAvatarSha256())) {
+        throw std::runtime_error("Avatar request contains invalid fields.");
+    }
+
+    return nlohmann::json{
+        {"requester_device_id", message.GetRequesterDeviceId()},
+        {"device_id", message.GetDeviceId()},
+        {"avatar_sha256", message.GetAvatarSha256()},
+    };
+}
+
+AvatarRequestMessage avatarRequestFromJson(const nlohmann::json& value)
+{
+    AvatarRequestMessage message;
+    message.SetRequesterDeviceId(readRequiredString(value, "requester_device_id"));
+    message.SetDeviceId(readRequiredString(value, "device_id"));
+    message.SetAvatarSha256(readAvatarSha256(value, false));
+    return message;
+}
+
+nlohmann::json avatarToJson(const AvatarMessage& message)
+{
+    if (message.GetDeviceId().empty()) {
+        throw std::runtime_error("Avatar message contains invalid fields.");
+    }
+    if (!message.GetAvatarSha256().empty()
+        && !relaydesk::storage::isAvatarSha256(message.GetAvatarSha256())) {
+        throw std::runtime_error("Avatar message hash is invalid.");
+    }
+
+    return nlohmann::json{
+        {"device_id", message.GetDeviceId()},
+        {"avatar_sha256", message.GetAvatarSha256()},
+    };
+}
+
+AvatarMessage avatarFromJson(const nlohmann::json& value)
+{
+    AvatarMessage message;
+    message.SetDeviceId(readRequiredString(value, "device_id"));
+    message.SetAvatarSha256(readAvatarSha256(value, true));
+    return message;
+}
+
+} // namespace
+
+std::string serializeAvatarRequestHeader(const AvatarRequestMessage& message)
+{
+    return makeEnvelope(
+        kPeerMessageTypeAvatarRequest,
+        avatarRequestToJson(message)).dump();
+}
+
+AvatarRequestMessage parseAvatarRequestHeader(const std::string& payload)
+{
+    const nlohmann::json value = parseEnvelope(payload);
+    requireEnvelope(value, kPeerMessageTypeAvatarRequest);
+    return avatarRequestFromJson(value["message"]);
+}
+
+PeerFrame makeAvatarRequestFrame(const AvatarRequestMessage& message)
+{
+    return PeerFrame(PeerFrameType::ProfileHello,
+                     serializeAvatarRequestHeader(message));
+}
+
+AvatarRequestMessage parseAvatarRequestFrame(const PeerFrame& frame)
+{
+    if (frame.GetType() != PeerFrameType::ProfileHello) {
+        throw std::runtime_error("Peer frame is not an avatar_request frame.");
+    }
+    requireEmptyBody(frame, "Avatar request");
+    return parseAvatarRequestHeader(frame.GetHeader());
+}
+
+std::string serializeAvatarHeader(const AvatarMessage& message)
+{
+    return makeEnvelope(kPeerMessageTypeAvatar, avatarToJson(message)).dump();
+}
+
+AvatarMessage parseAvatarHeader(const std::string& payload)
+{
+    const nlohmann::json value = parseEnvelope(payload);
+    requireEnvelope(value, kPeerMessageTypeAvatar);
+    return avatarFromJson(value["message"]);
+}
+
+PeerFrame makeAvatarFrame(AvatarMessage message, std::vector<std::uint8_t> body)
+{
+    if (message.GetAvatarSha256().empty()) {
+        if (!body.empty()) {
+            throw std::runtime_error("Cleared avatar frame must not contain a body.");
+        }
+    } else if (body.empty()
+               || body.size() > relaydesk::storage::kMaxAvatarImageBytes) {
+        throw std::runtime_error("Avatar frame body has an invalid size.");
+    }
+
+    return PeerFrame(PeerFrameType::ProfileUpdate,
+                     serializeAvatarHeader(message),
+                     std::move(body));
+}
+
+AvatarMessage parseAvatarFrame(const PeerFrame& frame)
+{
+    if (frame.GetType() != PeerFrameType::ProfileUpdate) {
+        throw std::runtime_error("Peer frame is not an avatar frame.");
+    }
+
+    AvatarMessage message = parseAvatarHeader(frame.GetHeader());
+    if (message.GetAvatarSha256().empty()) {
+        requireEmptyBody(frame, "Avatar");
+        return message;
+    }
+    if (frame.GetBody().empty()
+        || frame.GetBody().size() > relaydesk::storage::kMaxAvatarImageBytes) {
+        throw std::runtime_error("Avatar frame body has an invalid size.");
+    }
+    return message;
 }
 
 }

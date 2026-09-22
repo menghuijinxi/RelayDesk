@@ -1,5 +1,7 @@
 #include "storage/local_identity.h"
 
+#include "storage/avatar_store.h"
+
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
@@ -36,6 +38,22 @@ std::string readRequiredString(const nlohmann::json& value, const char* fieldNam
     return value[fieldName].get<std::string>();
 }
 
+std::string readOptionalAvatarSha256(const nlohmann::json& value)
+{
+    if (!value.contains("avatar_sha256")) {
+        return {};
+    }
+    if (!value["avatar_sha256"].is_string()) {
+        throw std::runtime_error("Local identity avatar hash is invalid.");
+    }
+
+    const std::string avatarSha256 = value["avatar_sha256"].get<std::string>();
+    if (!avatarSha256.empty() && !isAvatarSha256(avatarSha256)) {
+        throw std::runtime_error("Local identity avatar hash is invalid.");
+    }
+    return avatarSha256;
+}
+
 nlohmann::json readIdentityJson(const std::filesystem::path& filePath)
 {
     std::ifstream input(filePath, std::ios::binary);
@@ -57,7 +75,9 @@ void validateIdentity(const LocalIdentity& identity)
         || identity.GetInstallId().empty()
         || identity.GetCreatedAt().empty()
         || identity.GetHostName().empty()
-        || identity.GetDisplayName().empty()) {
+        || identity.GetDisplayName().empty()
+        || (!identity.GetAvatarSha256().empty()
+            && !isAvatarSha256(identity.GetAvatarSha256()))) {
         throw std::runtime_error("Local identity file contains invalid required fields.");
     }
 }
@@ -114,6 +134,7 @@ LocalIdentity loadLocalIdentity(const AppPaths& appPaths)
         readRequiredString(value, "created_at"),
         readRequiredString(value, "host_name"),
         readRequiredString(value, "display_name"));
+    identity.SetAvatarSha256(readOptionalAvatarSha256(value));
     validateIdentity(identity);
     return identity;
 }
@@ -129,7 +150,7 @@ void saveLocalIdentity(const AppPaths& appPaths, const LocalIdentity& identity)
         throw std::runtime_error("Failed to open local identity file for writing.");
     }
 
-    const nlohmann::json value{
+    nlohmann::json value{
         {"schema_version", kSchemaVersion},
         {"device_id", identity.GetDeviceId()},
         {"install_id", identity.GetInstallId()},
@@ -137,6 +158,9 @@ void saveLocalIdentity(const AppPaths& appPaths, const LocalIdentity& identity)
         {"host_name", identity.GetHostName()},
         {"display_name", identity.GetDisplayName()},
     };
+    if (!identity.GetAvatarSha256().empty()) {
+        value["avatar_sha256"] = identity.GetAvatarSha256();
+    }
     output << value.dump(4) << '\n';
 
     if (!output) {
@@ -186,6 +210,19 @@ LocalIdentity updateLocalDisplayName(const AppPaths& appPaths,
 
     LocalIdentity identity = loadLocalIdentity(appPaths);
     identity.SetDisplayName(displayName);
+    saveLocalIdentity(appPaths, identity);
+    return identity;
+}
+
+LocalIdentity updateLocalAvatarSha256(const AppPaths& appPaths,
+                                      const std::string& avatarSha256)
+{
+    if (!avatarSha256.empty() && !isAvatarSha256(avatarSha256)) {
+        throw std::invalid_argument("Local avatar hash is invalid.");
+    }
+
+    LocalIdentity identity = loadLocalIdentity(appPaths);
+    identity.SetAvatarSha256(avatarSha256);
     saveLocalIdentity(appPaths, identity);
     return identity;
 }

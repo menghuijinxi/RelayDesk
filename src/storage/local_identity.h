@@ -21,9 +21,14 @@ public:
     const std::string& GetCreatedAt() const { return createdAt_; }
     const std::string& GetHostName() const { return hostName_; }
     const std::string& GetDisplayName() const { return displayName_; }
+    const std::string& GetAvatarSha256() const { return avatarSha256_; }
     void SetDeviceId(std::string deviceId) { deviceId_ = std::move(deviceId); }
     void SetHostName(std::string hostName) { hostName_ = std::move(hostName); }
     void SetDisplayName(std::string displayName) { displayName_ = std::move(displayName); }
+    void SetAvatarSha256(std::string avatarSha256)
+    {
+        avatarSha256_ = std::move(avatarSha256);
+    }
 
 protected:
     int schemaVersion_ = 1;
@@ -32,6 +37,7 @@ protected:
     std::string createdAt_;
     std::string hostName_;
     std::string displayName_;
+    std::string avatarSha256_;
 };
 
 LocalIdentity loadLocalIdentity(const AppPaths& appPaths);
@@ -42,5 +48,7 @@ LocalIdentity loadOrCreateLocalIdentity(const AppPaths& appPaths,
                                         const std::string& stableDeviceId);
 LocalIdentity updateLocalDisplayName(const AppPaths& appPaths,
                                      const std::string& displayName);
+LocalIdentity updateLocalAvatarSha256(const AppPaths& appPaths,
+                                      const std::string& avatarSha256);
 
 }
