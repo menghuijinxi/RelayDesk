@@ -8385,6 +8385,43 @@ int captureSkiaUiPng(const CaptureOptions& options)
         if (lightTextPixelCount < 10) {
             return 81;
         }
+
+        showImageMessageContextMenu(
+            runtime,
+            static_cast<float>(kChatMessagePaneLeft + 40),
+            40.0f);
+        skui::Event contextHover;
+        contextHover.type = skui::EventType::MouseMove;
+        contextHover.x =
+            static_cast<float>(kChatMessagePaneLeft + 58) * options.dpiScale;
+        contextHover.y = 97.0f * options.dpiScale;
+        (void)runtime.handleEvent(contextHover);
+        std::vector<std::uint32_t> menuPixels(pixels.size());
+        if (!runtime.renderToBgraPixels(menuPixels.data(),
+                                        options.width,
+                                        options.height,
+                                        rowBytes,
+                                        options.dpiScale)) {
+            return 105;
+        }
+        const auto menuPixel = [&menuPixels, &options](int x, int y) {
+            return menuPixels[static_cast<std::size_t>(y) *
+                                  static_cast<std::size_t>(options.width) +
+                              static_cast<std::size_t>(x)];
+        };
+        constexpr int kContextMenuProbeX = kChatMessagePaneLeft + 58;
+        constexpr int kContextMenuIdleProbeY = 59;
+        constexpr int kContextMenuHoverProbeY = 97;
+        constexpr std::uint32_t kDarkContextMenuBackground = 0xFF181D21u;
+        constexpr std::uint32_t kDarkContextMenuHover = 0xFF0F3E40u;
+        if (menuPixel(kContextMenuProbeX, kContextMenuIdleProbeY) !=
+            kDarkContextMenuBackground) {
+            return 106;
+        }
+        if (menuPixel(kContextMenuProbeX, kContextMenuHoverProbeY) !=
+            kDarkContextMenuHover) {
+            return 107;
+        }
     }
 
     if ((options.testFileCard || options.testMultiFileMessage) &&
