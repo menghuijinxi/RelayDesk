@@ -123,6 +123,26 @@ constexpr std::string_view kTransferRevealActionPrefix = "transfer-reveal:";
 constexpr UINT kSkiaUiRequestRedrawMessage = WM_APP + 0x531;
 constexpr UINT kRelayDeskSkiaUiRefreshMs = 100;
 
+class RuntimeUpdateScope {
+public:
+    explicit RuntimeUpdateScope(skui::Runtime& runtime)
+        : runtime_(runtime)
+    {
+        runtime_.beginUpdate();
+    }
+
+    ~RuntimeUpdateScope()
+    {
+        runtime_.endUpdate();
+    }
+
+    RuntimeUpdateScope(const RuntimeUpdateScope&) = delete;
+    RuntimeUpdateScope& operator=(const RuntimeUpdateScope&) = delete;
+
+private:
+    skui::Runtime& runtime_;
+};
+
 struct ComposerEmoji {
     std::string_view text;
     std::string_view label;
@@ -4057,6 +4077,7 @@ void applySettingsLayout(skui::Runtime& runtime)
 void applySettingsView(skui::Runtime& runtime,
                        SkiaUiRuntimeBinding& binding)
 {
+    const RuntimeUpdateScope updateScope(runtime);
     binding.settingsCategory =
         std::clamp(binding.settingsCategory,
                    0,
@@ -4657,6 +4678,7 @@ void applyComposerDocumentPanel(
     skui::Runtime& skiaRuntime,
     relaydesk::runtime::RelayDeskRuntime& relayRuntime)
 {
+    const RuntimeUpdateScope updateScope(skiaRuntime);
     constexpr int kComposerWrapHeight = 250;
     constexpr int kComposerDocumentHeight = 176;
     constexpr int kComposerChatBottom = 274;
@@ -4870,9 +4892,12 @@ void applyRelayDeskDevicePanel(
     addStyleUpdate(updates,
                    "device-list-content",
                    "height: " + std::to_string(contentHeight) + "px;");
-    skiaRuntime.applyUpdates(updates);
-    skiaRuntime.replaceHtmlById("chat-content", chatContentHtml);
-    applyComposerDocumentPanel(skiaRuntime, relayRuntime);
+    {
+        const RuntimeUpdateScope updateScope(skiaRuntime);
+        skiaRuntime.applyUpdates(updates);
+        skiaRuntime.replaceHtmlById("chat-content", chatContentHtml);
+        applyComposerDocumentPanel(skiaRuntime, relayRuntime);
+    }
 
     const std::optional<skui::ScrollState> updatedChatScroll =
         skiaRuntime.scrollStateById("chat-scroll");
@@ -5234,6 +5259,12 @@ void installRelayDeskInteractions(skui::Runtime& runtime,
                                       binding,
                                       ChatScrollUpdateMode::ScrollToLatest);
             applySettingsView(runtime, binding);
+            binding.lastDeviceSignature = makeRelayDeskUiSignature(
+                relayRuntime,
+                binding,
+                relayRuntime.GetAppUpdatePrompt());
+            binding.chatInitialized = true;
+            binding.chatHistoryPrependPending = false;
         } else if (action.starts_with(settingsCategoryPrefix)) {
             const std::string categoryText(
                 action.substr(settingsCategoryPrefix.size()));
@@ -8253,7 +8284,9 @@ int captureSkiaUiPng(const CaptureOptions& options)
             kChatScrollBottomTolerance) {
             return 63;
         }
-        (void)refreshRelayDeskDevicePanelIfChanged(binding, false);
+        if (refreshRelayDeskDevicePanelIfChanged(binding, false)) {
+            return 100;
+        }
     }
     if (!isChatScrolledToLatest(runtime)) {
         return 7;
