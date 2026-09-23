@@ -92,16 +92,14 @@
   `--relaydesk-upload-crash-reports` 模式，并等待上传进程返回；只有上传成功才标记报告。
 - 上传模式走 `relaydesk::platform::runCrashUploadMode`，递归扫描整个崩溃报告目录，
   排除上传完成标记 `uploaded.txt` 后，把 `crash.dmp`、`report.txt`、`metadata.txt`、
-  `symbolize.txt` 以及 `logs/` 下的全部普通文件放入
-  `multipart/form-data` 请求，发送到崩溃收集服务器（接口见
-  `MinidumpServer/docs/client-integration.md`）。服务端当前单次请求最多接收 8 个文件，
-  客户端会自动分批，但所有批次都使用同一个 `submission_id=<reportId>`，因此服务端会
-  把它们整合为同一次提交，并支持整组 ZIP 下载。
-- multipart 文件名中 `crash.dmp` 保留原名，其余文件使用崩溃目录内的相对路径安全化名称，
-  例如 `logs/discovery.log` 会保存为 `logs__discovery.log`。这样服务端仍能识别并解析
-  `crash.dmp`，同时报告和日志会进入同一个崩溃提交；空文件也会保留。
-- 上传地址默认是 `http://39.99.153.9:10019/`，`crash_upload_url` 配置或环境变量可以覆盖；只有目录中的所有批次、所有文件都
-  成功上传后，才调用 `markCrashReportUploaded` 标记已处理。
+  `symbolize.txt` 以及 `logs/` 下的全部普通文件流式压缩成一个 `tar.gz`。压缩过程使用
+  zlib，不会把完整转储读进内存。
+- 客户端把这一个压缩包作为 `multipart/form-data` 的 `file` 字段发送到崩溃收集服务器
+  （接口见 `MinidumpServer/docs/client-integration.md`），并使用
+  `submission_id=<reportId>` 标识本次提交。归档内部保留崩溃目录的相对路径，例如
+  `logs/discovery.log`；空文件也会保留。
+- 上传地址默认是 `http://39.99.153.9:10019/`，`crash_upload_url` 配置或环境变量可以覆盖；
+  只有压缩包上传成功后，才调用 `markCrashReportUploaded` 标记已处理。
 
 这样收敛的好处：崩溃进程只关心"把现场写到本地并拉起处理程序"；弹窗询问、网络上传、
 失败后重试全部留在独立的新进程里，崩溃路径既简单又不会因为网络调用二次崩溃。
@@ -115,10 +113,9 @@
   `failing_module=relaydesk_skiaui.exe` + `failing_module_offset=0x83D99`。
 - `tools/symbolize-crash.ps1` 能自动匹配到 `out/symbols/v61-Release` 并打印降级指引
   （本机未安装 cdb）。
-- 2026 年 9 月 18 日使用 `RELAYDESK_CRASH_UPLOAD_URL=http://127.0.0.1:10018` 验证新的
-  整合提交逻辑：测试目录共 15 个文件，客户端分成两批 multipart 上传，服务端数据库中
-  仍只有一个 `submission_id=20260918-132000`，包含 `crash.dmp`、三个文本报告和 11 个
-  日志文件，随后可通过提交接口整组下载 ZIP。
+- 2026 年 9 月 23 日使用 `RELAYDESK_CRASH_UPLOAD_URL=http://127.0.0.1:10019/` 验证
+  强制压缩上传逻辑：客户端先把同次崩溃的转储、报告和日志压成一个 `tar.gz`，再通过
+  单文件 multipart 请求上传；服务端按 `submission_id` 保存该压缩包。
 - 构建通过 VS 2026 的 `vcvars64.bat` + NMake `windows-msvc-nmake-release` 目标完成。
 
 ### 可复用经验

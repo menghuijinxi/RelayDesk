@@ -71,6 +71,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(RELAYDESK_BUILD_SKIAUI)
     find_package(SkiaUI CONFIG REQUIRED)
+    find_package(ZLIB REQUIRED)
 
     set(RELAYDESK_COMMON_RUNTIME_SOURCES
         src/main/app_runtime.cpp
@@ -83,6 +84,7 @@ if(RELAYDESK_BUILD_SKIAUI)
         src/core/uuid.cpp
         src/platform/attachment_input_win.cpp
         src/platform/computer_name_win.cpp
+        src/platform/crash_archive_win.cpp
         src/platform/crash_report_win.cpp
         src/platform/crash_reporter_win.cpp
         src/platform/crash_uploader_win.cpp
@@ -115,6 +117,7 @@ if(RELAYDESK_BUILD_SKIAUI)
     target_link_libraries(relaydesk_skiaui PRIVATE
         nlohmann_json::nlohmann_json
         SkiaUI::SkuiWin32Dx12
+        ZLIB::ZLIB
     )
 
     # 分发版本必须保留调试信息：崩溃报告里的偏移量只有在能映射回函数名和行号时
@@ -611,6 +614,32 @@ if(WIN32 AND RELAYDESK_HAS_BOOST_ASIO)
     set_tests_properties(relaydesk_app_runtime_update_prompt_tests PROPERTIES
         ENVIRONMENT "${app_runtime_test_environment}"
     )
+endif()
+
+if(WIN32 AND TARGET ZLIB::ZLIB)
+    add_executable(relaydesk_crash_archive_tests
+        tests/platform/crash_archive_tests.cpp
+        src/platform/crash_archive_win.cpp
+    )
+
+    target_include_directories(relaydesk_crash_archive_tests PRIVATE src)
+    target_compile_features(relaydesk_crash_archive_tests PRIVATE cxx_std_23)
+    target_compile_definitions(relaydesk_crash_archive_tests PRIVATE
+        "RELAYDESK_CRASH_ARCHIVE_TEST_WORK_DIR=\"${CMAKE_SOURCE_DIR}/tmp/tests/crash_archive\""
+        NOMINMAX
+        UNICODE
+        _UNICODE
+        WIN32_LEAN_AND_MEAN
+    )
+    target_link_libraries(relaydesk_crash_archive_tests PRIVATE ZLIB::ZLIB)
+
+    if(MSVC)
+        target_compile_options(relaydesk_crash_archive_tests
+            PRIVATE /W4 /permissive- /utf-8)
+    endif()
+
+    add_test(NAME relaydesk_crash_archive_tests
+        COMMAND relaydesk_crash_archive_tests)
 endif()
 
 if(WIN32)

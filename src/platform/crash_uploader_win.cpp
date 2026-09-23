@@ -2,6 +2,7 @@
 
 #include "core/app_version.h"
 #include "core/time.h"
+#include "platform/crash_archive.h"
 #include "platform/crash_report.h"
 #include "platform/text_encoding.h"
 
@@ -35,13 +36,10 @@ namespace {
 constexpr wchar_t kUploadReportsArgument[] = L"--relaydesk-upload-crash-reports";
 constexpr wchar_t kCrashDirectoryArgument[] = L"--crash-directory";
 constexpr wchar_t kCrashReportIdArgument[] = L"--crash-report-id";
-constexpr const char* kCrashDumpFileName = "crash.dmp";
 // 没有环境变量或配置时使用的崩溃收集服务器。显式配置仍优先。
 constexpr std::string_view kDefaultCrashUploadUrl =
     "http://39.99.153.9:10019/";
-constexpr const char* kUploadMarkerFileName = "uploaded.txt";
 constexpr std::size_t kUploadBufferBytes = 256u * 1024u;
-constexpr std::size_t kServerMultipartMaxFiles = 8u;
 
 class WinHttpHandle {
 public:
@@ -170,84 +168,34 @@ struct UploadFile {
     std::uintmax_t size = 0;
 };
 
-std::string makeServerFileName(const std::filesystem::path& reportDirectory,
-                               const std::filesystem::path& filePath)
+std::optional<UploadFile> createUploadArchive(const CrashReportEntry& report)
 {
-    std::error_code error;
-    const std::filesystem::path relativePath =
-        std::filesystem::relative(filePath, reportDirectory, error);
-    const std::string relativeText =
-        error ? filePath.filename().generic_string()
-              : relativePath.generic_string();
-    if (relativeText == kCrashDumpFileName) {
-        return kCrashDumpFileName;
-    }
-
-    std::string result;
-    for (const char character : relativeText) {
-        if (character == '/') {
-            result += "__";
-        } else if ((character >= 'a' && character <= 'z')
-                   || (character >= 'A' && character <= 'Z')
-                   || (character >= '0' && character <= '9')
-                   || character == '.' || character == '-' || character == '_') {
-            result.push_back(character);
-        } else {
-            result.push_back('_');
-        }
-    }
-    return result;
-}
-
-std::optional<std::vector<UploadFile>> collectUploadFiles(
-    const CrashReportEntry& report)
-{
-    std::vector<UploadFile> files;
-    std::error_code error;
-    std::filesystem::recursive_directory_iterator iterator(
-        report.GetDirectory(),
-        std::filesystem::directory_options::skip_permission_denied,
-        error);
-    if (error) {
+    const std::filesystem::path archivePath =
+        report.GetDirectory() / "uploading.tar.gz";
+    if (!createCrashReportArchive(report.GetDirectory(), archivePath)) {
         return std::nullopt;
     }
 
-    for (const std::filesystem::directory_entry& entry : iterator) {
-        std::error_code entryError;
-        if (!entry.is_regular_file(entryError)) {
-            continue;
-        }
-        if (entry.path().filename() == kUploadMarkerFileName) {
-            continue;
-        }
-        const std::uintmax_t size = entry.file_size(entryError);
-        if (entryError) {
-            continue;
-        }
-        UploadFile file;
-        file.path = entry.path();
-        file.serverFileName =
-            makeServerFileName(report.GetDirectory(), entry.path());
-        file.size = size;
-        files.push_back(std::move(file));
+    std::error_code error;
+    const std::uintmax_t size = std::filesystem::file_size(archivePath, error);
+    if (error || size == 0) {
+        std::filesystem::remove(archivePath, error);
+        return std::nullopt;
     }
 
-    std::sort(files.begin(),
-              files.end(),
-              [](const UploadFile& left, const UploadFile& right) {
-                  if (left.serverFileName == kCrashDumpFileName) {
-                      return right.serverFileName != kCrashDumpFileName;
-                  }
-                  if (right.serverFileName == kCrashDumpFileName) {
-                      return false;
-                  }
-                  return left.serverFileName < right.serverFileName;
-              });
-    return files;
+    UploadFile archive;
+    archive.path = archivePath;
+    archive.serverFileName = "crash-" + report.GetReportId() + ".tar.gz";
+    archive.size = size;
+    return archive;
 }
 
 std::wstring contentTypeForFile(std::string_view fileName)
 {
+    if (fileName.ends_with(".tar.gz") || fileName.ends_with(".tgz")
+        || fileName.ends_with(".gz")) {
+        return L"application/gzip";
+    }
     const std::size_t dot = fileName.find_last_of('.');
     if (dot != std::string_view::npos) {
         const std::string_view extension = fileName.substr(dot);
@@ -355,18 +303,10 @@ std::optional<std::string> readResponseBody(HINTERNET request)
     return body;
 }
 
-bool uploadFiles(const std::vector<UploadFile>& files,
-                 std::size_t firstFile,
-                 std::size_t fileCount,
-                 const CrashUploadOptions& options,
-                 const std::string& reportId)
+bool uploadFile(const UploadFile& file,
+                const CrashUploadOptions& options,
+                const std::string& reportId)
 {
-    if (fileCount == 0 || fileCount > kServerMultipartMaxFiles
-        || firstFile > files.size()
-        || fileCount > files.size() - firstFile) {
-        return false;
-    }
-
     URL_COMPONENTS components{};
     components.dwStructSize = sizeof(components);
     std::array<wchar_t, 256> hostBuffer{};
@@ -444,15 +384,8 @@ bool uploadFiles(const std::vector<UploadFile>& files,
         makeMultipartField(boundary, "note", reportId),
         makeMultipartField(boundary, "submission_id", reportId),
     };
-    std::vector<std::string> fileHeaders;
-    fileHeaders.reserve(fileCount);
-    for (std::size_t index = firstFile;
-         index < firstFile + fileCount;
-         ++index) {
-        fileHeaders.push_back(makeMultipartFileHeader(boundary, files[index]));
-    }
-    const std::string closingBoundary =
-        "--" + std::string(boundary) + "--\r\n";
+    const std::string fileHeader = makeMultipartFileHeader(boundary, file);
+    const std::string closingBoundary = "--" + std::string(boundary) + "--\r\n";
 
     std::uint64_t totalLength = closingBoundary.size();
     const auto addLength = [&totalLength](std::uintmax_t length) {
@@ -467,12 +400,9 @@ bool uploadFiles(const std::vector<UploadFile>& files,
             return false;
         }
     }
-    for (std::size_t index = 0; index < fileHeaders.size(); ++index) {
-        if (!addLength(fileHeaders[index].size())
-            || !addLength(files[firstFile + index].size)
-            || !addLength(2u)) {
-            return false;
-        }
+    if (!addLength(fileHeader.size()) || !addLength(file.size)
+        || !addLength(2u)) {
+        return false;
     }
     if (totalLength > std::numeric_limits<DWORD>::max()) {
         return false;
@@ -507,12 +437,10 @@ bool uploadFiles(const std::vector<UploadFile>& files,
             return false;
         }
     }
-    for (std::size_t index = 0; index < fileHeaders.size(); ++index) {
-        if (!writeRequestData(request.Get(), fileHeaders[index])
-            || !writeFileData(request.Get(), files[firstFile + index])
-            || !writeRequestData(request.Get(), "\r\n")) {
-            return false;
-        }
+    if (!writeRequestData(request.Get(), fileHeader)
+        || !writeFileData(request.Get(), file)
+        || !writeRequestData(request.Get(), "\r\n")) {
+        return false;
     }
     if (!writeRequestData(request.Get(), closingBoundary)) {
         return false;
@@ -545,7 +473,7 @@ bool uploadFiles(const std::vector<UploadFile>& files,
         const nlohmann::json response =
             nlohmann::json::parse(*responseBody);
         return response.value("ok", false)
-            && response.value("stored", std::size_t(0)) == fileCount
+            && response.value("stored", std::size_t(0)) == 1u
             && response.value("submission_id", std::string()) == reportId;
     } catch (const nlohmann::json::exception&) {
         return false;
@@ -597,45 +525,22 @@ int runCrashUploadMode(const CrashUploadOptions& options) noexcept
                 && report.GetReportId() != options.GetReportId()) {
                 continue;
             }
-            const std::optional<std::vector<UploadFile>> files =
-                collectUploadFiles(report);
-            if (!files.has_value() || files->empty()) {
+            const std::optional<UploadFile> archive =
+                createUploadArchive(report);
+            if (!archive.has_value()) {
                 failed = true;
                 continue;
             }
 
-            const bool hasCrashDump = std::any_of(
-                files->begin(),
-                files->end(),
-                [](const UploadFile& file) {
-                    return file.serverFileName == kCrashDumpFileName;
-                });
-            if (!hasCrashDump) {
-                failed = true;
-                continue;
-            }
-
-            bool reportFailed = false;
-            for (std::size_t firstFile = 0;
-                 firstFile < files->size();
-                 firstFile += kServerMultipartMaxFiles) {
-                const std::size_t fileCount = std::min(
-                    kServerMultipartMaxFiles,
-                    files->size() - firstFile);
-                if (!uploadFiles(*files,
-                                 firstFile,
-                                 fileCount,
-                                 options,
-                                 report.GetReportId())) {
-                    reportFailed = true;
-                }
-            }
-            if (reportFailed) {
+            const bool uploaded =
+                uploadFile(*archive, options, report.GetReportId());
+            std::error_code removeError;
+            std::filesystem::remove(archive->path, removeError);
+            if (!uploaded) {
                 failed = true;
             } else {
-                markCrashReportUploaded(
-                    report.GetDirectory(),
-                    relaydesk::core::currentUtcTimestamp());
+                markCrashReportUploaded(report.GetDirectory(),
+                                        relaydesk::core::currentUtcTimestamp());
             }
         }
         return failed ? 1 : 0;
