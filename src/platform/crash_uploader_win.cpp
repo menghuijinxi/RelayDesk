@@ -36,6 +36,9 @@ constexpr wchar_t kUploadReportsArgument[] = L"--relaydesk-upload-crash-reports"
 constexpr wchar_t kCrashDirectoryArgument[] = L"--crash-directory";
 constexpr wchar_t kCrashReportIdArgument[] = L"--crash-report-id";
 constexpr const char* kCrashDumpFileName = "crash.dmp";
+// 没有环境变量或配置时使用的崩溃收集服务器。显式配置仍优先。
+constexpr std::string_view kDefaultCrashUploadUrl =
+    "http://39.99.153.9:10019/";
 constexpr const char* kUploadMarkerFileName = "uploaded.txt";
 constexpr std::size_t kUploadBufferBytes = 256u * 1024u;
 constexpr std::size_t kServerMultipartMaxFiles = 8u;
@@ -131,6 +134,8 @@ std::optional<CrashUploadOptions> resolveUploadOptions(CrashUploadOptions option
         } else if (const auto configUrl =
                        readConfigString(configPath, "crash_upload_url")) {
             options.SetServerUrl(*configUrl);
+        } else {
+            options.SetServerUrl(std::string(kDefaultCrashUploadUrl));
         }
     }
     if (options.GetApiKey().empty()) {
